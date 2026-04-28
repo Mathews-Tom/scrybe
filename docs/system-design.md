@@ -1,0 +1,722 @@
+# scrybe — System Design
+
+> Detailed architecture, component design, data flow, and workflows.
+> Companion document to `system-overview.md`.
+
+---
+
+## 1. Design goals and non-goals
+
+### Goals
+
+| Goal | Measurable form |
+|---|---|
+| One Rust core, four target platforms | Single `core` crate with no `cfg(target_os)` outside the capture adapters |
+| Filesystem as the single source of truth | A user can delete the application, keep their `~/scrybe/` folder, and lose nothing |
+| Zero outbound network by default | `cargo build --no-default-features --features <platform>,whisper-local` produces an air-gappable binary |
+| Replaceable everything | Each of the four extension seams has at least two real implementations within v1.x |
+| Compile times measured in seconds, not minutes | Cold release build of `cli` under 60s on M1 Pro |
+| Onboarding to first transcript under 5 minutes | Including model download |
+| ~15–20k LoC of Rust at v1.0 | Excluding generated code, vendored deps, platform shims, and tests. Leanness is measured as **`scrybe-core` ≤ 4k LoC** and **core/(sum of capture adapters) ratio ≤ 0.6** — not total |
+| Pre-recording consent UX is mandatory | A `Consent` step runs before capture starts on every session, configurable but not removable. See `LEGAL.md` |
+
+### Non-goals
+
+| Non-goal | Why |
+|---|---|
+| Streaming transcription | 90% of value at 10% of complexity is batch chunking |
+| Channel split as a substitute for real diarization | Channel separation gives binary `Me`/`Them` for 1:1 remote calls only. Multi-party and in-room meetings need the `Diarizer` trait (§4.5); v0.1 emits binary attribution, v0.5 adds neural fallback |
+| Plugin runtime / dynamic loading | Compiled-in Rust hooks cover real use cases without ABI surface |
+| Account system, sync server, web app | Open-core ladder; once on it, can't get off |
+| iOS | Apple's sandbox forbids the necessary system audio capture |
+| Calendar OAuth, Slack/Teams integrations | A `MeetingContext` from an `.ics` file is 80% of the value at 5% of the cost |
+| Sub-100ms latency anywhere | Not a low-latency product |
+
+## 2. High-level architecture
+
+```mermaid
+flowchart TB
+    subgraph platform["Platform layer (one impl per target)"]
+        MacCap["capture-mac<br/>ScreenCaptureKit"]
+        WinCap["capture-win<br/>WASAPI loopback"]
+        LinCap["capture-linux<br/>PipeWire"]
+        AndCap["capture-android<br/>MediaProjection (JNI)"]
+    end
+
+    subgraph core["core (pure Rust, no platform deps)"]
+        Sess["Session manager"]
+        Pipe["Pipeline: chunk → STT → buffer → LLM"]
+        Ctx["ContextProvider trait"]
+        Store["Storage: filesystem ops"]
+        Hooks["Hook dispatcher"]
+        Render["NoteRenderer + templates"]
+    end
+
+    subgraph providers["Providers (cargo features)"]
+        STTLocal["whisper-rs"]
+        STTCloud["openai-compat HTTP"]
+        LLMLocal["Ollama / LM Studio"]
+        LLMCloud["openai-compat HTTP"]
+    end
+
+    subgraph context["Context sources"]
+        CtxCli["cli flags"]
+        CtxIcs["ics file parser"]
+    end
+
+    subgraph hooks_impls["Hook implementations (optional)"]
+        HookGit["git auto-commit"]
+        HookWeb["webhook POST"]
+        HookIdx["tantivy indexer"]
+    end
+
+    subgraph shells["UI shells"]
+        Cli["CLI + tray icon"]
+        Compose["Android: Jetpack Compose<br/>+ Foreground Service"]
+    end
+
+    MacCap & WinCap & LinCap & AndCap -.->|AudioCapture trait| Sess
+    CtxCli & CtxIcs -.->|ContextProvider trait| Ctx
+    Ctx --> Sess
+    Sess --> Pipe
+    Pipe --> STTLocal & STTCloud
+    Pipe --> LLMLocal & LLMCloud
+    Pipe --> Hooks
+    Hooks -.->|Hook trait| HookGit & HookWeb & HookIdx
+    Pipe --> Render
+    Render --> Store
+    Cli --> Sess
+    Compose -->|JNI / uniffi| Sess
+```
+
+The contract that crosses platform boundaries is small: four traits and one struct. Everything else is implementation detail.
+
+## 3. Workspace layout
+
+```
+scrybe/
+├── Cargo.toml              # [workspace]
+├── core/                   # ~2.5k LoC, zero platform deps
+│   ├── src/
+│   │   ├── lib.rs
+│   │   ├── session.rs      # Session struct, lifecycle
+│   │   ├── pipeline.rs     # VAD → STT → buffer → LLM
+│   │   ├── capture.rs      # AudioCapture trait + AudioFrame
+│   │   ├── context.rs      # ContextProvider trait + MeetingContext
+│   │   ├── providers/
+│   │   │   ├── stt.rs      # SttProvider trait
+│   │   │   ├── llm.rs      # LlmProvider trait
+│   │   │   ├── whisper_local.rs
+│   │   │   └── openai_compat.rs
+│   │   ├── notes.rs        # NoteRenderer + default templates
+│   │   ├── hooks.rs        # LifecycleEvent + Hook trait + dispatcher
+│   │   ├── storage.rs      # filesystem ops; not a trait yet
+│   │   ├── config.rs       # TOML config loader
+│   │   └── error.rs
+│   └── tests/
+├── capture-mac/            # cfg(target_os="macos")
+│   ├── src/lib.rs          # uses screencapturekit-rs
+│   └── shim/               # small Swift bits if needed
+├── capture-win/            # cfg(target_os="windows")
+│   └── src/lib.rs          # windows crate + cpal
+├── capture-linux/          # cfg(target_os="linux")
+│   └── src/lib.rs          # pipewire-rs
+├── capture-android/        # cdylib, JNI/uniffi
+│   └── src/lib.rs
+├── context-cli/            # implements ContextProvider from CLI flags
+├── context-ics/            # implements ContextProvider from .ics file
+├── hook-git/               # optional cargo feature
+├── hook-webhook/           # optional cargo feature
+├── cli/                    # main desktop binary; hotkey + tray + record
+└── android/                # Android Studio project
+    ├── app/                # Kotlin Compose UI
+    └── jniLibs/            # built from capture-android + core
+```
+
+## 4. The four extension seams in detail
+
+### 4.1 `AudioCapture` — the platform contract
+
+```rust
+pub trait AudioCapture: Send + 'static {
+    /// Begin capture. Permission prompts (macOS Screen Recording,
+    /// Android MediaProjection) happen here.
+    fn start(&mut self) -> Result<()>;
+
+    /// Stop capture. Idempotent.
+    fn stop(&mut self) -> Result<()>;
+
+    /// Stream of frames. Closes when `stop()` is called or capture errors.
+    fn frames(&self) -> mpsc::Receiver<AudioFrame>;
+
+    /// Static metadata about what this implementation can do.
+    fn capabilities(&self) -> Capabilities;
+}
+
+pub struct AudioFrame {
+    pub samples: Vec<f32>,         // interleaved
+    pub channels: u16,             // 1 (mic-only) or 2 (mic L, system R)
+    pub sample_rate: u32,          // raw rate; resampled to 16kHz before STT
+    pub timestamp_ns: u64,
+    pub source: FrameSource,
+}
+
+pub enum FrameSource { Mic, System, Mixed }
+
+pub struct Capabilities {
+    pub supports_system_audio: bool,
+    pub supports_per_app_capture: bool,   // Win 10 2004+ only
+    pub native_sample_rates: Vec<u32>,
+    pub permission_model: PermissionModel,
+}
+```
+
+This is the **only** trait that is allowed to vary by `cfg(target_os)`. Once an implementation exists per platform, the trait is frozen forever; changes break every adapter at once.
+
+### 4.2 `ContextProvider` — pre-call context
+
+```rust
+#[async_trait]
+pub trait ContextProvider: Send + Sync {
+    async fn context_for(
+        &self,
+        started_at: DateTime<Utc>,
+    ) -> Result<MeetingContext>;
+}
+
+#[derive(Default, Debug, Serialize, Deserialize)]
+pub struct MeetingContext {
+    pub title: Option<String>,
+    pub attendees: Vec<String>,
+    pub agenda: Option<String>,
+    pub prior_notes: Vec<PathBuf>,
+    pub language: Option<Language>,
+    pub extra: BTreeMap<String, String>,
+}
+```
+
+Calendar integration lives entirely behind this trait. v1 implementations: `CliFlagProvider`, `IcsFileProvider`. Future: `GoogleCalendarProvider`, `OutlookProvider`, `EventKitProvider` (macOS native). None of those require touching the core.
+
+### 4.3 `SttProvider` and `LlmProvider`
+
+```rust
+#[async_trait]
+pub trait SttProvider: Send + Sync {
+    async fn transcribe(&self, chunk: AudioChunk) -> Result<TranscriptChunk>;
+    fn name(&self) -> &str;
+}
+
+#[async_trait]
+pub trait LlmProvider: Send + Sync {
+    async fn complete(&self, prompt: &str) -> Result<String>;
+    fn name(&self) -> &str;
+}
+```
+
+Two implementations per trait at v1: local (`whisper-rs` / Ollama) and `openai-compat`. Every cloud STT and LLM that matters speaks OpenAI-compatible HTTP; the URL + model + key in config is the entire selection mechanism. Anthropic users route via OpenRouter.
+
+### 4.4 `Diarizer` — speaker attribution strategy
+
+```rust
+#[async_trait]
+pub trait Diarizer: Send + Sync {
+    /// Attribute each transcript segment to a speaker label.
+    /// Input: per-channel transcript chunks with timestamps.
+    /// Output: same chunks, each with a `speaker` field populated.
+    async fn diarize(
+        &self,
+        mic_chunks: &[TranscriptChunk],
+        sys_chunks: &[TranscriptChunk],
+        ctx: &MeetingContext,
+    ) -> Result<Vec<AttributedChunk>>;
+
+    fn name(&self) -> &str;
+
+    /// True for in-room / multi-party / single-channel inputs that
+    /// the channel-split heuristic cannot resolve.
+    fn requires_neural(capabilities: &Capabilities) -> bool;
+}
+
+pub struct AttributedChunk {
+    pub chunk: TranscriptChunk,
+    pub speaker: SpeakerLabel,    // Me | Them | Named(String) | Unknown
+}
+```
+
+Two implementations:
+
+- **`BinaryChannelDiarizer`** (v0.1, default) — uses energy-on-mic-only → `Me`, energy-on-system-only → `Them`, energy-on-both → both. Correct for 1:1 remote calls. Documents binary attribution as the v0.1 contract; users with multi-party calls see `Them: ...` for every non-self speaker.
+- **`PyannoteOnnxDiarizer`** (v0.5, behind `--features diarize-pyannote`) — wraps `pyannote-onnx` 3.1+. Activated by config (`diarizer = "pyannote"`) or auto-activated when `Capabilities::supports_system_audio = false` (Android pre-API-29 fallback) or when `MeetingContext.attendees.len() >= 3`. Can map cluster labels onto names from `MeetingContext.attendees` via prompt-time post-processing.
+
+`Diarizer` is **Tier 2** stability — the trait shape may evolve through v0.5 as we learn what the neural fallback needs. Frozen at v1.0.
+
+### 4.5 `Hook` — lifecycle subscribers
+
+```rust
+pub enum LifecycleEvent {
+    SessionStart   { id: SessionId, ctx: Arc<MeetingContext> },
+    ConsentRecorded { id: SessionId, attestation: ConsentAttestation },
+    ChunkTranscribed { id: SessionId, chunk: AttributedChunk },
+    SessionEnd     { id: SessionId, transcript_path: PathBuf },
+    NotesGenerated { id: SessionId, notes_path: PathBuf },
+    SessionFailed  { id: SessionId, error: Arc<dyn Error> },
+    HookFailed     { id: SessionId, hook_name: String, error: Arc<dyn Error> },
+}
+
+#[async_trait]
+pub trait Hook: Send + Sync {
+    async fn on_event(&self, event: &LifecycleEvent) -> Result<(), HookError>;
+    fn name(&self) -> &str;
+}
+```
+
+Hooks are **statically registered in `main.rs`** behind cargo features. No dynamic loading, no `.so`/`.dll`, no Wasm runtime. Adding a new hook is "write a struct, register it, recompile."
+
+The dispatcher runs hooks concurrently via `futures::future::join_all`; one slow hook does not block another. Failures emit `LifecycleEvent::HookFailed` so they reach the CLI completion line and `meta.toml`. **No silent failures.**
+
+## 5. The pipeline in detail
+
+```mermaid
+flowchart LR
+    Consent["Consent step<br/>(banner + optional TTS announce<br/>+ chat-message paste)"] --> Cap["Capture<br/>raw f32 frames"]
+    Cap --> Split["Channel splitter<br/>mic L / system R"]
+    Split --> VadM["Silero VAD on mic"]
+    Split --> VadS["Silero VAD on system"]
+    VadM --> ChunkerM["Chunker<br/>30s window OR 5s silence after 5s speech"]
+    VadS --> ChunkerS["Chunker<br/>30s window OR 5s silence after 5s speech"]
+    ChunkerM --> RsM["Resample to 16kHz"]
+    ChunkerS --> RsS["Resample to 16kHz"]
+    RsM --> SttM["STT: mic channel"]
+    RsS --> SttS["STT: system channel"]
+    SttM --> Diar["Diarizer<br/>(BinaryChannel default,<br/>PyannoteOnnx fallback)"]
+    SttS --> Diar
+    Diar --> Append["Append AttributedChunk<br/>to transcript.md"]
+    Append --> Buffer["Session buffer"]
+    Buffer -.->|on stop| Llm["LLM: full transcript<br/>+ MeetingContext → notes"]
+    Llm --> Notes["Write notes.md"]
+    Notes --> Hooks["Dispatch NotesGenerated<br/>(async, concurrent)"]
+
+    Cap --> Encoder["Opus encoder<br/>(ogg container, 1s page flush)"]
+    Encoder --> Audio["Write audio.opus"]
+
+    Consent --> Meta["Append ConsentAttestation<br/>to meta.toml"]
+```
+
+### Key pipeline decisions
+
+| Decision | Rationale |
+|---|---|
+| 30-second VAD-aware chunks | Long enough that Whisper has context, short enough that the user sees progress |
+| One STT call per chunk per channel | Doubles cost but enables free diarization in 1:1 calls. Configurable to single-channel for cost-sensitive users |
+| Resample to 16kHz before STT | Whisper's native rate. Resampling once at the boundary keeps the pipeline rate-agnostic |
+| LLM call only at `SessionEnd` | One model call per meeting, not one per chunk. Simpler, cheaper, better summary quality |
+| Audio encoded continuously to Opus | Audio is the source of truth. If transcription fails or model improves, retranscribe |
+| Transcript appended live | User can `tail -f transcript.md` during the call. Markdown is human-readable as it's written |
+
+### VAD strategy
+
+Silero VAD v5 (via `voice_activity_detector` 0.2, ONNX runtime) on each channel independently. WebRTC VAD was the original choice but `webrtc-vad-rs` is unmaintained (last release 2019); production OSS Whisper pipelines (faster-whisper, WhisperX, whisper.cpp 1.7+) all moved to Silero. Silero is 1.8 MB, ~1 ms per 30 ms chunk on a single CPU thread, and covers 6000+ languages.
+
+Chunks are emitted when either:
+- 30 seconds of audio have accumulated, OR
+- 5 seconds of silence follow at least 5 seconds of speech
+
+Five-second silence aligns with the WhisperX/faster-whisper merge-window convention. Two-second silence (the original draft) produced too-short chunks and hurt Whisper's long-context decoder.
+
+Silence-bounded chunks improve Whisper accuracy because the model doesn't have to guess where utterances end.
+
+### Consent step
+
+Before `AudioCapture::start()` is called, the session runs the consent step. This is a first-class pipeline stage, not a config-toggleable wrapper. Three configurable modes:
+
+| Mode | Behavior | Use case |
+|---|---|---|
+| `quick` (default) | Modal CLI prompt: "Recording starts in 3 seconds. Type `y` to confirm, `n` to abort, or `e` to edit consent settings." Acknowledgement logged to `meta.toml` as `ConsentAttestation { mode: "quick", attested_at, by_user: $USER }` | Solo dictation, all-party-consent jurisdictions where the user is the only participant |
+| `notify` | Modal CLI prompt + automatic chat-message injection into Zoom/Meet/Teams via platform-specific paste (mac: AppleScript via `osascript`; win: SendInput; linux: `xdotool`/`ydotool`). Default message: "I'm transcribing this call locally with scrybe (no cloud, no bot). Speak up if you'd prefer I didn't." Editable per `notes_template`-style override. | Multi-party calls in one-party-consent jurisdictions where polite notice is the norm |
+| `announce` | All of `notify` plus a TTS-generated 2-second spoken disclosure injected into the user's mic at session start ("This call is being transcribed locally on the host's device.") via the OS audio device | All-party-consent jurisdictions (CA, FL, IL, MA, MD, MT, NH, PA, WA, plus CT/DE civilly), regulated industries |
+
+Mode is selected per-session via `--consent {quick,notify,announce}` flag or `consent.default_mode` in config. The step **cannot be disabled at compile time or runtime** — `--consent quick` is the floor. This is enforced in `scrybe-core::session`, not in the CLI, so library consumers (Android shell, future GUI) cannot bypass it.
+
+`ConsentAttestation` is recorded in `meta.toml` as a Tier-1 stable schema field. See `LEGAL.md` for jurisdiction-specific guidance.
+
+### Storage layout, formal
+
+```
+~/scrybe/
+└── 2026-04-29-1430-acme-discovery/
+    ├── audio.opus              # Opus, 32kbps, ~14MB/hour
+    ├── transcript.md           # Appended live during recording
+    ├── notes.md                # Generated at SessionEnd
+    └── meta.toml               # Static metadata
+```
+
+`meta.toml`:
+```toml
+session_id = "01HXY7K9RZNRC8WVCZ8K3J5T2A"
+title = "Acme discovery call"
+started_at = "2026-04-29T14:30:00Z"
+ended_at = "2026-04-29T15:12:43Z"
+duration_secs = 2563
+language = "en"
+
+[capture]
+mic_device = "MacBook Pro Microphone"
+system_audio = true
+
+[consent]
+mode = "notify"
+attested_at = "2026-04-29T14:29:58Z"
+by_user = "tom"
+chat_message_sent = true            # only present if mode in {notify, announce}
+chat_message_target = "zoom"        # discovered platform
+tts_announce_played = false         # true only if mode == announce
+
+[providers]
+stt = "whisper-local:large-v3-turbo"
+llm = "ollama:llama3.1:8b"
+diarizer = "binary-channel"
+
+[hooks]
+git = "ok"                          # outcome of each registered hook
+webhook = "failed: connection timeout"
+
+[scrybe]
+version = "0.4.0"
+```
+
+`transcript.md`:
+```markdown
+# Acme discovery call
+*2026-04-29 14:30 — 15:12*
+
+**Me** [00:00:03]: Hi, thanks for taking the call.
+**Them** [00:00:05]: Of course, happy to.
+**Me** [00:00:08]: I wanted to walk through the proposal we discussed last week.
+...
+```
+
+`notes.md` is template-driven; the default template produces a TL;DR, action items, decisions, and follow-ups. Users can override via a custom template path in config.
+
+## 6. Configuration
+
+Single TOML file at `~/.config/scrybe/config.toml`. No GUI for v1; the CLI shows the current config with `scrybe config show`.
+
+```toml
+[storage]
+root = "~/scrybe"
+audio_format = "opus"
+audio_bitrate_kbps = 32
+
+[capture]
+mic_device = "default"
+system_audio = true
+hotkey = "cmd+shift+r"          # macOS; ctrl+shift+r elsewhere
+
+[stt]
+provider = "whisper-local"      # or "openai-compat"
+model = "large-v3"
+language = "auto"
+
+# [stt]
+# provider = "openai-compat"
+# base_url = "https://api.groq.com/openai/v1"
+# api_key_env = "GROQ_API_KEY"
+# model = "whisper-large-v3"
+
+[llm]
+provider = "ollama"
+base_url = "http://localhost:11434/v1"
+model = "llama3.1:8b"
+notes_template = "default"
+
+[context]
+sources = ["cli", "ics"]
+ics_path = "~/.calendars/work.ics"
+
+[hooks]
+enabled = ["git"]
+
+[hooks.git]
+auto_commit = true
+commit_message = "scrybe: notes for {{ title }}"
+```
+
+## 7. User workflows
+
+### 7.1 First-run onboarding
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant CLI as scrybe CLI
+    participant OS as Operating System
+    participant Net as Network
+
+    U->>CLI: scrybe init
+    CLI->>CLI: Detect platform, check if first run
+    CLI->>U: Show platform-specific permission explanation
+    U->>CLI: Continue
+    CLI->>OS: Request mic + system-audio permission
+    OS->>U: Native permission prompt
+    U->>OS: Grant
+    OS-->>CLI: Permission granted
+    CLI->>U: Choose STT: local whisper, or BYO cloud key?
+    U->>CLI: local whisper, model=large-v3
+    CLI->>Net: Download whisper model (~3GB, with progress)
+    Net-->>CLI: Model file
+    CLI->>CLI: Verify model checksum
+    CLI->>U: Choose LLM: local ollama, or BYO cloud key?
+    U->>CLI: local ollama
+    CLI->>CLI: Probe localhost:11434 for ollama
+    CLI->>U: Ollama detected. Use model llama3.1:8b? [Y/n]
+    U->>CLI: Y
+    CLI->>CLI: Write ~/.config/scrybe/config.toml
+    CLI->>U: Setup complete. Run `scrybe record` or press cmd+shift+r.
+```
+
+### 7.2 Recording a meeting
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant CLI as scrybe CLI / tray
+    participant Cap as AudioCapture impl
+    participant Pipe as Pipeline
+    participant STT as STT provider
+    participant FS as Filesystem
+    participant LLM as LLM provider
+
+    U->>CLI: Press hotkey (or `scrybe record --title "standup"`)
+    CLI->>FS: Create session folder<br/>~/scrybe/2026-04-29-1430-standup/
+    CLI->>Cap: start()
+    Cap->>OS: Open system-audio + mic streams
+    Cap-->>Pipe: Stream of AudioFrame
+    loop Every 30s of speech
+        Pipe->>Pipe: VAD → chunk → resample
+        Pipe->>STT: transcribe(chunk)
+        STT-->>Pipe: TranscriptChunk
+        Pipe->>FS: Append to transcript.md
+        Pipe->>Pipe: Buffer chunk in session
+    end
+    Note over U,Cap: User continues meeting...
+    U->>CLI: Press hotkey again to stop
+    CLI->>Cap: stop()
+    Cap-->>Pipe: Frames receiver closes
+    Pipe->>LLM: complete(transcript + context → notes prompt)
+    LLM-->>Pipe: Notes markdown
+    Pipe->>FS: Write notes.md
+    Pipe->>FS: Finalize audio.opus, write meta.toml
+    Pipe->>CLI: Fire NotesGenerated hook event
+    CLI->>U: ✓ Notes ready: ~/scrybe/2026-04-29-1430-standup/
+```
+
+### 7.3 Hook dispatch (e.g., git auto-commit)
+
+```mermaid
+sequenceDiagram
+    participant Pipe as Pipeline
+    participant Disp as Hook dispatcher
+    participant Git as hook-git
+    participant Web as hook-webhook
+    participant FS as Filesystem
+    participant Repo as Git repo
+
+    Pipe->>Disp: emit NotesGenerated{id, notes_path}
+    Disp->>Disp: Iterate registered hooks
+    par git hook
+        Disp->>Git: on_event(NotesGenerated)
+        Git->>FS: Read notes.md, meta.toml
+        Git->>Repo: git add notes.md
+        Git->>Repo: git commit -m "scrybe: notes for {title}"
+        Git->>Repo: git push (if configured)
+        Git-->>Disp: Ok
+    and webhook hook
+        Disp->>Web: on_event(NotesGenerated)
+        Web->>Web: POST notes_path + meta to configured URL
+        Web-->>Disp: Ok
+    end
+    Disp-->>Pipe: All hooks complete (best-effort, errors logged)
+```
+
+### 7.4 Cross-platform binary distribution
+
+```mermaid
+flowchart LR
+    Source["scrybe source"]
+    Source --> CIMac["CI: macos-14 runner"]
+    Source --> CIWin["CI: windows-latest"]
+    Source --> CILin["CI: ubuntu-latest"]
+    Source --> CIAnd["CI: ubuntu-latest + Android NDK"]
+
+    CIMac --> ArtMac["scrybe-macos-arm64.tar.gz<br/>scrybe-macos-x64.tar.gz<br/>signed + notarized"]
+    CIWin --> ArtWin["scrybe-windows-x64.zip<br/>signed"]
+    CILin --> ArtLin["scrybe-linux-x64.tar.gz<br/>scrybe-linux-arm64.tar.gz<br/>scrybe.AppImage"]
+    CIAnd --> ArtAnd["scrybe.apk<br/>F-Droid metadata"]
+
+    ArtMac & ArtWin & ArtLin & ArtAnd --> Release["GitHub Release"]
+    Release --> Brew["brew tap"]
+    Release --> Scoop["scoop bucket"]
+    Release --> AUR["aur package"]
+    Release --> Flat["Flathub"]
+    Release --> FDroid["F-Droid"]
+```
+
+## 8. Failure modes and recovery
+
+### 8.1 Audio is the source of truth
+
+The single most important reliability invariant: **if the process crashes mid-session, the audio file is recoverable, and from it everything else can be regenerated.**
+
+| Failure | Impact | Recovery |
+|---|---|---|
+| STT API fails mid-chunk | One chunk missing from `transcript.md` | Retranscribe from `audio.opus` post-hoc with `scrybe retranscribe <session-id>` |
+| LLM call fails at SessionEnd | No `notes.md` | `scrybe notes <session-id>` to retry |
+| Process crashes during recording | Possible final-30s chunk loss | Audio is flushed every chunk boundary; transcript is up to last successful chunk |
+| Disk fills | Recording stops cleanly | Pre-flight check at session start: minimum 1GB free, abort if not |
+| Permission revoked mid-session (macOS) | Capture stream closes | Detected via stream error; pipeline emits `SessionFailed`, audio up to that point is preserved |
+| Microphone unplugged (USB) | System-audio continues | Mic channel goes silent in transcript; system channel continues normally |
+
+### 8.2 Provider-level failure handling
+
+```rust
+// providers/stt.rs — retry policy lives in the trait, not in each impl
+pub struct RetryPolicy {
+    pub max_attempts: u32,
+    pub initial_backoff_ms: u32,
+    pub max_backoff_ms: u32,
+}
+
+// Each provider gets a default; user can override in config.
+impl Default for RetryPolicy {
+    fn default() -> Self {
+        Self { max_attempts: 3, initial_backoff_ms: 500, max_backoff_ms: 8000 }
+    }
+}
+```
+
+For `whisper-local`, retries are pointless (deterministic local failure). For cloud providers, exponential backoff with jitter, capped at 3 attempts. After 3 failures, the chunk is recorded as `[transcription failed: <error>]` in the transcript, the audio is preserved, and the user can retry the whole session later.
+
+## 9. Performance budget
+
+### Targets on M1 Pro / 16GB
+
+Default model is `whisper-large-v3-turbo` (~800 MB resident). `whisper-large-v3` is opt-in and shifts the RAM budget up by ~2 GB.
+
+| Stage | Target (large-v3-turbo default) | Hard ceiling | With opt-in `large-v3` |
+|---|---|---|---|
+| Audio capture overhead | < 1% CPU | 5% | same |
+| VAD + chunking | < 0.5% CPU | 2% | same |
+| Whisper Metal throughput | ~10x realtime | Realtime | ~5x realtime |
+| Opus encoding | < 0.5% CPU | 2% | same |
+| Live disk I/O | < 1 MB/min | 5 MB/min | same |
+| Steady-state RAM (Whisper loaded) | < 1.2 GB | 2 GB | < 3.5 GB; ceiling 5 GB |
+| Cold model warm-up (first inference after load) | < 1.5s | 4s | < 5s; ceiling 10s |
+| Cold startup to "ready to record" (model lazy-loaded) | < 2s | 5s | same |
+| Pre-warm: 1s of silence runs through pipeline at SessionStart so first real chunk hits a hot model | required | — | required |
+| Idle (tray icon, no recording, no model loaded) | < 50 MB RAM, ~0% CPU | 100 MB, 1% | same |
+
+If the user also runs Ollama with `llama3.1:8b` (~5 GB resident), recommend cloud LLM via `OpenAiCompatLlmProvider` for any machine with ≤ 16 GB RAM. Ollama is the default only on ≥ 32 GB systems.
+
+### Targets on Pixel 8 (Android)
+
+| Stage | Target | Hard ceiling |
+|---|---|---|
+| Whisper-base (CPU) | ~1.5x realtime | Realtime |
+| Battery drain during 60min recording | < 5% | 10% |
+| RAM | < 400 MB | 1 GB |
+| APK size | < 100 MB (without model) | 250 MB |
+
+These are not aspirational; they are the build-fail thresholds. CI runs `scrybe-bench` against a fixed corpus and fails the build if any metric regresses by more than 10%.
+
+## 10. Security model
+
+### Threat model
+
+| Adversary | Threat | Mitigation |
+|---|---|---|
+| Malicious cloud STT/LLM provider | Sees full transcript content | User-selected. Document each provider's policy. Default to local |
+| Malicious dependency in supply chain | Code execution | Cargo audit in CI; minimal dependency surface; `cargo-vet` for transitive review |
+| Local-machine attacker with disk access | Reads recorded audio + transcripts | Out of scope. User's disk encryption is the right layer |
+| Network attacker | MITM on cloud provider call | TLS via `rustls`; certificate pinning not done (would break BYO cloud) |
+| Curious colleague glancing at screen | Sees transcript appearing live | Tray icon shows recording state; `transcript.md` is in user-only perms (0700/0600) |
+| Bad actor in scrybe itself (compromised release) | Trojan binary | Reproducible builds; release artifacts SLSA-attested; signing keys in HSM/hardware token only |
+| Recorded participant who did not consent | Privacy violation; possible state-wiretap criminal liability for the user | Mandatory consent step (§5); jurisdiction matrix in `LEGAL.md`; `ConsentAttestation` in `meta.toml` as evidence of good-faith compliance. Author's role is to make consent un-skippable; user's role is to use the right `--consent` mode for their jurisdiction |
+| Author of scrybe held liable for downstream misuse | Civil suit / criminal charge | Materially low risk per `LEGAL.md` §3. Mitigations: neutral marketing posture (no "record secretly" language), explicit intended-use statement in README, no managed service, Apache-2.0 §7 (warranty disclaimer) and §8 (limitation of liability) — enforceable per *Jacobsen v. Katzer* |
+
+### What we do not promise
+
+- **No anonymity claims.** If a user runs scrybe and uses a cloud STT provider, that provider sees their content. This is the user's choice.
+- **No tamper-evidence on recordings.** Audio files can be edited. If forensic chain-of-custody matters, that's a different product.
+- **No protection against the user's own OS being compromised.** If macOS is rooted, no app-level protection helps.
+
+## 11. Testing strategy
+
+Three-tier strategy. GitHub-hosted runners cannot grant Screen Recording / MediaProjection permission, so a naive "capture 5 seconds in CI" plan fails silently — the runner returns zero frames without error and the test passes vacuously. We accept this and split the test layers accordingly.
+
+#### Tier 1 — runs on every PR, all GitHub-hosted runners
+
+| Layer | Approach | Coverage target |
+|---|---|---|
+| `scrybe-core` traits | Pure-Rust unit tests with mock implementations; no platform calls | 90% |
+| Pipeline | Integration tests with `MockAudioCapture` replaying canned WAV files; `wiremock-rs` for HTTP STT/LLM | 90% |
+| Storage atomicity | Fault-injected mid-write tests using `tempfile` and platform-conditional `cfg` blocks for `F_FULLFSYNC` (mac) / `MoveFileEx` (win) | 95% |
+| Hook dispatcher | `MockHook` records calls; failure injection covers `HookFailed` event emission | 95% |
+| Consent step | Snapshot tests for each mode's `ConsentAttestation` output; `osascript`/`SendInput`/`xdotool` paths mocked | 95% |
+| Capture-adapter format negotiation | Pure-logic tests of CMSampleBuffer parsing (mac), WAVEFORMATEXTENSIBLE handling (win), PipeWire format negotiation (linux), AudioFormat translation (android) — fed canned binary fixtures, no real OS API calls | 90% |
+| Property-based | `proptest` for chunker boundaries, channel splitting, frame timestamps, transcript merge associativity | — |
+
+#### Tier 2 — gated by `SCRYBE_TEST_CAPTURE=1`, run by maintainer pre-release on local hardware
+
+| Layer | Approach |
+|---|---|
+| Capture adapters (real) | `#[ignore]` integration tests that exercise the actual platform API. Maintainer runs `cargo test -- --ignored` locally with permissions pre-granted |
+| Cross-version Whisper | Run against `tiny` / `base` / `large-v3-turbo` / `large-v3` to catch model regressions; assert WER ≤ baseline + 2% |
+| Regression corpus | 10 fixed audio clips with known ground-truth transcripts; track WER per release |
+
+#### Tier 3 — nightly self-hosted runners
+
+| Runner | Tests run |
+|---|---|
+| Mac mini M2 (with TCC permissions pre-granted via signed test-helper) | E2E capture (Core Audio Taps + ScreenCaptureKit fallback), Metal benchmarks, real Whisper |
+| Linux box with PipeWire + a Pulse-only VM | E2E capture per backend, distro coverage smoke (Ubuntu 22/24, Fedora, Debian Trixie, Arch via Docker) |
+| Windows VM with WASAPI playback synthetic source | E2E capture, MSI install/run, per-process loopback verification against Zoom/Teams/Meet test apps |
+| Pixel 8 (Phase 5+) via Tailscale + adb | E2E Android capture, battery-drain measurement, MediaProjection permission flow |
+
+Self-hosted runners post results back via a status API (no telemetry from end-user binaries — these are CI-only). Failures here block release tagging but not PR merges. A release tag is gated on **green Tier 1 + green Tier 2 manual run + green Tier 3 within last 7 days**.
+
+#### Bench gate
+
+`criterion` for pipeline stages; CI fails on >10% regression vs the previous release tag. Tracked metrics: VAD throughput, resample throughput, Whisper realtime factor (per model), Opus encode realtime factor, end-to-end realtime factor, steady-state RAM.
+
+No mocking framework. No DI container. Concrete types in production; mock structs in tests. The five extension traits make this trivial.
+
+## 12. Versioning and stability
+
+### Trait stability tiers
+
+| Tier | Surface | Stability commitment |
+|---|---|---|
+| **Tier 1 (frozen at v1.0)** | `AudioCapture`, `MeetingContext`, `LifecycleEvent`, `ConsentAttestation`, on-disk `meta.toml` schema | Breaking changes require major version bump and 6-month deprecation |
+| **Tier 2 (stable but evolving)** | `ContextProvider`, `SttProvider`, `LlmProvider`, `Diarizer`, `Hook`, CLI flags, `notes.md` template variables | Breaking changes in minor versions allowed but documented in CHANGELOG |
+| **Tier 3 (internal)** | Anything in `scrybe-core::internal::*`, pipeline structs, `transcript.md` formatting details | No stability guarantee |
+
+### Release cadence
+
+Time-boxed minor releases every 6 weeks. No "release when ready" — predictability matters more than feature completeness for an OSS project. If a feature isn't ready, it doesn't ship; the release goes out anyway with what is ready.
+
+## 13. Open architectural questions
+
+Honest list of things I haven't resolved and that would benefit from external thinking:
+
+| Question | Resolution |
+|---|---|
+| Should the `Hook` trait be sync or async? | **Resolved: async.** §4.5 — concurrent dispatch via `join_all`, `LifecycleEvent::HookFailed` surfaces failures, no silent errors |
+| Should there be a per-session config override? | No for v1; config is global. Re-evaluate at v0.5 |
+| How do we handle very long meetings (>4 hours)? | Periodic transcript flushes + chunked LLM summarization (rolling-window summary at every hour, final consolidation at SessionEnd). Concrete design at v0.4 |
+| Should we ship Parakeet alongside Whisper? | **Resolved: yes, at v0.4.** Optional `--features parakeet-local` via `sherpa-rs`. Whisper remains the v1 default for multilingual; Parakeet for English-priority users |
+| Multi-microphone capture for in-room meetings | Out of scope for v1. Would require microphone-array support. Real ask, deferred. Workaround at v0.5 is the `PyannoteOnnxDiarizer` on a single far-field mic |
+| Live transcription view for users who want it | Deferred to v2. Current design has no real-time WebSocket pipeline |
+| Should `MeetingContext.attendees` drive prompt-time per-name attribution? | **Resolved: yes.** When `attendees.len() >= 3` and `Diarizer = "binary-channel"`, the LLM prompt includes attendees and is instructed to map utterances to names where context allows. When `Diarizer = "pyannote-onnx"`, cluster IDs are mapped to attendee names heuristically (longest contiguous cluster → most-frequent attendee). |
+| What is the threading model? | **Resolved: 5-thread layout.** OS-callback capture thread → encoder + VAD/chunker tokio tasks → STT pool via `spawn_blocking` (N=1 on Mac for Metal serialization, `num_cpus/2` elsewhere) → main async task → detached hook tasks |
+
+Resolutions are committed; future open questions go in `.docs/development-plan.md` §17.
