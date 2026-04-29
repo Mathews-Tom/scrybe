@@ -59,9 +59,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: rustsec/audit-check@v2.0.0
+      # `rustsec/audit-check` compiles cargo-audit from source against the
+      # workspace's pinned 1.85.0 toolchain, but cargo-audit's transitive
+      # icu_*/time/home deps now require rustc 1.86+/1.88+. Install the
+      # prebuilt binary via taiki-e/install-action so the audit job is
+      # decoupled from the workspace toolchain pin.
+      - uses: taiki-e/install-action@v2
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          tool: cargo-audit
+      - name: cargo audit
+        run: cargo audit
 
   deny:
     name: deny (advisories, licenses, bans, sources)
