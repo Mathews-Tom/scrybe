@@ -274,6 +274,210 @@ Hooks are **statically registered in `main.rs`** behind cargo features. No dynam
 
 The dispatcher runs hooks concurrently via `futures::future::join_all`; one slow hook does not block another. Failures emit `LifecycleEvent::HookFailed` so they reach the CLI completion line and `meta.toml`. **No silent failures.**
 
+### 4.6 Error type hierarchy
+
+scrybe's error model is split along trait boundaries so each adapter crate owns its own variant set without depending on its siblings, and the orchestration layer composes them via `From` conversions. `thiserror` 1.x is used in every library crate (`scrybe-core`, `scrybe-capture-*`, future provider crates); `anyhow` 1.x is used only in `scrybe-cli` for context-chained user-facing reporting.
+
+The concrete error types are **Tier 2** stability. `LifecycleEvent::SessionFailed` and `LifecycleEvent::HookFailed` carry `Arc<dyn std::error::Error + Send + Sync + 'static>`, which is **Tier 1**. Splitting or renaming a variant inside `CaptureError` is a minor-version change; widening the dyn-object signature is a major-version change.
+
+```rust
+// scrybe-core/src/error.rs
+
+#[derive(thiserror::Error, Debug)]
+pub enum CoreError {
+    #[error("capture: {0}")]
+    Capture(#[from] CaptureError),
+
+    #[error("speech-to-text: {0}")]
+    Stt(#[from] SttError),
+
+    #[error("language model: {0}")]
+    Llm(#[from] LlmError),
+
+    #[error("storage: {0}")]
+    Storage(#[from] StorageError),
+
+    #[error("config: {0}")]
+    Config(#[from] ConfigError),
+
+    #[error("consent: {0}")]
+    Consent(#[from] ConsentError),
+
+    #[error("pipeline: {0}")]
+    Pipeline(#[from] PipelineError),
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum CaptureError {
+    #[error("permission denied: {0}")]
+    PermissionDenied(String),
+
+    #[error("device not available: {0}")]
+    DeviceUnavailable(String),
+
+    #[error("default input device changed mid-session: was {was}, now {now}")]
+    DeviceChanged { was: String, now: String },
+
+    #[error("system entered sleep state mid-session at {at_secs}s")]
+    SystemSlept { at_secs: u64 },
+
+    #[error("unsupported sample rate: {0} Hz")]
+    UnsupportedSampleRate(u32),
+
+    #[error("platform API error: {0}")]
+    Platform(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
+
+    #[error("capture stream closed unexpectedly")]
+    StreamClosed,
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum SttError {
+    #[error("model not loaded: {0}")]
+    ModelNotLoaded(String),
+
+    #[error("model file corrupt or wrong checksum: {path}")]
+    ModelCorrupt { path: PathBuf },
+
+    #[error("provider returned non-success status: {status}")]
+    ProviderStatus { status: u16 },
+
+    #[error("retry budget exhausted after {attempts} attempts")]
+    RetriesExhausted { attempts: u32 },
+
+    #[error("transport: {0}")]
+    Transport(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
+
+    #[error("decoding: {0}")]
+    Decoding(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum LlmError {
+    #[error("provider returned non-success status: {status}")]
+    ProviderStatus { status: u16 },
+
+    #[error("retry budget exhausted after {attempts} attempts")]
+    RetriesExhausted { attempts: u32 },
+
+    #[error("prompt rendering: {0}")]
+    PromptRendering(String),
+
+    #[error("transport: {0}")]
+    Transport(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum HookError {
+    #[error("hook timed out after {timeout_ms} ms")]
+    Timeout { timeout_ms: u32 },
+
+    #[error("hook returned error: {0}")]
+    Hook(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum StorageError {
+    #[error("disk full or quota exceeded at {path}")]
+    DiskFull { path: PathBuf },
+
+    #[error("session lock held by pid {pid} at {path}")]
+    SessionLocked { pid: u32, path: PathBuf },
+
+    #[error("atomic rename failed: {path}")]
+    AtomicRename { path: PathBuf, source: std::io::Error },
+
+    #[error("io: {0}")]
+    Io(#[from] std::io::Error),
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum ConfigError {
+    #[error("config file not found at {path}")]
+    NotFound { path: PathBuf },
+
+    #[error("config parse error in {path}: {message}")]
+    Parse { path: PathBuf, message: String },
+
+    #[error("unknown config key {key} (line {line})")]
+    UnknownKey { key: String, line: usize },
+
+    #[error("missing required value for {key}")]
+    Missing { key: String },
+
+    #[error("schema version {found} cannot be auto-migrated to {target}")]
+    UnsupportedSchemaVersion { found: u32, target: u32 },
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum ConsentError {
+    #[error("user aborted at consent prompt")]
+    UserAborted,
+
+    #[error("attestation could not be written to meta.toml: {0}")]
+    AttestationWriteFailed(#[source] StorageError),
+
+    #[error("notify mode requested but no chat target detected")]
+    ChatTargetMissing,
+
+    #[error("announce mode requested but TTS engine unavailable: {0}")]
+    TtsUnavailable(String),
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum PipelineError {
+    #[error("vad initialization failed: {0}")]
+    VadInit(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
+
+    #[error("resample failed: source rate {source_rate} Hz")]
+    Resample { source_rate: u32 },
+
+    #[error("opus encoder failed: {0}")]
+    OpusEncode(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
+}
+```
+
+Conventions enforced by `cargo clippy` and code review:
+
+- Library crates return `Result<T, CoreError>` (or a narrower variant) at the public surface. Internal callers can return narrower variants and rely on `#[from]` for promotion.
+- Every `#[source]` chain renders end-to-end via `Display`. CLI uses `anyhow::Error::context` to add user-facing prefixes; library crates never call `anyhow!` themselves.
+- `Box<dyn Error + Send + Sync + 'static>` is the only acceptable opaque variant; bare `Box<dyn Error>` is forbidden because it leaks `!Send` into async contexts.
+- `unwrap()` and `expect()` are forbidden outside `#[cfg(test)]` and `build.rs`. `clippy::unwrap_used` and `clippy::expect_used` are enabled at deny level in `scrybe-core/src/lib.rs` and every adapter crate.
+- Fault-injection tests construct error variants directly; no string-matching on `Display` output.
+
+Adapter crates declare their own narrower error type and convert at the boundary:
+
+```rust
+// scrybe-capture-mac/src/error.rs
+#[derive(thiserror::Error, Debug)]
+pub enum MacCaptureError {
+    #[error("Core Audio Tap requires macOS 14.4 or later (found {found})")]
+    CoreAudioTapUnsupported { found: String },
+
+    #[error("ScreenCaptureKit error: {0}")]
+    ScreenCaptureKit(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
+
+    #[error("AVAudioEngine error: {0}")]
+    AvAudioEngine(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
+
+    #[error("TCC permission denied for {api}")]
+    TccDenied { api: &'static str },
+}
+
+impl From<MacCaptureError> for CaptureError {
+    fn from(e: MacCaptureError) -> Self {
+        match e {
+            MacCaptureError::TccDenied { api } => {
+                CaptureError::PermissionDenied(format!("macOS TCC: {api}"))
+            }
+            other => CaptureError::Platform(Box::new(other)),
+        }
+    }
+}
+```
+
+This pattern keeps `scrybe-core` ignorant of platform-specific error vocabulary while preserving the full error chain for diagnostic display.
+
 ## 5. The pipeline in detail
 
 ```mermaid
