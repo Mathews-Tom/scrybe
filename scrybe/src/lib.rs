@@ -17,9 +17,6 @@
 //! No public API is exposed at this version. Depend on a later release
 //! once the `scrybe-core` crate ships.
 
-#![doc(html_root_url = "https://docs.rs/scrybe/0.1.0-alpha.1")]
-#![cfg_attr(docsrs, feature(doc_cfg))]
-
 /// Project name as exposed in CLI banners and crate metadata.
 pub const NAME: &str = "scrybe";
 
