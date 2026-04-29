@@ -77,7 +77,7 @@ use objc2_core_audio::{
     AudioHardwareDestroyAggregateDevice, AudioHardwareDestroyProcessTap,
     AudioObjectGetPropertyData, AudioObjectID, AudioObjectPropertyAddress, CATapDescription,
 };
-use objc2_core_audio_types::{AudioBufferList, AudioStreamBasicDescription};
+use objc2_core_audio_types::{AudioBufferList, AudioStreamBasicDescription, AudioTimeStamp};
 use objc2_core_foundation::{CFDictionary, CFRetained};
 use objc2_foundation::{NSArray, NSDictionary, NSNumber, NSObject, NSString};
 use tokio::sync::mpsc::UnboundedSender;
@@ -109,10 +109,11 @@ pub(crate) struct TapStream {
     started: bool,
     sender: SharedSender,
     /// Negotiated sample rate from the live tap. Read by hardware
-    /// tests; not currently surfaced through `MacCapture::capabilities`
-    /// because capabilities are reported pre-start.
-    pub(crate) sample_rate: u32,
-    pub(crate) channels: u16,
+    /// tests in this module's `tests` submodule; not currently
+    /// surfaced through `MacCapture::capabilities` because
+    /// capabilities are reported pre-start.
+    sample_rate: u32,
+    channels: u16,
     /// Preserved so the block can be reconstructed across restarts.
     /// Held as a field rather than dropped immediately because
     /// `AudioDeviceCreateIOProcIDWithBlock` documents that the block is
@@ -137,7 +138,48 @@ pub(crate) struct TapStream {
 #[allow(clippy::non_send_fields_in_send_ty)]
 unsafe impl Send for TapStream {}
 
-use objc2_core_audio_types::AudioTimeStamp;
+/// Drop-on-error guard for a process tap. Holds the tap's
+/// [`AudioObjectID`] and destroys it when dropped. Used to make
+/// [`TapStream::create`]'s failure-cleanup linear: each fallible
+/// step propagates with `?` and the guard's `Drop` releases the tap;
+/// on success, [`TapGuard::release`] consumes the guard so the
+/// returned [`TapStream`] takes ownership.
+struct TapGuard(AudioObjectID);
+
+impl TapGuard {
+    const fn release(self) -> AudioObjectID {
+        let id = self.0;
+        std::mem::forget(self);
+        id
+    }
+}
+
+impl Drop for TapGuard {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = AudioHardwareDestroyProcessTap(self.0);
+        }
+    }
+}
+
+/// Drop-on-error guard for an aggregate device. See [`TapGuard`].
+struct AggregateGuard(AudioObjectID);
+
+impl AggregateGuard {
+    const fn release(self) -> AudioObjectID {
+        let id = self.0;
+        std::mem::forget(self);
+        id
+    }
+}
+
+impl Drop for AggregateGuard {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = AudioHardwareDestroyAggregateDevice(self.0);
+        }
+    }
+}
 
 impl TapStream {
     /// Construct, register, and prepare (but do not start) a process
@@ -176,41 +218,35 @@ impl TapStream {
             tap_description.setPrivate(true);
         }
 
-        // 2. Create the process tap.
+        // 2. Create the process tap. Wrap it in a TapGuard so any
+        // `?` between here and the end of the function tears the tap
+        // down before propagating the error.
         let mut tap_id: AudioObjectID = 0;
         let status =
             unsafe { AudioHardwareCreateProcessTap(Some(&tap_description), &raw mut tap_id) };
         check_status(status, "AudioHardwareCreateProcessTap")?;
         debug!(tap_id, "process tap created");
+        let tap_guard = TapGuard(tap_id);
 
         // 3a. Read the tap's UID for the aggregate-device dictionary.
-        let tap_uid = read_object_uid(tap_id, kAudioTapPropertyUID).map_err(|e| {
-            // tap leaked if we early-return; release it before returning
-            unsafe {
-                let _ = AudioHardwareDestroyProcessTap(tap_id);
-            }
-            e
-        })?;
+        let tap_uid = read_object_uid(tap_id, kAudioTapPropertyUID)?;
 
         // 3b. Read the tap's stream format so we can advertise the
         // correct sample rate and channel count to scrybe-core.
-        let format = read_tap_format(tap_id).map_err(|e| {
-            unsafe {
-                let _ = AudioHardwareDestroyProcessTap(tap_id);
-            }
-            e
-        })?;
+        let format = read_tap_format(tap_id)?;
         let sample_rate = format.mSampleRate as u32;
-        let channels = u16::try_from(format.mChannelsPerFrame).unwrap_or(2);
+        let channels = u16::try_from(format.mChannelsPerFrame).map_err(|_| {
+            MacCaptureError::CoreAudioTapUnsupported {
+                found: format!(
+                    "implausible channel count from kAudioTapPropertyFormat: {}",
+                    format.mChannelsPerFrame
+                ),
+            }
+        })?;
         debug!(sample_rate, channels, "tap stream format negotiated");
 
         // 4. Aggregate device dictionary with the tap as a sub-tap.
-        let aggregate_device_dict = build_aggregate_device_dict(&tap_uid).map_err(|e| {
-            unsafe {
-                let _ = AudioHardwareDestroyProcessTap(tap_id);
-            }
-            e
-        })?;
+        let aggregate_device_dict = build_aggregate_device_dict(&tap_uid)?;
         let mut aggregate_device_id: AudioObjectID = 0;
         let status = unsafe {
             AudioHardwareCreateAggregateDevice(
@@ -218,13 +254,9 @@ impl TapStream {
                 NonNull::from(&mut aggregate_device_id),
             )
         };
-        if let Err(e) = check_status(status, "AudioHardwareCreateAggregateDevice") {
-            unsafe {
-                let _ = AudioHardwareDestroyProcessTap(tap_id);
-            }
-            return Err(e);
-        }
+        check_status(status, "AudioHardwareCreateAggregateDevice")?;
         debug!(aggregate_device_id, "aggregate device created");
+        let aggregate_guard = AggregateGuard(aggregate_device_id);
 
         // 5. Install the IO block. The block captures the shared sender
         // and the negotiated format so it can construct AudioFrames
@@ -252,14 +284,18 @@ impl TapStream {
                 if samples.is_empty() {
                     return;
                 }
-                let prior = block_counter.load(Ordering::Relaxed);
+                let frames_added =
+                    u64::try_from(samples.len()).unwrap_or(0) / u64::from(channels.max(1));
+                // `fetch_add` returns the prior value atomically — one
+                // op instead of `load`+`fetch_add`. CoreAudio serializes
+                // IO callbacks per device today, but using the atomic
+                // primitive that matches the operation removes a
+                // load-bearing assumption from the threading model.
+                let prior = block_counter.fetch_add(frames_added, Ordering::Relaxed);
                 let timestamp_ns = prior
                     .saturating_mul(1_000_000_000)
                     .checked_div(u64::from(sample_rate.max(1)))
                     .unwrap_or(0);
-                let frames_added =
-                    u64::try_from(samples.len()).unwrap_or(0) / u64::from(channels.max(1));
-                block_counter.fetch_add(frames_added, Ordering::Relaxed);
                 let frame = AudioFrame::from_slice(
                     &samples,
                     channels,
@@ -267,12 +303,17 @@ impl TapStream {
                     timestamp_ns,
                     FrameSource::System,
                 );
-                if let Ok(guard) = block_sender.lock() {
-                    if let Some(tx) = guard.as_ref() {
-                        if tx.send(Ok(frame)).is_err() {
-                            // Receiver was dropped — capture has been
-                            // stopped; nothing else to do.
+                match block_sender.lock() {
+                    Ok(guard) => {
+                        if let Some(tx) = guard.as_ref() {
+                            // `send` returns Err only if the receiver
+                            // was dropped — capture has been stopped;
+                            // dropping the frame is the right behavior.
+                            let _ = tx.send(Ok(frame));
                         }
+                    }
+                    Err(_) => {
+                        tracing::error!("sender mutex poisoned in IO callback; frame dropped");
                     }
                 }
             },
@@ -287,18 +328,15 @@ impl TapStream {
                 RcBlock::as_ptr(&io_block),
             )
         };
-        if let Err(e) = check_status(status, "AudioDeviceCreateIOProcIDWithBlock") {
-            unsafe {
-                let _ = AudioHardwareDestroyAggregateDevice(aggregate_device_id);
-                let _ = AudioHardwareDestroyProcessTap(tap_id);
-            }
-            return Err(e);
-        }
+        check_status(status, "AudioDeviceCreateIOProcIDWithBlock")?;
         debug!("IO proc id installed on aggregate device");
 
+        // Success: hand the resource ids over to TapStream and disarm
+        // the cleanup guards so Drop doesn't free what TapStream now
+        // owns.
         Ok(Self {
-            tap_id,
-            aggregate_device_id,
+            tap_id: tap_guard.release(),
+            aggregate_device_id: aggregate_guard.release(),
             io_proc_id,
             started: false,
             sender: shared_sender,
@@ -335,17 +373,14 @@ impl TapStream {
     pub fn stop(&mut self) -> Result<(), MacCaptureError> {
         if !self.started {
             // Even when not started, drop the sender so the receiver
-            // sees an end-of-stream.
-            if let Ok(mut guard) = self.sender.lock() {
-                guard.take();
-            }
+            // sees an end-of-stream. Recover from poisoning so a
+            // panicking IO callback cannot leave the receiver hung.
+            drop_sender(&self.sender);
             return Ok(());
         }
         let status = unsafe { AudioDeviceStop(self.aggregate_device_id, self.io_proc_id) };
         self.started = false;
-        if let Ok(mut guard) = self.sender.lock() {
-            guard.take();
-        }
+        drop_sender(&self.sender);
         check_status(status, "AudioDeviceStop")
     }
 }
@@ -398,9 +433,10 @@ impl Drop for TapStream {
 ///
 /// # Safety
 ///
-/// `list` must point at a CoreAudio-owned [`AudioBufferList`] whose
-/// `mBuffers` array has at least `mNumberBuffers` elements and whose
-/// `mData` pointers are valid for `mDataByteSize` bytes.
+/// `list` must reference a CoreAudio-owned [`AudioBufferList`] whose
+/// `mBuffers` flexible array has at least `mNumberBuffers` elements
+/// and whose `mData` pointers are valid for `mDataByteSize` bytes for
+/// the duration of this call.
 pub(crate) unsafe fn interleaved_f32_samples(list: &AudioBufferList) -> Vec<f32> {
     let n_buffers = list.mNumberBuffers as usize;
     if n_buffers == 0 {
@@ -570,8 +606,34 @@ fn check_status(status: i32, op: &'static str) -> Result<(), MacCaptureError> {
     })
 }
 
+/// Drop the channel sender so the receiver observes end-of-stream,
+/// recovering from a poisoned mutex if a previous IO callback panicked.
+/// Mirrors the recovery pattern in [`MacCapture::frames`] so a poisoned
+/// sender mutex never leaves the pipeline blocked on a stream that will
+/// never close.
+fn drop_sender(sender: &SharedSender) {
+    let mut guard = match sender.lock() {
+        Ok(g) => g,
+        Err(poisoned) => {
+            warn!("sender mutex poisoned in TapStream::stop; recovering inner state");
+            poisoned.into_inner()
+        }
+    };
+    guard.take();
+}
+
 fn c_str_to_str(c: &CStr) -> &str {
-    c.to_str().unwrap_or("")
+    // Apple's `kAudioAggregateDevice*Key` and `kAudioSubTapUIDKey`
+    // constants are documented as ASCII C strings; failing decode would
+    // mean Apple shipped a non-ASCII framework constant, which would
+    // break far more than this binding. Fail loudly so a bisect lands
+    // on the offending toolchain bump rather than on a silently
+    // malformed CFDictionary.
+    #[allow(clippy::expect_used)]
+    {
+        c.to_str()
+            .expect("Apple framework key constants are guaranteed ASCII/UTF-8")
+    }
 }
 
 #[cfg(test)]
@@ -634,6 +696,75 @@ mod tests {
         let out = unsafe { interleaved_f32_samples(&list) };
 
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn test_interleaved_f32_samples_stereo_interleaved_preserves_channel_order() {
+        // Stereo interleaved layout: one buffer, alternating L/R samples.
+        let mut buf_samples: Vec<f32> = vec![0.1, -0.1, 0.2, -0.2];
+        let buffer = AudioBuffer {
+            mNumberChannels: 2,
+            mDataByteSize: u32::try_from(buf_samples.len() * std::mem::size_of::<f32>()).unwrap(),
+            mData: buf_samples.as_mut_ptr().cast::<c_void>(),
+        };
+        let list = AudioBufferList {
+            mNumberBuffers: 1,
+            mBuffers: [buffer],
+        };
+
+        let out = unsafe { interleaved_f32_samples(&list) };
+
+        assert_eq!(out, vec![0.1, -0.1, 0.2, -0.2]);
+    }
+
+    #[test]
+    #[allow(clippy::cast_ptr_alignment)]
+    fn test_interleaved_f32_samples_planar_two_channels_interleaves_lr_pairs() {
+        // CoreAudio lays out a non-interleaved buffer list as
+        // `mNumberBuffers (u32) | padding | AudioBuffer[N]` with the
+        // `[AudioBuffer; 1]` `mBuffers` slot acting as the head of the
+        // flexible array. Reproducing that layout from safe Rust is
+        // not possible because the public struct fixes the array to
+        // length 1, so we allocate raw bytes that satisfy
+        // `AudioBufferList`'s alignment and write the header followed
+        // by two `AudioBuffer` records. This is exactly the layout the
+        // function under test will see at runtime.
+        let mut left: Vec<f32> = vec![1.0, 2.0];
+        let mut right: Vec<f32> = vec![10.0, 20.0];
+        let buf_l = AudioBuffer {
+            mNumberChannels: 1,
+            mDataByteSize: u32::try_from(left.len() * std::mem::size_of::<f32>()).unwrap(),
+            mData: left.as_mut_ptr().cast::<c_void>(),
+        };
+        let buf_r = AudioBuffer {
+            mNumberChannels: 1,
+            mDataByteSize: u32::try_from(right.len() * std::mem::size_of::<f32>()).unwrap(),
+            mData: right.as_mut_ptr().cast::<c_void>(),
+        };
+
+        let total = std::mem::offset_of!(AudioBufferList, mBuffers)
+            + 2 * std::mem::size_of::<AudioBuffer>();
+        let alignment = std::mem::align_of::<AudioBufferList>();
+        let layout = std::alloc::Layout::from_size_align(total, alignment).unwrap();
+        // SAFETY: layout has nonzero size; alloc_zeroed returns a
+        // valid pointer or null. We assert non-null and then
+        // initialize every field that interleaved_f32_samples reads.
+        let raw = unsafe { std::alloc::alloc_zeroed(layout) };
+        assert!(!raw.is_null(), "allocator returned null");
+        let out = unsafe {
+            let header = raw.cast::<AudioBufferList>();
+            (*header).mNumberBuffers = 2;
+            let buffers_start = raw
+                .add(std::mem::offset_of!(AudioBufferList, mBuffers))
+                .cast::<AudioBuffer>();
+            buffers_start.write(buf_l);
+            buffers_start.add(1).write(buf_r);
+            let result = interleaved_f32_samples(&*header);
+            std::alloc::dealloc(raw, layout);
+            result
+        };
+
+        assert_eq!(out, vec![1.0, 10.0, 2.0, 20.0]);
     }
 
     #[test]
