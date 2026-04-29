@@ -18,11 +18,15 @@
 
 pub mod capture;
 pub mod config;
+pub mod consent;
 pub mod context;
 pub mod diarize;
 pub mod error;
 pub mod hooks;
+pub mod notes;
+pub mod pipeline;
 pub mod providers;
+pub mod session;
 pub mod storage;
 pub mod types;
 
