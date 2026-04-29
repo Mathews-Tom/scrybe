@@ -261,7 +261,7 @@ impl Config {
     /// `schema_version` exceeds [`CURRENT_SCHEMA_VERSION`].
     pub fn from_toml_str(text: &str, source_path: &Path) -> Result<Self, ConfigError> {
         let parsed: Self =
-            toml::from_str(text).map_err(|e| classify_toml_error(&e, source_path))?;
+            toml::from_str(text).map_err(|e| classify_toml_error(&e, source_path, text))?;
         validate_schema_version(parsed.schema_version)?;
         Ok(parsed)
     }
@@ -297,18 +297,11 @@ const fn validate_schema_version(found: u32) -> Result<(), ConfigError> {
     }
 }
 
-fn classify_toml_error(err: &toml::de::Error, source_path: &Path) -> ConfigError {
+fn classify_toml_error(err: &toml::de::Error, source_path: &Path, text: &str) -> ConfigError {
     let message = err.message();
     if let Some(unknown_key) = message.strip_prefix("unknown field `") {
         if let Some((key, _)) = unknown_key.split_once('`') {
-            let line = err.span().map_or(1, |span| {
-                let prefix_len = span.start.min(usize::MAX);
-                // Span byte index converts to a 1-indexed line via newline counts.
-                // toml-rs does not expose line/column directly, so this is
-                // a best-effort approximation that uses the raw input length
-                // when available; tests assert the line is reported as ≥ 1.
-                prefix_len.saturating_add(1).min(u32::MAX as usize)
-            });
+            let line = err.span().map_or(1, |span| line_of_byte(text, span.start));
             return ConfigError::UnknownKey {
                 key: key.to_string(),
                 line,
@@ -319,6 +312,21 @@ fn classify_toml_error(err: &toml::de::Error, source_path: &Path) -> ConfigError
         path: source_path.to_owned(),
         message: message.to_string(),
     }
+}
+
+/// 1-indexed line number for a byte offset in `text`. `toml::de::Error::span`
+/// returns a byte range; `toml-rs` does not expose line/column directly,
+/// so this counts newlines in the prefix up to `byte`. Pulling in
+/// `bytecount` for SIMD newline counting would be overkill for a config
+/// file that fits on a screen; the naive scan runs once per parse error.
+#[allow(clippy::naive_bytecount)]
+fn line_of_byte(text: &str, byte: usize) -> usize {
+    let clamped = byte.min(text.len());
+    text.as_bytes()[..clamped]
+        .iter()
+        .filter(|&&b| b == b'\n')
+        .count()
+        + 1
 }
 
 #[cfg(test)]
@@ -382,18 +390,15 @@ api_key_env = "GROQ_API_KEY"
     }
 
     #[test]
-    fn test_config_rejects_unknown_top_level_field() {
-        let toml = r"
-schema_version = 1
-weight = 42
-";
+    fn test_config_rejects_unknown_top_level_field_and_reports_correct_line() {
+        let toml = "schema_version = 1\nweight = 42\n";
 
         let err = Config::from_toml_str(toml, &fake_path()).unwrap_err();
 
         match err {
             ConfigError::UnknownKey { key, line } => {
                 assert_eq!(key, "weight");
-                assert!(line >= 1);
+                assert_eq!(line, 2, "weight is on line 2 of the source");
             }
             ConfigError::Parse { message, .. } => {
                 assert!(
@@ -403,6 +408,17 @@ weight = 42
             }
             other => panic!("expected UnknownKey or Parse, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_line_of_byte_counts_newlines_to_produce_1_indexed_line_number() {
+        let text = "first\nsecond\nthird\n";
+
+        assert_eq!(line_of_byte(text, 0), 1);
+        assert_eq!(line_of_byte(text, 5), 1);
+        assert_eq!(line_of_byte(text, 6), 2);
+        assert_eq!(line_of_byte(text, 13), 3);
+        assert_eq!(line_of_byte(text, 9_999), 4);
     }
 
     #[test]
