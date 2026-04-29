@@ -79,11 +79,12 @@ Indirect (transitive) dependencies inherit the same rules but are vetted lazily:
 | Crate | Version | License | Host | Role | Notes |
 |---|---|---|---|---|---|
 | `tempfile` | `3` | MIT OR Apache-2.0 | github.com/Stebalien/tempfile | `NamedTempFile::new_in` for atomic writes | See `system-design.md` §8.3. |
+| `libc` | `0.2` | MIT OR Apache-2.0 | github.com/rust-lang/libc | `fcntl(F_FULLFSYNC)` on macOS for true platter durability; raw POSIX syscalls in storage and capture adapters | Unix-only direct dep (`#[cfg(unix)]`). `tokio::fs::File::sync_all` and `std::fs::File::sync_all` call `fsync(2)` on macOS, which only commits to drive cache; `libc::fcntl` with `F_FULLFSYNC` is the only correct primitive. See `system-design.md` §8.3. |
 | `fs2` | `0.4` | MIT OR Apache-2.0 | github.com/danburkert/fs2-rs | Cross-platform `flock`/`LockFileEx` for `pid.lock` | Maintained but slow-moving; vetted in `cargo-vet`. |
 | `directories` | `5` | MIT OR Apache-2.0 | github.com/dirs-dev/directories-rs | Platform-conventional config and data paths | macOS → `~/Library/Application Support/dev.scrybe.scrybe/`; Windows → `%APPDATA%\scrybe\scrybe\`; Linux → `$XDG_CONFIG_HOME/scrybe/`. |
 | `chrono` | `0.4` | MIT OR Apache-2.0 | github.com/chronotope/chrono | Timestamps in `meta.toml` and folder names | `serde` feature for TOML round-trip. |
 | `ulid` | `1` | MIT | github.com/dylanhart/ulid-rs | Folder-suffix uniqueness within a minute | Replaces UUID v4 here because it sorts lexicographically and stays grep-friendly. |
-| `git2` | `0.20` | GPL-2.0 with linking exception OR Apache-2.0 | github.com/rust-lang/git2-rs | `Hook::Git` reference impl | The GPL-2.0-with-linking-exception is documented in `cargo-deny.toml` as compatible with our Apache-2.0 distribution. |
+| `git2` | `0.20` | binding crate: MIT OR Apache-2.0; statically links libgit2 (GPL-2.0-with-linking-exception) | github.com/rust-lang/git2-rs (binding) and github.com/libgit2/libgit2 (C library) | `Hook::Git` reference impl | The Rust binding crate is dual-licensed MIT/Apache-2.0; the underlying libgit2 C library is GPL-2.0 with a linking exception that explicitly permits static linking into proprietary or differently-licensed binaries. Both layers are documented in `cargo-deny.toml`. |
 
 ### 3.5 CLI, errors, observability
 
