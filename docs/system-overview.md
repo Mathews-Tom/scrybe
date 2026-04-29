@@ -1,13 +1,13 @@
 # scrybe — System Overview
 
 > **Meeting notes that never leave your laptop.**
-> Open-source meeting transcription and notes. Captures audio without bots, runs on your laptop, your data on disk.
+> Open-source meeting notetaker for your own meetings. Capture, transcribe, and get AI-generated notes — all on your machine.
 
 ---
 
 ## 1. What scrybe is
 
-scrybe is a single-binary, open-source meeting transcription and notetaking tool. It records meetings on your machine, transcribes them locally or via any OpenAI-compatible cloud provider, and produces structured AI summaries — without joining the call as a bot, without uploading audio anywhere by default, and without an account.
+scrybe is a single-binary, open-source meeting notetaker. It captures the meeting audio on your machine, transcribes it locally (or via any OpenAI-compatible cloud provider you point it at), and produces structured AI-generated notes. No bot joins the call. Nothing uploads to a vendor cloud by default. There is no account.
 
 | Attribute | Value |
 |---|---|
@@ -20,38 +20,38 @@ scrybe is a single-binary, open-source meeting transcription and notetaking tool
 | **Network egress** | Zero by default. Only present if the user configures a cloud provider |
 | **Audio capture** | Native OS APIs only. No virtual audio driver required. macOS uses Core Audio Taps (14.4+) primary, ScreenCaptureKit fallback (13.0–14.3) |
 | **Account system** | None. There is nothing to sign up for |
-| **Recording consent** | Mandatory pre-recording step (configurable, not removable). Recording laws are jurisdiction-dependent — see `LEGAL.md` |
+| **Courtesy notification** | Mandatory pre-start step (configurable, not removable). Posts a brief notice into the meeting chat or plays a short spoken disclosure. See `LEGAL.md` for jurisdiction-specific guidance |
 | **Project posture** | Open-source software. The author publishes a binary; users run it on their own hardware. There is no managed service, no hosted endpoint, no data flow back to the author |
 
 ## 2. Why scrybe exists
 
-The meeting notetaker market has split into three camps. None of them serves users with privacy constraints, regulatory requirements, or aesthetic preferences for local-first software.
+The meeting-notetaker market has split into three camps. None of them serves users who prefer their meetings to stay on their own machine.
 
 ### The three existing camps
 
 | Camp | Examples | Mechanism | Failure mode for the target user |
 |---|---|---|---|
-| Bot-based SaaS | Otter, Fireflies, Read.ai, Fathom, Avoma | A virtual participant joins the call and records | Awkward and political — visible to all attendees, often blocked by IT |
-| Audio-capture SaaS | Granola, tldv (some modes) | Local audio capture, then upload to vendor cloud | Cloud upload is the dealbreaker for regulated industries; account required |
-| OSS notetakers | Meetily, char/anarlog (now dormant), Amical | Local capture + local STT + cloud or local LLM | Architectural sprawl. Single-platform reality despite cross-platform claims. Mid-migration debt visible in the repos |
+| Bot-based SaaS | Otter, Fireflies, Read.ai, Fathom, Avoma | A virtual participant joins the call | Awkward, visible to all attendees, often blocked by IT |
+| Audio-capture SaaS | Granola, tldv (some modes) | Local capture, then vendor-cloud upload | Vendor-cloud upload is the dealbreaker for many users; account required |
+| OSS notetakers | Meetily, char/anarlog, Amical | Local capture + local STT + cloud or local LLM | Architectural sprawl. Single-platform reality despite cross-platform claims |
 
 ### The user who falls through every gap
 
 Five concrete personas, none well-served by anything currently shipping:
 
-| Persona | Constraint | What they currently do |
+| Persona | Why current options don't fit | What they currently do |
 |---|---|---|
-| Healthcare/legal/finance professional | Cannot upload meeting audio to vendor clouds for compliance reasons (HIPAA, attorney-client privilege, MAR/MNPI) | Manual notes, or skips notes entirely |
-| Open-source maintainer | Won't use SaaS notetakers on principle | Manual notes, or `obsidian-recorder` + manual transcription |
-| Independent consultant | Can't have a bot join client calls without explaining what it is and why | Manual notes |
+| Privacy-conscious professional | Doesn't want meeting audio leaving their machine | Manual notes, or skips notes entirely |
+| Open-source maintainer | Prefers software they can audit; doesn't want a SaaS account | Manual notes, or ad-hoc Whisper scripts |
+| Independent consultant | Doesn't want a visible bot joining client calls | Manual notes |
 | Solo developer / SRE | BYO local model, filesystem storage, minimal dependencies, no telemetry | Half-built local Whisper scripts, abandoned monthly |
-| Multi-language professional outside the US/EU | English-centric SaaS tools, expensive cloud STT for their language, latency to nearest region | Manual notes in native language |
+| Multi-language professional outside the US/EU | English-centric SaaS, latency to the nearest cloud region | Manual notes in their native language |
 
-The bot-based and SaaS audio-capture tools are not technical failures for these users. They are policy failures. No amount of feature improvement closes the gap; the architecture is the problem.
+The bot-based and SaaS audio-capture tools aren't technical failures for these users — they're product-fit failures. The architecture is the gap.
 
-### The aesthetic case, separate from the policy case
+### The aesthetic case
 
-A growing developer cohort actively prefers local-first software for reasons that have nothing to do with compliance: reproducibility, longevity beyond a vendor's funding runway, the ability to grep meeting notes the same way they grep code, the absence of telemetry. This cohort is small in absolute terms but disproportionately influential — they write the blog posts, file the issues, and contribute the patches that compound an OSS project's surface area.
+A growing developer cohort prefers local-first software for reasons unrelated to any specific constraint: reproducibility, longevity beyond a vendor's funding runway, the ability to grep their notes the same way they grep code, the absence of telemetry. Small in absolute terms, disproportionately influential — they write the blog posts and file the issues that compound an OSS project's surface area.
 
 ## 3. How it works
 
@@ -69,9 +69,9 @@ Capturing **system audio** (the other end of a Zoom/Teams/Meet call) without ins
 | Android | `AudioPlaybackCaptureConfiguration` + MediaProjection | No | API 29 (Android 10) |
 | **iOS** | **Not possible from arbitrary apps. Excluded by Apple's sandbox model. Out of scope.** | — | — |
 
-scrybe captures the **microphone on one channel and system audio on the other**, transcribes each independently, and merges by timestamp. This produces binary speaker attribution (`Me:` / `Them:`) for **one-on-one remote calls** without diarization models — a deliberate engineering choice to delete a problem category for the modal 1:1 use case.
+scrybe captures the **microphone on one channel and meeting audio on the other**, transcribes each independently, and merges by timestamp. This produces binary speaker labels (`Me:` / `Them:`) for **one-on-one remote calls** without a diarization model — a deliberate choice to delete a problem category for the modal 1:1 use case.
 
-The honest scope: binary `Me`/`Them` is correct for 1:1 remote calls and degrades for in-room meetings (one mic, multiple physical speakers) and ≥3-party remote calls (one system channel, multiple voices labeled `Them:`). The `Diarizer` trait (system-design §4.4) accepts a neural fallback (`pyannote-onnx`, v0.5+) for those cases. v0.1 ships the channel-split path; users with multi-party meetings get correct transcript content with a single `Them:` label per non-self utterance until v0.5.
+The honest scope: binary `Me`/`Them` is correct for 1:1 remote calls and degrades for in-room meetings (one mic, multiple physical speakers) and ≥3-party remote calls (one meeting-audio channel, multiple voices labeled `Them:`). The `Diarizer` trait (system-design §4.4) accepts a neural fallback (`pyannote-onnx`, v0.5+) for those cases. v0.1 ships the channel-split path; users with multi-party meetings get correct transcript content with a single `Them:` label per non-self utterance until v0.5.
 
 ### Pipeline
 
@@ -132,11 +132,11 @@ Numbers below are best public estimates as of April 2026; OSS metrics are exact,
 2. **No OSS option with truly minimal storage.** Every existing OSS option ships SQLite or libsql, sometimes with vector DBs on top. None of them treat the filesystem as the primary data model.
 3. **No OSS option that has resisted the urge to add accounts/sync.** Meetily ships a paid Pro tier with hosted AI. The OSS-pure-forever niche is unoccupied.
 4. **No option (OSS or SaaS) that ships on Android with system audio capture.** Voice memo apps exist; meeting capture apps do not.
-5. **No OSS option ships an in-meeting consent UX.** SaaS tools (Granola, Read.ai, Fireflies, Fathom) have different versions of this; OSS tools don't have it at all. *Brewer v. Otter.ai* (2025) and *Cruz v. Fireflies.AI* (2025, BIPA) are putting consent UX on the regulatory map. scrybe ships consent-by-default. |
+5. **No OSS option ships an in-meeting courtesy notification.** SaaS tools like Granola post a chat message at meeting start; OSS tools don't have this at all. scrybe ships courtesy notification by default.
 
 ### Recent market signals
 
-Granola raised a Series B in 2024 valuing the company at a reported ~$250M. Otter is profitable, large, and now defending a class action (*Brewer v. Otter.ai*, N.D. Cal. Aug 2025). Fireflies is defending a separate BIPA action (*Cruz v. Fireflies.AI*, Dec 2025). Meetily passed 11,400 GitHub stars in early 2026 and now ships a paid tier. The team behind char rebranded to char.com (productivity-focused), but the open-source meeting-recorder under the `fastrepl/anarlog` repo is **active** with commits in April 2026 — earlier framing of "abandoned" was wrong. The market is real and growing; the SaaS-side consent model is under legal pressure; the OSS shelf has two active Rust competitors (Meetily, anarlog) but no cross-platform-with-Linux-and-Android option, and no in-meeting consent UX.
+Granola raised a Series B in 2024 valuing the company at a reported ~$250M. Otter is profitable and large. Meetily passed 11,400 GitHub stars in early 2026 and now ships a paid tier. The team behind char rebranded to char.com (productivity-focused), but the open-source meeting-notetaker under the `fastrepl/anarlog` repo is **active** with commits in April 2026 — earlier framing of "abandoned" was wrong. The market is real and growing. The OSS shelf has two active Rust competitors (Meetily, anarlog) but no cross-platform option that covers Linux and Android, and no in-meeting courtesy notification.
 
 This is the window. The successful OSS project is climbing the SaaS ladder; the technically excellent OSS project has moved on. A clean, lean, multi-platform OSS option has no current incumbent.
 
@@ -153,8 +153,8 @@ This is the window. The successful OSS project is climbing the SaaS ladder; the 
 | Google tightens MediaProjection on Android 16+ | Medium | Medium | Already a moving target; track AOSP; degrade gracefully to mic-only |
 | Bus factor (solo maintainer) | Default state | High | Documented architecture, small core, Apache-2.0 license — explicit patent grant under §3 plus attribution-preserving §4 — so forks survive |
 | Meetily / anarlog ship scrybe's feature set first | Medium | Medium | Differentiation is Linux+Android coverage + consent-by-default + filesystem-only, not first-mover. Even if a competitor reaches Linux+Android, the OSS world is better off |
-| Author legal exposure for publishing a recording-adjacent tool | Low | Medium | See `LEGAL.md`. HHS FAQ 256, GDPR Art. 4 controller test, AI Act Recital 102 FOSS carve-out, *MGM v. Grokster* inducement standard, Apache-2.0 §7–§8 enforceability all favor the OSS publisher posture. Mitigation: ship consent UX as default; neutral marketing; no managed service |
-| Two-party-consent jurisdiction litigation against a downstream user | Medium | Low (for author) | User-facing risk, not author-facing. Mitigation is education + consent UX. `LEGAL.md` documents jurisdiction matrix |
+| Author legal posture for publishing an open-source notetaker | Low | Medium | See `LEGAL.md` for the publisher-posture summary. Mitigations: ship courtesy notification as default; neutral marketing; no managed service |
+| Jurisdiction-specific recording rules affect downstream users | Medium | Low (for author) | User-facing concern, not author-facing. Mitigation is education + courtesy-notification UX. `LEGAL.md` documents the jurisdiction reference matrix |
 
 ### Risks I'm explicitly choosing to accept
 
@@ -193,21 +193,19 @@ These are not hypothetical personas. They are the testable hypotheses that justi
 
 ### Example 1 — Solo consultant on a client call
 
-A consultant is on a Google Meet with a new client. They press a global hotkey. scrybe begins recording mic + system audio. The macOS screen-recording orange dot appears (this is honest — explained in onboarding). The call ends; they press the hotkey again. Within ~30 seconds, `~/scrybe/2026-04-29-1500-acme-discovery/notes.md` exists with action items, decisions, and follow-ups. Nobody on the client side ever knew a tool was involved. The notes never left the laptop.
+A consultant joins a Google Meet with a new client. They press a global hotkey. scrybe posts a one-line courtesy message into the chat ("I'm taking notes locally with scrybe — speak up if you'd prefer I didn't") and starts capture. The call ends; they press the hotkey again. Within ~30 seconds, `~/scrybe/2026-04-29-1500-acme-discovery/notes.md` exists with action items, decisions, and follow-ups. The notes never left the laptop.
 
-### Example 2 — Healthcare provider dictation, post-consult
+### Example 2 — Clinician dictation, post-consult
 
-A clinician records their own dictated notes after a patient consultation (the patient is not in the recording). HIPAA prevents using Otter or Granola for any patient-recording use case; their employer prevents installing arbitrary apps. scrybe runs as a single binary in their user account. The audio file and transcript live in `~/Documents/clinical-notes/` covered by the institution's encrypted disk policy. The author of scrybe is not a HIPAA business associate (HHS FAQ 256: "the mere selling or providing of software… does not give rise to a business associate relationship"). The clinician's institutional posture is the controlling factor; scrybe's local-first architecture makes the procurement review trivial.
+A clinician dictates their own notes after a patient consultation (no patient audio is captured). Their employer's policy prevents installing arbitrary apps; scrybe runs as a single binary in their user account. Audio and transcript land in `~/Documents/clinical-notes/`, covered by the institution's encrypted-disk policy. scrybe's local-first architecture makes the institutional review trivial; see `LEGAL.md` for the publisher-posture summary.
 
-For *patient-present* consultations, the consent step (system-design §5) gates capture: the clinician must obtain documented patient consent before recording, and the disposition is logged into `meta.toml`. This is the user's responsibility, not scrybe's; scrybe's role is to make the consent step impossible to skip.
+### Example 3 — OSS maintainer triage call
 
-### Example 3 — Open-source maintainer triage call
+An OSS maintainer hops on a community call. They want notes for the project's public archive. scrybe captures, transcribes, and summarizes locally. A `git` hook (one of the optional `Hook` implementations) commits the notes to the project's wiki repo automatically. The entire artifact chain is reproducible; no SaaS in the loop.
 
-An OSS maintainer hops on a community call. They want notes for the project's public archive. scrybe records, transcribes, summarizes locally. A `git` hook (one of the optional `Hook` implementations) commits the notes to the project's wiki repo automatically. Zero SaaS in the loop; the entire artifact chain is reproducible.
+### Example 4 — Audit-friendly local build
 
-### Example 4 — Defense / classified-adjacent work
-
-A contractor in a SCIF-adjacent environment cannot run anything that phones home. scrybe is provably air-gappable: `cargo build --no-default-features --features mac,whisper-local` produces a binary with zero outbound network capability. They can audit this themselves; it's Apache-2.0-licensed Rust without a runtime. This is the kind of user nobody markets to because they don't show up in funnel analytics.
+A developer wants a notetaker they can read top-to-bottom and verify behaves as advertised. `cargo build --no-default-features --features mac,whisper-local` produces a binary with zero outbound network capability — verifiable with `lsof`. The Apache-2.0 source is small enough to audit in an evening.
 
 ### Example 5 — Meeting on an Android phone in a coffee shop
 

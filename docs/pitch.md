@@ -1,13 +1,13 @@
 # scrybe — Pitch
 
 > **Meeting notes that never leave your laptop.**
-> An open-source meeting transcription and notes tool. No bots in your meetings, no audio uploaded anywhere, no account.
+> An open-source meeting notetaker. Capture your own meetings, get a transcript and AI-generated notes — all on your own machine. No cloud, no account.
 
 ---
 
 ## The thing I'm building
 
-A single Rust binary you install on your laptop. Press a hotkey when a meeting starts. It captures system audio + your microphone, transcribes locally with whisper.cpp (or via any OpenAI-compatible API you point it at), and produces a structured markdown summary at the end. Files land in `~/scrybe/<date>-<title>/`. There is no cloud, no account, no bot in your meeting.
+A single Rust binary you install on your laptop. Press a hotkey when a meeting starts. It captures the meeting audio and your microphone, transcribes locally with whisper.cpp (or via any OpenAI-compatible API you point it at), and produces a structured markdown summary at the end. Files land in `~/scrybe/<date>-<title>/`. Everything stays on your machine.
 
 macOS, Windows, Linux, and Android. iOS is excluded because Apple's sandbox makes it impossible.
 
@@ -17,17 +17,17 @@ The meeting-notetaker market splits into three camps:
 
 | Camp | Examples | Problem |
 |---|---|---|
-| Bot-based SaaS | Otter, Fireflies, Read.ai, Fathom | A bot visibly joins the call. Awkward, often blocked by client IT. Cloud upload by definition. *Brewer v. Otter.ai* (N.D. Cal., Aug 2025) and *Cruz v. Fireflies.AI* (Dec 2025, BIPA) suggest the consent model itself is now legally exposed. |
-| Audio-capture SaaS | Granola, tldv | Local capture but vendor-cloud upload. Requires account. Mac-only mostly. Granola does ship in-meeting consent messaging — the only competitor that does. |
-| Open-source notetakers | Meetily, fastrepl/anarlog (formerly Hyprnote) | Local-first in claim, architecturally sprawling in reality. Both ship **zero** in-meeting consent UX. Meetily (~11.4k stars) ships SQLite + Tauri + Next.js frontend with ~44 MB of workspace; anarlog (~8.3k stars, active 2026-04, mac-only) is ~632 MB of workspace. Neither covers Linux or Android with system-audio capture. |
+| Bot-based SaaS | Otter, Fireflies, Read.ai, Fathom | A bot visibly joins the call. Awkward, often blocked by client IT. Vendor cloud by definition. |
+| Audio-capture SaaS | Granola, tldv | Local capture but uploads to a vendor cloud. Requires account. Mac-only mostly. Granola does post a courtesy notice into the meeting chat — the only competitor that does. |
+| Open-source notetakers | Meetily, fastrepl/anarlog (formerly Hyprnote) | Local-first in claim, architecturally sprawling in reality. Meetily (~11.4k stars) ships SQLite + Tauri + Next.js frontend with ~44 MB of workspace; anarlog (~8.3k stars, active 2026-04, mac-only) is ~632 MB of workspace. Neither covers Linux or Android. Neither offers a courtesy-notification step. |
 
 The user who falls through every gap:
 
-- **Healthcare, legal, finance, defense.** Cannot upload audio to vendor clouds. HIPAA, attorney-client privilege, MNPI, classification.
-- **Independent consultants.** Cannot have a visible bot join client calls without explaining what it is.
-- **OSS maintainers and privacy-aesthetic developers.** Won't use SaaS notetakers on principle. Want filesystem storage so they can grep, sync via Syncthing, and audit the binary themselves.
-- **Multi-language professionals outside the US/EU.** Underserved by English-centric SaaS, hit latency to nearest cloud region.
-- **Anyone in a regulated industry with no SaaS procurement budget.**
+- **Privacy-conscious professionals.** Doctors taking dictation post-consult, lawyers reviewing their own meetings, finance and product folks whose meetings shouldn't leave their machine.
+- **Independent consultants.** Don't want a visible bot joining client calls.
+- **OSS maintainers and developers who prefer local-first software.** Want filesystem storage so they can `grep`, sync via Syncthing, and audit the binary themselves.
+- **Multi-language professionals outside the US/EU.** Underserved by English-centric SaaS; hit latency to the nearest cloud region.
+- **Anyone whose org's procurement process makes a SaaS notetaker a non-starter.**
 
 These users are all currently taking notes by hand, or not at all. Every one of them I've described to has reacted with some version of "yes, I'd use that."
 
@@ -37,7 +37,7 @@ Three things that weren't true two years ago:
 
 1. **Native OS APIs solve system-audio capture without a virtual driver on every platform we care about.** macOS ScreenCaptureKit (since macOS 13), Windows WASAPI per-process loopback (since Win10 build 2004), PipeWire on Linux, Android's `AudioPlaybackCapture` (since Android 10). The "you need to install BlackHole or VB-Cable" era is over.
 2. **Local Whisper is genuinely good now.** Whisper-large-v3 on M-series Apple Silicon hits ~5x realtime with Metal. For most languages, it's usable for production note-taking. Parakeet is even faster.
-3. **The OSS shelf is crowded but skewed.** Two Rust meeting-recorders matter: Meetily (Tauri + SQLite, mac+win) and `fastrepl/anarlog` (formerly Hyprnote, mac-only, recently active). Both ship local-first capture but neither ships Linux or Android system-audio capture, and neither ships an in-meeting consent UX — the missing primitive that *Brewer v. Otter.ai* and *Cruz v. Fireflies.AI* are litigating into existence. The unoccupied lane is **cross-platform (mac+win+linux+android) + filesystem-only + consent-by-default**, not "the only OSS option."
+3. **The OSS shelf is crowded but skewed.** Two Rust meeting-notetakers matter: Meetily (Tauri + SQLite, mac+win) and `fastrepl/anarlog` (formerly Hyprnote, mac-only, recently active). Both ship local-first capture, but neither runs on Linux or Android, and neither offers a courtesy-notification step that posts into the meeting chat at start. The unoccupied lane is **cross-platform (mac+win+linux+android) + filesystem-only + courtesy-notification by default**, not "the only OSS option."
 
 ## What makes this different from the existing OSS options
 
@@ -51,7 +51,7 @@ I cloned char/anarlog and Meetily before designing this. The honest comparison:
 | `*_v2` / `*_old` cruft | Yes (heavy) | Yes (`audio` + `audio_v2`, `lib_old_complex.rs`) | None — replace, don't accrete |
 | Storage | TinyBase + libsql + markdown | SQLite + audio files | Pure filesystem |
 | Platforms | macOS only | macOS, Windows | macOS, Windows, Linux, Android |
-| In-meeting consent UX | None | None | **Mandatory pre-recording step, configurable but not removable** |
+| In-meeting courtesy notification | None | None | **Mandatory pre-start step, configurable but not removable** |
 | Maintenance status | Active mac-only (last push 2026-04-27) | Active, monetizing | Will be active or fail visibly |
 
 **This is not a "build a better OSS notetaker" pitch. It's a "the OSS notetaker shelf has the wrong stuff on it" pitch.** Cross-platform Linux+Android + filesystem-only + lean architecture is a niche nobody currently occupies.
@@ -89,7 +89,7 @@ I'd rather hear "you're underestimating X" now than at v0.3.
 | Meetily / anarlog ship scrybe's exact feature set first | Possible. anarlog is mac-only, Meetily is mac+win — neither will ship Linux + Android system-audio capture without significant rearchitecture. Differentiation is platform breadth + consent-by-default + filesystem-only, not first-mover. |
 | Solo-maintainer bus factor | Real. Apache-2.0 license — explicit patent grant under §3, attribution-preserving §4, no copyleft — so forks survive me without forcing closed-source-SaaS-only outcomes. |
 | Apple/Google deprecate the underlying capture APIs | Same risk every competitor carries. Track upstream; vendor `screencapturekit-rs` and `coreaudio-tap-rs` (the latter to be written and contributed upstream). |
-| Author legal exposure for publishing a recording tool | Materially low — see `docs/LEGAL.md`. No published case 2020–2026 of an OSS author sued for a recording-adjacent tool. HHS FAQ 256, GDPR Art. 4, AI Act Recital 102, *MGM v. Grokster* all favor the publisher posture. Mitigation: ship consent UX as a default, neutral marketing posture, no managed service. |
+| Author legal posture for publishing an open-source notetaker | Materially low. See `docs/LEGAL.md` for the publisher-posture summary. Mitigations: courtesy-notification UX as default, neutral marketing, no managed service. |
 
 ## What I want from you
 
