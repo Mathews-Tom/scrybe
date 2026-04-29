@@ -13,6 +13,7 @@ rust-version.workspace = true
 [[bin]]
 name = "scrybe"
 path = "src/main.rs"
+doc = false
 
 [dependencies]
 scrybe = { path = "../scrybe", version = "0.1.0-alpha.1" }

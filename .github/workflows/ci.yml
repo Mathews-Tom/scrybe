@@ -45,8 +45,10 @@ jobs:
         run: cargo check --workspace --all-targets
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
-      - name: cargo test
+      - name: cargo test (lib, bin, integration, examples)
         run: cargo test --workspace --all-targets
+      - name: cargo test (doc)
+        run: cargo test --workspace --doc
       - name: cargo doc
         run: cargo doc --workspace --no-deps
         env:
