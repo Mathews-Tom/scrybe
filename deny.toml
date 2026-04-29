@@ -21,16 +21,29 @@ targets = [
 feature-depth = 1
 
 # Vulnerability advisories. RustSec database is the source of truth.
-# `vulnerability` and `notice` are implicit `deny` in the v2 schema; we
-# downgrade `unmaintained` and `unsound` to `warn` so cargo-deny does
-# not fail builds on advisory categories that are informational rather
-# than exploitable. This matches `cargo audit`'s default exit-code
-# behaviour: warning-class advisories surface in CI logs without
-# blocking landings.
+# In the v2 schema, `vulnerability`, `notice`, and `unsound` advisories
+# are implicit hard denies and cannot be downgraded — only `yanked` and
+# `unmaintained` remain configurable. `unmaintained = "workspace"`
+# scopes the deny to direct workspace deps so a transitive crate going
+# unmaintained between releases surfaces in logs without blocking a
+# landing; the maintainer's response is to bump or replace, not to
+# patch this file.
+#
+# The `ignore` list is the only escape hatch and every entry MUST cite
+# why the advisory cannot be acted on now and what unblocks dropping
+# the entry.
 [advisories]
 version = 2
 yanked = "warn"
-ignore = []
+unmaintained = "workspace"
+ignore = [
+    # `git2 0.19 → 0.20` would resolve this advisory but pulls
+    # transitive `icu_*` deps that require rustc 1.86; the workspace
+    # `rust-toolchain.toml` pins 1.85.0. Re-evaluate the moment the
+    # toolchain bumps. Tracked under `.docs/development-plan.md` §6.2
+    # delivery item #4 (dependency pins).
+    { id = "RUSTSEC-2026-0008", reason = "git2 0.19 unsound advisory; 0.20 upgrade blocked by rustc 1.85 toolchain pin." },
+]
 
 # OSI/FSF-approved permissive licenses compatible with Apache-2.0 plus
 # the small set of explicitly-allowed weak-copyleft and public-domain
