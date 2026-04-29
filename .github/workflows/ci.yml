@@ -80,6 +80,17 @@ jobs:
           command: check advisories licenses bans sources
           arguments: --all-features
 
+  loc-budget:
+    name: loc-budget (per-crate ceilings)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: tokei
+      - name: enforce per-crate LoC ceilings
+        run: python3 scripts/check-loc-budget.py
+
   coverage:
     name: coverage (workspace + scrybe-core gate)
     runs-on: ubuntu-latest
