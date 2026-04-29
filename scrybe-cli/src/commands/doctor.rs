@@ -144,7 +144,7 @@ fn is_pid_alive(pid: u32) -> bool {
 }
 
 #[cfg(not(unix))]
-fn is_pid_alive(_pid: u32) -> bool {
+const fn is_pid_alive(_pid: u32) -> bool {
     // On Windows we conservatively treat every lock as live; the
     // doctor command surfaces the lock and lets the user remove it.
     true
