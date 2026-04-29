@@ -779,6 +779,11 @@ The single most important reliability invariant: **if the process crashes mid-se
 | Disk fills | Recording stops cleanly | Pre-flight check at session start: minimum 1GB free, abort if not |
 | Permission revoked mid-session (macOS) | Capture stream closes | Detected via stream error; pipeline emits `SessionFailed`, audio up to that point is preserved |
 | Microphone unplugged (USB) | System-audio continues | Mic channel goes silent in transcript; system channel continues normally |
+| Default input device changes mid-session (e.g. AirPods connect at minute 10) | Old device's frame stream stops; new device is silently substituted by some OS abstractions, producing audio attributable to the wrong source | OS device-change notification subscribed at SessionStart (`AVAudioEngine.configurationChange` on macOS, `MMNotificationClient` on Windows, PipeWire `core_events` `done` on Linux). On change: pipeline emits `CaptureError::DeviceChanged`, capture stops, `meta.toml` records the event, audio file is finalized at the boundary, user prompted to resume on the new device as a continuation session |
+| System enters sleep/hibernate mid-session | Capture stream behavior is undefined per platform; some return silence, some return error, some block | Power-state notifications subscribed at SessionStart (`IOKit IOPMConnection` on macOS, `WTSRegisterSessionNotification` + `PBT_APMSUSPEND` on Windows, `org.freedesktop.login1.Manager.PrepareForSleep` on Linux). On suspend: pipeline emits `CaptureError::SystemSlept`, audio file finalized cleanly before sleep completes |
+| Model download interrupted (network drop, process kill) | Half-written model file at well-known path can fool a future load into reading garbage and producing silent gibberish | Download to `<model>.partial`, `fsync` after every 4 MB, verify SHA256 on completion, then atomic-rename to final path. Loader rejects any file whose name matches `*.partial`. `scrybe doctor` reports any orphaned `.partial` files and offers to delete |
+| Two concurrent `scrybe record` invocations target the same minute | Folder collision; second write clobbers first | Folder name is `YYYY-MM-DD-HHMM-<title>-<ULID-suffix>`; ULID suffix guarantees uniqueness within the same minute. Per-session `pid.lock` file in the folder prevents the same pid from racing itself |
+| Syncthing conflict copy on `transcript.md` mid-session | `transcript.md.sync-conflict-...` appears beside the live file; the live file may be truncated by Syncthing's conflict-resolution policy | Generated `.stignore` template excludes session folders while their `pid.lock` exists; recommended in `INSTALL.md` and validated by `scrybe doctor` |
 
 ### 8.2 Provider-level failure handling
 
@@ -799,6 +804,131 @@ impl Default for RetryPolicy {
 ```
 
 For `whisper-local`, retries are pointless (deterministic local failure). For cloud providers, exponential backoff with jitter, capped at 3 attempts. After 3 failures, the chunk is recorded as `[transcription failed: <error>]` in the transcript, the audio is preserved, and the user can retry the whole session later.
+
+### 8.3 Atomic-write recipe per platform
+
+Filesystem-as-database is only safe when each on-disk file presents either its old contents or its new contents — never a torn intermediate. scrybe's storage layer (`scrybe-core::storage`) standardizes on three write patterns and applies them per-file:
+
+| File | Write pattern | Recovery on crash |
+|---|---|---|
+| `meta.toml`, `notes.md` | atomic replace (write `tmp` → `fsync(file)` → rename → `fsync(parent_dir)`) | Either the previous version or the new one; never partial |
+| `transcript.md` | append-only (`O_APPEND` + `fdatasync` per chunk-boundary append) | All committed chunks present; trailing partial chunk truncated on next open |
+| `audio.opus` | append-only with periodic page flush (1-second Opus pages, `fdatasync` per page) | All complete pages decode; final partial page discarded by the Opus demuxer |
+| `<model>.partial` → `<model>` | atomic replace after SHA256 verify | `.partial` files are recoverable orphans; loader refuses to load them |
+| `pid.lock` | exclusive create (`O_CREAT|O_EXCL`); written once with caller pid | Stale lock detection by reading pid and checking liveness |
+
+#### Concrete recipe
+
+```rust
+// scrybe-core/src/storage/atomic.rs
+use std::path::Path;
+use std::fs::{File, OpenOptions};
+use std::io::Write;
+
+#[cfg(target_os = "macos")]
+fn full_fsync(file: &File) -> std::io::Result<()> {
+    use std::os::unix::io::AsRawFd;
+    let rc = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_FULLFSYNC) };
+    if rc == -1 { Err(std::io::Error::last_os_error()) } else { Ok(()) }
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn full_fsync(file: &File) -> std::io::Result<()> {
+    file.sync_all()
+}
+
+#[cfg(target_os = "windows")]
+fn full_fsync(file: &File) -> std::io::Result<()> {
+    file.sync_all()
+}
+
+pub fn atomic_replace(target: &Path, payload: &[u8]) -> Result<(), StorageError> {
+    let dir = target.parent().ok_or(StorageError::AtomicRename {
+        path: target.to_owned(),
+        source: std::io::Error::from(std::io::ErrorKind::InvalidInput),
+    })?;
+
+    let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
+    tmp.write_all(payload)?;
+    full_fsync(tmp.as_file())?;
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+        };
+        let src: Vec<u16> = tmp.path().as_os_str().encode_wide().chain(Some(0)).collect();
+        let dst: Vec<u16> = target.as_os_str().encode_wide().chain(Some(0)).collect();
+        // Persist tmp first so the path stays valid through MoveFileExW
+        let (_, persisted_path) = tmp.keep()?;
+        let ok = unsafe {
+            MoveFileExW(src.as_ptr(), dst.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)
+        };
+        if ok == 0 {
+            let _ = std::fs::remove_file(&persisted_path);
+            return Err(StorageError::AtomicRename {
+                path: target.to_owned(),
+                source: std::io::Error::last_os_error(),
+            });
+        }
+    }
+
+    #[cfg(unix)]
+    {
+        tmp.persist(target).map_err(|e| StorageError::AtomicRename {
+            path: target.to_owned(),
+            source: e.error,
+        })?;
+    }
+
+    let dir_handle = File::open(dir)?;
+    full_fsync(&dir_handle)?;
+    Ok(())
+}
+
+pub fn append_durable(target: &Path, line: &[u8]) -> Result<(), StorageError> {
+    let mut f = OpenOptions::new().append(true).create(true).open(target)?;
+    f.write_all(line)?;
+    f.sync_data()?; // fdatasync on Linux, FlushFileBuffers on Windows, F_FULLFSYNC fallback on mac
+    Ok(())
+}
+```
+
+Notes:
+
+- `tempfile::NamedTempFile::new_in(dir)` ensures the temp file is on the same filesystem as the target; cross-filesystem rename is non-atomic.
+- macOS `F_FULLFSYNC` is mandatory for `meta.toml` and `notes.md`; the default `fsync(2)` only commits to drive cache, not platter, on Apple SSDs. `tokio::fs::File::sync_all` does *not* call `F_FULLFSYNC`.
+- Windows `MoveFileExW(MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)` is the only documented atomic-with-replace primitive; `std::fs::rename` on Windows does not guarantee replace-target atomicity across crashes.
+- Linux `rename(2)` is atomic for in-filesystem renames, but the directory entry needs `fsync(dir)` to be durable.
+- The directory `fsync` after rename is required on every platform; without it, a power loss between rename and metadata-flush can lose the entry even though the new file exists on disk.
+
+#### Storage layout invariants
+
+```
+~/scrybe/
+└── 2026-04-29-1430-acme-discovery-01HXY7K9RZ/
+    ├── pid.lock               # owner pid; deleted on clean exit
+    ├── audio.opus             # append-only, 1s-page-flushed
+    ├── transcript.md          # append-only, fdatasync-per-chunk
+    ├── transcript.partial.jsonl # write-ahead log of the in-flight chunk
+    ├── notes.md               # written once at SessionEnd, atomic-replace
+    ├── meta.toml              # rewritten atomically on every state transition
+    └── .stignore              # generated; tells Syncthing to ignore until pid.lock is gone
+```
+
+`transcript.partial.jsonl` is a write-ahead log: each line is one `AttributedChunk` JSON object. When a chunk completes, scrybe (a) appends the rendered markdown line to `transcript.md` with `fdatasync`, then (b) appends the same chunk's JSON to `transcript.partial.jsonl`, then (c) on the *next* successful chunk, truncates lines for already-flushed chunks. On crash recovery, `scrybe doctor` reads `transcript.partial.jsonl` to identify any chunk that was rendered but not yet flushed and replays the markdown render. This keeps the user-visible `transcript.md` minimal and machine-recoverable simultaneously.
+
+#### Tests required at v0.1
+
+- Crash injection between `tmp.write_all` and `full_fsync(tmp)`: target either still has old contents or is absent.
+- Crash injection between `full_fsync(tmp)` and rename: target either still has old contents or `.tmp.<rand>` is recoverable orphan.
+- Crash injection between rename and `full_fsync(dir)`: target on disk on every platform we test, may or may not survive immediate power-cycle (acceptable; the ordering after that flush *is* durable).
+- Syncthing conflict simulation: a parallel writer creates `transcript.md.sync-conflict-...`; the live append loop must continue without acknowledging the conflict copy.
+- Two-process race: two `scrybe record` invocations targeting the same minute; one wins the `pid.lock`, the other gets `StorageError::SessionLocked` with the holder's pid.
+
+These are part of the 95% critical-path coverage budget per `~/.claude/rules/test-standards.md`.
 
 ## 9. Performance budget
 
