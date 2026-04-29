@@ -1,0 +1,94 @@
+#!/usr/bin/env python3
+# Copyright 2026 Mathews Tom
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#     https://www.apache.org/licenses/LICENSE-2.0
+"""Per-crate Rust LoC budget gate using tokei.
+
+Counts code-only lines (excludes blank lines and comments) under each
+member crate's `src/` tree and asserts the total stays under the
+ceiling specified in `LOC_CEILINGS` below. Tests inline in `#[cfg(test)]`
+modules are counted because tokei parses files as a whole; the ceilings
+are sized accordingly.
+
+Run locally:
+
+    python3 scripts/check-loc-budget.py
+
+Run in CI: see `.github/workflows/ci.yml` job `loc-budget`.
+
+Ceilings track `.docs/development-plan.md` §7.4 and are updated when
+the plan revises them. Increasing a ceiling is a deliberate decision:
+state the rationale in the commit message and surface it for review.
+"""
+
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+# Code-only LoC ceilings per member crate. Counts include `#[cfg(test)]`
+# modules that live inline in the same file as production code; if the
+# test footprint dominates, prefer extracting tests to `tests/` (which
+# tokei excludes here because we point it at `src/` only).
+LOC_CEILINGS: dict[str, int] = {
+    "scrybe": 100,
+    "scrybe-core": 6500,
+    "scrybe-cli": 2000,
+    "scrybe-capture-mac": 2500,
+}
+
+
+def measure(crate_src: Path) -> int:
+    """Return code-only Rust LoC under `crate_src`.
+
+    Raises `RuntimeError` if tokei is missing or returns malformed JSON,
+    rather than masking the failure as zero LoC. The CI gate must fail
+    loudly when the measurement tool is broken.
+    """
+    if not crate_src.is_dir():
+        raise RuntimeError(f"crate src path does not exist: {crate_src}")
+    result = subprocess.run(
+        ["tokei", str(crate_src), "--types", "Rust", "--output", "json"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    payload = json.loads(result.stdout)
+    rust = payload.get("Rust")
+    if rust is None:
+        raise RuntimeError(f"tokei returned no Rust entry for {crate_src}")
+    code = rust.get("code")
+    if not isinstance(code, int):
+        raise RuntimeError(f"tokei returned non-integer code count for {crate_src}: {code!r}")
+    return code
+
+
+def main() -> int:
+    repo_root = Path(__file__).resolve().parent.parent
+    overshoots: list[tuple[str, int, int]] = []
+    print(f"{'crate':<22} {'code LoC':>9}  {'ceiling':>8}  status")
+    print(f"{'-' * 22} {'-' * 9}  {'-' * 8}  {'-' * 6}")
+    for crate, ceiling in sorted(LOC_CEILINGS.items()):
+        loc = measure(repo_root / crate / "src")
+        status = "ok" if loc <= ceiling else "OVER"
+        print(f"{crate:<22} {loc:>9}  {ceiling:>8}  {status}")
+        if loc > ceiling:
+            overshoots.append((crate, loc, ceiling))
+    if overshoots:
+        print()
+        print("LoC budget exceeded:")
+        for crate, loc, ceiling in overshoots:
+            print(f"  {crate}: {loc} > {ceiling} ({loc - ceiling} over)")
+        print()
+        print("Either reduce LoC, split modules, or revise the ceiling in")
+        print("`scripts/check-loc-budget.py` AND `.docs/development-plan.md` §7.4.")
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
