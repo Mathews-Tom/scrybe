@@ -49,9 +49,10 @@ pub struct Args {
     pub root: Option<PathBuf>,
 
     /// Skip the consent prompt — for headless smoke tests on a
-    /// developer workstation. Refused on environments without
-    /// `SCRYBE_CONSENT_AUTO_ACCEPT=1` to keep the user-facing default
-    /// honest.
+    /// developer workstation. Equivalent to setting the
+    /// `SCRYBE_CONSENT_AUTO_ACCEPT=1` environment variable; either
+    /// alone is sufficient because both are interactive overrides
+    /// the user can audit in the surrounding shell history.
     #[arg(long, default_value_t = false)]
     pub yes: bool,
 

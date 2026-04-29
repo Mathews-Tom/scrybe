@@ -95,8 +95,11 @@ impl MacCapture {
             receiver: Some(rx),
             started: false,
         }));
+        // System-audio capability is reported false until the live
+        // Core Audio Tap binding ships; the `core-audio-tap` feature
+        // alone does not enable real capture in v0.1.
         let capabilities = Capabilities {
-            supports_system_audio: cfg!(feature = "core-audio-tap"),
+            supports_system_audio: false,
             supports_per_app_capture: false,
             native_sample_rates: vec![48_000],
             permission_model: PermissionModel::CoreAudioTap,
@@ -140,40 +143,50 @@ impl Default for MacCapture {
 
 impl AudioCapture for MacCapture {
     fn start(&mut self) -> Result<(), CaptureError> {
-        let already_started = {
-            #[allow(unused_mut)]
-            let mut guard = self.state.lock().map_err(|_| {
+        let needs_session_check = {
+            let guard = self.state.lock().map_err(|_| {
                 CaptureError::Platform(Box::new(std::io::Error::new(
                     std::io::ErrorKind::Other,
                     "MacCapture state mutex poisoned",
                 )))
             })?;
             if guard.started {
-                true
-            } else {
-                #[cfg(feature = "core-audio-tap")]
-                {
-                    // Real Core Audio Taps wiring lands behind a separate
-                    // hardware-validation pass. See `system-design.md`
-                    // §11 Tier 2. The adapter starts in "callback-empty"
-                    // mode so unit tests can drive it through
-                    // `inject_for_test`.
-                    guard.started = true;
-                }
-                false
+                return Ok(());
             }
+            // Adapter is single-use across `start`→`stop`→`start` in
+            // v0.1: stop() drops the channel sender, and the live
+            // platform callback (when it lands) will bind once at
+            // start time. Callers construct a fresh `MacCapture` for
+            // a new session.
+            guard.sender.is_none()
         };
-        #[cfg(not(feature = "core-audio-tap"))]
-        {
-            let _ = already_started;
-            Err(CaptureError::PermissionDenied(
-                "core-audio-tap feature disabled at compile time".to_string(),
-            ))
+        if needs_session_check {
+            return Err(CaptureError::PermissionDenied(
+                "MacCapture::start called after stop; construct a new \
+                 MacCapture for a new session"
+                    .to_string(),
+            ));
         }
         #[cfg(feature = "core-audio-tap")]
         {
-            let _ = already_started;
-            Ok(())
+            // Real Core Audio Taps callback wiring is the
+            // hardware-validation follow-up artifact tracked in
+            // `.docs/development-plan.md` §6 deliverable 12. Until
+            // that lands, refuse to start with the feature on so
+            // `capabilities()` cannot overstate what we actually
+            // capture.
+            Err(CaptureError::Platform(Box::new(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "core-audio-tap feature is enabled but the objc2 \
+                 callback binding has not yet landed; use \
+                 inject_for_test() until coreaudio-tap-rs ships",
+            ))))
+        }
+        #[cfg(not(feature = "core-audio-tap"))]
+        {
+            Err(CaptureError::PermissionDenied(
+                "core-audio-tap feature disabled at compile time".to_string(),
+            ))
         }
     }
 
@@ -270,6 +283,11 @@ mod tests {
         assert_eq!(caps.permission_model, PermissionModel::CoreAudioTap);
         assert_eq!(caps.native_sample_rates, vec![48_000]);
         assert!(!caps.supports_per_app_capture);
+        assert!(
+            !caps.supports_system_audio,
+            "v0.1 must not advertise system-audio capture until the \
+             core-audio-tap binding lands"
+        );
     }
 
     #[cfg(not(feature = "core-audio-tap"))]
@@ -284,10 +302,31 @@ mod tests {
 
     #[cfg(feature = "core-audio-tap")]
     #[test]
-    fn test_mac_capture_start_with_feature_succeeds() {
+    fn test_mac_capture_start_with_feature_returns_not_yet_wired_error() {
         let mut cap = MacCapture::new();
 
-        cap.start().unwrap();
+        let err = cap.start().unwrap_err();
+
+        match err {
+            CaptureError::Platform(inner) => {
+                assert!(
+                    inner.to_string().contains("core-audio-tap"),
+                    "expected unwired-binding marker; got {inner}"
+                );
+            }
+            other => panic!("expected CaptureError::Platform, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_mac_capture_start_after_stop_returns_permission_denied_for_reuse() {
+        let mut cap = MacCapture::new();
+        let _ = cap.start();
+        cap.stop().unwrap();
+
+        let err = cap.start().unwrap_err();
+
+        assert!(matches!(err, CaptureError::PermissionDenied(_)));
     }
 
     #[test]
