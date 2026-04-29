@@ -336,7 +336,7 @@ pub enum SttError {
     #[error("model not loaded: {0}")]
     ModelNotLoaded(String),
 
-    #[error("model file corrupt or wrong checksum: {path}")]
+    #[error("model file corrupt or wrong checksum: {}", path.display())]
     ModelCorrupt { path: PathBuf },
 
     #[error("provider returned non-success status: {status}")]
@@ -378,25 +378,37 @@ pub enum HookError {
 
 #[derive(thiserror::Error, Debug)]
 pub enum StorageError {
-    #[error("disk full or quota exceeded at {path}")]
+    #[error("disk full or quota exceeded at {}", path.display())]
     DiskFull { path: PathBuf },
 
-    #[error("session lock held by pid {pid} at {path}")]
+    #[error("session lock held by pid {pid} at {}", path.display())]
     SessionLocked { pid: u32, path: PathBuf },
 
-    #[error("atomic rename failed: {path}")]
+    #[error("atomic rename failed: {}", path.display())]
     AtomicRename { path: PathBuf, source: std::io::Error },
+
+    #[error("invalid target path (no parent): {}", path.display())]
+    InvalidTargetPath { path: PathBuf },
+
+    #[error("named-temp-file persist failed: {}", path.display())]
+    Persist { path: PathBuf, source: std::io::Error },
 
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
 }
 
+// `Io` is the canonical promotion target for `std::io::Error` via `?`.
+// `AtomicRename` and `Persist` carry `source: std::io::Error` and must
+// always be constructed manually; do not collapse them into `Io`, the
+// extra context (which path, which step) is load-bearing for crash
+// triage.
+
 #[derive(thiserror::Error, Debug)]
 pub enum ConfigError {
-    #[error("config file not found at {path}")]
+    #[error("config file not found at {}", path.display())]
     NotFound { path: PathBuf },
 
-    #[error("config parse error in {path}: {message}")]
+    #[error("config parse error in {}: {message}", path.display())]
     Parse { path: PathBuf, message: String },
 
     #[error("unknown config key {key} (line {line})")]
@@ -779,8 +791,8 @@ The single most important reliability invariant: **if the process crashes mid-se
 | Disk fills | Recording stops cleanly | Pre-flight check at session start: minimum 1GB free, abort if not |
 | Permission revoked mid-session (macOS) | Capture stream closes | Detected via stream error; pipeline emits `SessionFailed`, audio up to that point is preserved |
 | Microphone unplugged (USB) | System-audio continues | Mic channel goes silent in transcript; system channel continues normally |
-| Default input device changes mid-session (e.g. AirPods connect at minute 10) | Old device's frame stream stops; new device is silently substituted by some OS abstractions, producing audio attributable to the wrong source | OS device-change notification subscribed at SessionStart (`AVAudioEngine.configurationChange` on macOS, `MMNotificationClient` on Windows, PipeWire `core_events` `done` on Linux). On change: pipeline emits `CaptureError::DeviceChanged`, capture stops, `meta.toml` records the event, audio file is finalized at the boundary, user prompted to resume on the new device as a continuation session |
-| System enters sleep/hibernate mid-session | Capture stream behavior is undefined per platform; some return silence, some return error, some block | Power-state notifications subscribed at SessionStart (`IOKit IOPMConnection` on macOS, `WTSRegisterSessionNotification` + `PBT_APMSUSPEND` on Windows, `org.freedesktop.login1.Manager.PrepareForSleep` on Linux). On suspend: pipeline emits `CaptureError::SystemSlept`, audio file finalized cleanly before sleep completes |
+| Default input device changes mid-session (e.g. AirPods connect at minute 10) | Old device's frame stream stops; new device is silently substituted by some OS abstractions, producing audio attributable to the wrong source | OS device-change notification subscribed at SessionStart (`AVAudioEngineConfigurationChange` notification on macOS, `IMMNotificationClient::OnDefaultDeviceChanged` on Windows, PipeWire registry `global_added`/`global_removed` events filtered for `PW_TYPE_INTERFACE_Node` with `media.class = "Audio/Source"` on Linux). On change: pipeline emits `CaptureError::DeviceChanged`, capture stops, `meta.toml` records the event, audio file is finalized at the boundary, user prompted to resume on the new device as a continuation session |
+| System enters sleep/hibernate mid-session | Capture stream behavior is undefined per platform; some return silence, some return error, some block | Power-state notifications subscribed at SessionStart (`IOKit IOPMConnection` `kIOPMSystemPowerStateNotify` on macOS, `WM_POWERBROADCAST` with `PBT_APMSUSPEND` (delivered by Windows to a hidden message-only window registered via `RegisterPowerSettingNotification`) on Windows, `org.freedesktop.login1.Manager.PrepareForSleep` D-Bus signal on Linux). On suspend: pipeline emits `CaptureError::SystemSlept`, audio file finalized cleanly before sleep completes |
 | Model download interrupted (network drop, process kill) | Half-written model file at well-known path can fool a future load into reading garbage and producing silent gibberish | Download to `<model>.partial`, `fsync` after every 4 MB, verify SHA256 on completion, then atomic-rename to final path. Loader rejects any file whose name matches `*.partial`. `scrybe doctor` reports any orphaned `.partial` files and offers to delete |
 | Two concurrent `scrybe record` invocations target the same minute | Folder collision; second write clobbers first | Folder name is `YYYY-MM-DD-HHMM-<title>-<ULID-suffix>`; ULID suffix guarantees uniqueness within the same minute. Per-session `pid.lock` file in the folder prevents the same pid from racing itself |
 | Syncthing conflict copy on `transcript.md` mid-session | `transcript.md.sync-conflict-...` appears beside the live file; the live file may be truncated by Syncthing's conflict-resolution policy | Generated `.stignore` template excludes session folders while their `pid.lock` exists; recommended in `INSTALL.md` and validated by `scrybe doctor` |
@@ -843,9 +855,8 @@ fn full_fsync(file: &File) -> std::io::Result<()> {
 }
 
 pub fn atomic_replace(target: &Path, payload: &[u8]) -> Result<(), StorageError> {
-    let dir = target.parent().ok_or(StorageError::AtomicRename {
+    let dir = target.parent().ok_or_else(|| StorageError::InvalidTargetPath {
         path: target.to_owned(),
-        source: std::io::Error::from(std::io::ErrorKind::InvalidInput),
     })?;
 
     let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
@@ -858,21 +869,33 @@ pub fn atomic_replace(target: &Path, payload: &[u8]) -> Result<(), StorageError>
         use windows_sys::Win32::Storage::FileSystem::{
             MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
         };
-        let src: Vec<u16> = tmp.path().as_os_str().encode_wide().chain(Some(0)).collect();
+        // Persist tmp first so its path stays valid through MoveFileExW; the
+        // returned (File, PathBuf) carries the on-disk path of the persisted
+        // temp file, which we will rename onto `target`.
+        let (_persisted_file, persisted_path) =
+            tmp.keep().map_err(|e| StorageError::Persist {
+                path: target.to_owned(),
+                source: e.error,
+            })?;
+        let src: Vec<u16> =
+            persisted_path.as_os_str().encode_wide().chain(Some(0)).collect();
         let dst: Vec<u16> = target.as_os_str().encode_wide().chain(Some(0)).collect();
-        // Persist tmp first so the path stays valid through MoveFileExW
-        let (_, persisted_path) = tmp.keep()?;
         let ok = unsafe {
             MoveFileExW(src.as_ptr(), dst.as_ptr(),
                 MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)
         };
         if ok == 0 {
+            let err = std::io::Error::last_os_error();
             let _ = std::fs::remove_file(&persisted_path);
             return Err(StorageError::AtomicRename {
                 path: target.to_owned(),
-                source: std::io::Error::last_os_error(),
+                source: err,
             });
         }
+        // MOVEFILE_WRITE_THROUGH durably commits the rename; no fsync(dir)
+        // needed (and not portable: opening a directory handle on Windows
+        // requires FILE_FLAG_BACKUP_SEMANTICS, which std::fs::File::open
+        // does not set).
     }
 
     #[cfg(unix)]
@@ -881,17 +904,17 @@ pub fn atomic_replace(target: &Path, payload: &[u8]) -> Result<(), StorageError>
             path: target.to_owned(),
             source: e.error,
         })?;
+        let dir_handle = File::open(dir)?;
+        full_fsync(&dir_handle)?;
     }
 
-    let dir_handle = File::open(dir)?;
-    full_fsync(&dir_handle)?;
     Ok(())
 }
 
 pub fn append_durable(target: &Path, line: &[u8]) -> Result<(), StorageError> {
     let mut f = OpenOptions::new().append(true).create(true).open(target)?;
     f.write_all(line)?;
-    f.sync_data()?; // fdatasync on Linux, FlushFileBuffers on Windows, F_FULLFSYNC fallback on mac
+    full_fsync(&f)?; // F_FULLFSYNC on macOS; sync_all elsewhere
     Ok(())
 }
 ```
@@ -899,10 +922,9 @@ pub fn append_durable(target: &Path, line: &[u8]) -> Result<(), StorageError> {
 Notes:
 
 - `tempfile::NamedTempFile::new_in(dir)` ensures the temp file is on the same filesystem as the target; cross-filesystem rename is non-atomic.
-- macOS `F_FULLFSYNC` is mandatory for `meta.toml` and `notes.md`; the default `fsync(2)` only commits to drive cache, not platter, on Apple SSDs. `tokio::fs::File::sync_all` does *not* call `F_FULLFSYNC`.
-- Windows `MoveFileExW(MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)` is the only documented atomic-with-replace primitive; `std::fs::rename` on Windows does not guarantee replace-target atomicity across crashes.
-- Linux `rename(2)` is atomic for in-filesystem renames, but the directory entry needs `fsync(dir)` to be durable.
-- The directory `fsync` after rename is required on every platform; without it, a power loss between rename and metadata-flush can lose the entry even though the new file exists on disk.
+- macOS `F_FULLFSYNC` is mandatory for `meta.toml`, `notes.md`, and every `transcript.md` chunk-boundary append; the default `fsync(2)` and `fdatasync(2)` only commit to drive cache, not platter, on Apple SSDs. Both `std::fs::File::sync_all` and `tokio::fs::File::sync_all` call `fsync(2)` on macOS, not `F_FULLFSYNC` — the explicit `fcntl(F_FULLFSYNC)` in `full_fsync` is the only correct primitive.
+- Windows `MoveFileExW(MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)` is the only documented atomic-with-replace primitive; `std::fs::rename` on Windows does not guarantee replace-target atomicity across crashes. `MOVEFILE_WRITE_THROUGH` already commits the rename's metadata durably, so no separate `fsync(dir)` is required (and would not be portable: opening a directory handle on Windows requires `FILE_FLAG_BACKUP_SEMANTICS`, which `std::fs::File::open` does not set, returning `ERROR_ACCESS_DENIED`).
+- Linux and other Unix targets: `rename(2)` is atomic for in-filesystem renames, but the directory entry needs an explicit `fsync(dir)` for durability across power loss; this is the trailing `full_fsync(&dir_handle)` inside `#[cfg(unix)]`.
 
 #### Storage layout invariants
 
