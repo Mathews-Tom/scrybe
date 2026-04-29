@@ -1,0 +1,21 @@
+[package]
+name = "scrybe-cli"
+version = "0.1.0-alpha.1"
+description = "Placeholder CLI binary for scrybe; prints a project banner only at this revision."
+publish = false
+authors.workspace = true
+edition.workspace = true
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "scrybe"
+path = "src/main.rs"
+
+[dependencies]
+scrybe = { path = "../scrybe", version = "0.1.0-alpha.1" }
+
+[lints]
+workspace = true

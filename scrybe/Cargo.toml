@@ -1,0 +1,16 @@
+[package]
+name = "scrybe"
+version = "0.1.0-alpha.1"
+description = "Open-source local-first meeting transcription and notes. Pre-release placeholder; see https://github.com/Mathews-Tom/scrybe for the architecture and roadmap."
+readme = "README.md"
+keywords = ["meeting", "transcription", "whisper", "local-first", "privacy"]
+categories = ["multimedia::audio", "command-line-utilities"]
+authors.workspace = true
+edition.workspace = true
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
