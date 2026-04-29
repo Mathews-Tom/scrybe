@@ -1,7 +1,7 @@
 [package]
 name = "scrybe-cli"
 version = "0.1.0-alpha.1"
-description = "Placeholder CLI binary for scrybe; prints a project banner only at this revision."
+description = "Command-line driver for scrybe: init, record, list, show, doctor."
 publish = false
 authors.workspace = true
 edition.workspace = true
@@ -15,8 +15,33 @@ name = "scrybe"
 path = "src/main.rs"
 doc = false
 
+[features]
+default = []
+hook-git = ["scrybe-core/hook-git"]
+whisper-local = ["scrybe-core/whisper-local"]
+
 [dependencies]
+anyhow = "1"
+async-trait.workspace = true
+chrono.workspace = true
+clap = { version = "4.5", features = ["derive"] }
+directories.workspace = true
+futures.workspace = true
 scrybe = { path = "../scrybe", version = "0.1.0-alpha.1" }
+scrybe-capture-mac = { path = "../scrybe-capture-mac", version = "0.1.0-alpha.1" }
+scrybe-core = { path = "../scrybe-core", version = "0.1.0-alpha.1" }
+serde.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "fs", "io-util", "sync", "time"] }
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+pretty_assertions = "1"
+tempfile = "3"
 
 [lints]
 workspace = true
