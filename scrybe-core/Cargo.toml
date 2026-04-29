@@ -10,11 +10,23 @@ repository.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+default = []
+# Enables Hook::Git via git2 / libgit2. Off by default so the workspace
+# builds without a system libgit2; enable in scrybe-cli when the user
+# turns on the [hooks.git] section in config.
+hook-git = ["dep:git2"]
+# Enables WhisperLocalProvider via whisper-rs (links libwhisper / Metal /
+# BLAS depending on platform). Off by default so the workspace builds
+# without C++ toolchain; scrybe-cli enables it via its own feature flag.
+whisper-local = ["dep:whisper-rs"]
+
 [dependencies]
 async-trait.workspace = true
 chrono.workspace = true
 directories.workspace = true
 futures.workspace = true
+git2 = { version = "0.19", default-features = false, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
@@ -23,6 +35,7 @@ tokio.workspace = true
 toml.workspace = true
 tracing.workspace = true
 ulid.workspace = true
+whisper-rs = { version = "0.13", optional = true, default-features = false }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

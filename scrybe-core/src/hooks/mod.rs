@@ -11,6 +11,10 @@
 //! because `meta.toml` records hook outcomes against these names.
 //! Adding a variant is a major-version change.
 
+pub mod git;
+
+pub use git::{GitHook, GitHookConfig};
+
 use std::path::PathBuf;
 use std::sync::Arc;
 

@@ -10,7 +10,9 @@
 pub mod llm;
 pub mod retry;
 pub mod stt;
+pub mod whisper_local;
 
 pub use llm::LlmProvider;
 pub use retry::{retry_with_policy, RetryPolicy};
 pub use stt::SttProvider;
+pub use whisper_local::{WhisperLocalConfig, WhisperLocalProvider};
