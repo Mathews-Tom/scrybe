@@ -13,10 +13,19 @@ rust-version.workspace = true
 [features]
 default = []
 # Enables the live Core Audio Taps binding via objc2. Requires macOS
-# 14.4+ at runtime; building with this feature pulls objc2 + the
+# 14.4+ at runtime; building with this feature pulls objc2 and the
 # CoreAudio framework. Off by default so the workspace can be type-
-# checked on Linux/Windows hosts.
-core-audio-tap = []
+# checked on Linux/Windows hosts; the macOS CI lane and the release
+# build flip it on.
+core-audio-tap = [
+    "dep:objc2",
+    "dep:objc2-foundation",
+    "dep:objc2-core-foundation",
+    "dep:objc2-core-audio",
+    "dep:objc2-core-audio-types",
+    "dep:block2",
+    "dep:dispatch2",
+]
 
 [dependencies]
 async-trait.workspace = true
@@ -25,6 +34,15 @@ scrybe-core = { path = "../scrybe-core", version = "0.1.0-alpha.1" }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 tracing.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { workspace = true, optional = true }
+objc2-foundation = { workspace = true, optional = true }
+objc2-core-foundation = { workspace = true, optional = true }
+objc2-core-audio = { workspace = true, optional = true }
+objc2-core-audio-types = { workspace = true, optional = true }
+block2 = { workspace = true, optional = true }
+dispatch2 = { workspace = true, optional = true }
 
 [dev-dependencies]
 pretty_assertions = "1"

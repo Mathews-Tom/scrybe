@@ -52,6 +52,52 @@ version = "0.2"
 version = "0.59"
 features = ["Win32_Foundation", "Win32_Storage_FileSystem"]
 
+# Apple bindings for the macOS Core Audio Taps adapter
+# (`scrybe-capture-mac`, feature `core-audio-tap`). Pinned to the 0.3
+# series of the `objc2`-family crates. These dependencies are only
+# pulled in when the consuming crate opts in via the
+# `core-audio-tap` feature gate, so non-macOS builds remain
+# Apple-framework-free.
+
+[workspace.dependencies.objc2]
+version = "0.6"
+
+[workspace.dependencies.objc2-foundation]
+version = "0.3"
+default-features = false
+features = ["std", "NSObject", "NSArray", "NSDictionary", "NSString", "NSValue"]
+
+[workspace.dependencies.objc2-core-foundation]
+version = "0.3"
+default-features = false
+features = ["std", "objc2", "CFBase", "CFString", "CFDictionary"]
+
+[workspace.dependencies.objc2-core-audio]
+version = "0.3"
+default-features = false
+features = [
+    "std",
+    "objc2",
+    "objc2-core-audio-types",
+    "objc2-foundation",
+    "AudioHardware",
+    "block2",
+    "dispatch2",
+]
+
+[workspace.dependencies.objc2-core-audio-types]
+version = "0.3"
+default-features = false
+features = ["std", "objc2", "CoreAudioBaseTypes"]
+
+[workspace.dependencies.block2]
+version = "0.6"
+
+[workspace.dependencies.dispatch2]
+version = "0.3"
+default-features = false
+features = ["std", "objc2"]
+
 [profile.release]
 codegen-units = 1
 lto = "thin"
