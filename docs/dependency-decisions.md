@@ -28,7 +28,7 @@ Indirect (transitive) dependencies inherit the same rules but are vetted lazily:
 | Direct deps | Major-minor pinned (`= "1.42"` style). Patches float. Major bumps are a decision. |
 | Build/dev deps | Same as direct. |
 | `Cargo.lock` | Committed. Renovate keeps it current; review every patch update. |
-| MSRV | Rust 1.83 (stable AFIT, 2024 edition). Bumped only with a release. |
+| MSRV | Rust 1.85 (stable AFIT and edition 2024 — both required by the modern transitive dependency tree, including `serde_spanned` 1.x, `toml_parser` 1.x, `getrandom` 0.4). Bumped only with a release. |
 
 ## 3. The dependency table
 
@@ -65,14 +65,14 @@ Indirect (transitive) dependencies inherit the same rules but are vetted lazily:
 
 | Crate | Version | License | Host | Role | Notes |
 |---|---|---|---|---|---|
-| `tokio` | `1.42` | MIT | github.com/tokio-rs/tokio | Async runtime | Feature subset: `["rt-multi-thread", "macros", "fs", "io-util", "sync", "signal"]`. We deliberately exclude `["full"]` to save ~200 KB and to keep the surface auditable. Adding a feature requires updating this doc. |
+| `tokio` | `1.42` | MIT | github.com/tokio-rs/tokio | Async runtime | Feature subset: `["rt-multi-thread", "macros", "fs", "io-util", "sync", "signal", "time"]`. We deliberately exclude `["full"]` to save ~200 KB and to keep the surface auditable. `"time"` is required for `tokio::time::sleep` in the retry/backoff helper (`scrybe-core::providers::retry`) and for `tokio::time::timeout` in the hook dispatcher; adding any further feature requires updating this doc. |
 | `async-trait` | `0.1` | MIT OR Apache-2.0 | github.com/dtolnay/async-trait | Async functions in traits | Will be removed when stable AFIT covers all our trait shapes; tracked. |
 | `futures` | `0.3` | MIT OR Apache-2.0 | rust-lang/futures-rs | `join_all`, stream combinators | Used in the hook dispatcher and pipeline. |
 | `reqwest` | `0.12` | MIT OR Apache-2.0 | github.com/seanmonstar/reqwest | HTTP client for OpenAI-compat providers and webhook hook | Default features disabled; we enable `["rustls-tls", "json", "stream"]`. Excludes native-tls to avoid OS-trust-store divergence. |
 | `rustls` | `0.23` | MIT OR Apache-2.0 OR ISC | github.com/rustls/rustls | TLS via `reqwest` | No certificate pinning per §10 threat model. |
 | `serde` | `1` | MIT OR Apache-2.0 | github.com/serde-rs/serde | Serialization | With `derive`. |
 | `serde_json` | `1` | MIT OR Apache-2.0 | serde-rs/json | JSON for HTTP and `transcript.partial.jsonl` | |
-| `toml` | `0.9` | MIT OR Apache-2.0 | github.com/toml-rs/toml | `meta.toml` and `config.toml` | Strict mode; unknown keys rejected with line numbers. |
+| `toml` | `0.8` | MIT OR Apache-2.0 | github.com/toml-rs/toml | `meta.toml` and `config.toml` | Strict mode (`#[serde(deny_unknown_fields)]`); unknown keys rejected. Pinned at `0.8` because `0.9` pulls `serde_spanned 1.x` / `toml_parser 1.x`, which require Rust 1.85's edition-2024 transitive features in a cargo-feature-gate configuration that the workspace is not yet ready to consume cleanly. Reassess at the next minor bump. |
 
 ### 3.4 Storage, config, time, IDs
 
