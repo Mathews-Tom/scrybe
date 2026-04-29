@@ -325,15 +325,15 @@ Five-second silence aligns with the WhisperX/faster-whisper merge-window convent
 
 Silence-bounded chunks improve Whisper accuracy because the model doesn't have to guess where utterances end.
 
-### Consent step
+### Courtesy-notification step
 
-Before `AudioCapture::start()` is called, the session runs the consent step. This is a first-class pipeline stage, not a config-toggleable wrapper. Three configurable modes:
+Before `AudioCapture::start()` is called, the session runs a courtesy-notification step. This is a first-class pipeline stage, not a config-toggleable wrapper. Three configurable modes:
 
 | Mode | Behavior | Use case |
 |---|---|---|
-| `quick` (default) | Modal CLI prompt: "Recording starts in 3 seconds. Type `y` to confirm, `n` to abort, or `e` to edit consent settings." Acknowledgement logged to `meta.toml` as `ConsentAttestation { mode: "quick", attested_at, by_user: $USER }` | Solo dictation, all-party-consent jurisdictions where the user is the only participant |
-| `notify` | Modal CLI prompt + automatic chat-message injection into Zoom/Meet/Teams via platform-specific paste (mac: AppleScript via `osascript`; win: SendInput; linux: `xdotool`/`ydotool`). Default message: "I'm transcribing this call locally with scrybe (no cloud, no bot). Speak up if you'd prefer I didn't." Editable per `notes_template`-style override. | Multi-party calls in one-party-consent jurisdictions where polite notice is the norm |
-| `announce` | All of `notify` plus a TTS-generated 2-second spoken disclosure injected into the user's mic at session start ("This call is being transcribed locally on the host's device.") via the OS audio device | All-party-consent jurisdictions (CA, FL, IL, MA, MD, MT, NH, PA, WA, plus CT/DE civilly), regulated industries |
+| `quick` (default) | Modal CLI prompt: "Capture starts in 3 seconds. Type `y` to confirm, `n` to abort, or `e` to edit settings." Acknowledgement logged to `meta.toml` as `ConsentAttestation { mode: "quick", attested_at, by_user: $USER }` | Solo dictation; user is the only participant |
+| `notify` | Modal CLI prompt + automatic chat-message injection into the meeting platform via platform-specific paste (mac: AppleScript via `osascript`; win: SendInput; linux: `xdotool`/`ydotool`). Default message: "I'm taking notes locally with scrybe — speak up if you'd prefer I didn't." Editable. | Multi-party calls; courtesy notice into the chat |
+| `announce` | All of `notify` plus a TTS-generated 2-second spoken disclosure played at session start ("I'm taking notes locally with scrybe.") via the user's mic device | When a stronger explicit notice is appropriate; see `LEGAL.md` for jurisdiction-specific guidance |
 
 Mode is selected per-session via `--consent {quick,notify,announce}` flag or `consent.default_mode` in config. The step **cannot be disabled at compile time or runtime** — `--consent quick` is the floor. This is enforced in `scrybe-core::session`, not in the CLI, so library consumers (Android shell, future GUI) cannot bypass it.
 
@@ -640,8 +640,8 @@ These are not aspirational; they are the build-fail thresholds. CI runs `scrybe-
 | Network attacker | MITM on cloud provider call | TLS via `rustls`; certificate pinning not done (would break BYO cloud) |
 | Curious colleague glancing at screen | Sees transcript appearing live | Tray icon shows recording state; `transcript.md` is in user-only perms (0700/0600) |
 | Bad actor in scrybe itself (compromised release) | Trojan binary | Reproducible builds; release artifacts SLSA-attested; signing keys in HSM/hardware token only |
-| Recorded participant who did not consent | Privacy violation; possible state-wiretap criminal liability for the user | Mandatory consent step (§5); jurisdiction matrix in `LEGAL.md`; `ConsentAttestation` in `meta.toml` as evidence of good-faith compliance. Author's role is to make consent un-skippable; user's role is to use the right `--consent` mode for their jurisdiction |
-| Author of scrybe held liable for downstream misuse | Civil suit / criminal charge | Materially low risk per `LEGAL.md` §3. Mitigations: neutral marketing posture (no "record secretly" language), explicit intended-use statement in README, no managed service, Apache-2.0 §7 (warranty disclaimer) and §8 (limitation of liability) — enforceable per *Jacobsen v. Katzer* |
+| Participant who did not get a courtesy notice | Trust gap with the other party | Mandatory courtesy-notification step (§5); `ConsentAttestation` in `meta.toml` records the mode and timestamp; `LEGAL.md` covers the user-facing reference matrix |
+| Author held responsible for how someone else uses scrybe | Civil or regulatory exposure | Low. See `LEGAL.md` for the publisher-posture summary. Mitigations: neutral marketing, explicit intended-use statement in README, no managed service, Apache-2.0 §7 (warranty disclaimer) and §8 (limitation of liability) |
 
 ### What we do not promise
 
