@@ -157,7 +157,11 @@ where
     )
     .await;
 
-    let _ = release_session_lock(&lock_path);
+    // Surface lock-release failures via tracing so a stale lockfile
+    // has a paper trail; the session result still takes precedence.
+    if let Err(e) = release_session_lock(&lock_path) {
+        warn!(?e, "failed to release per-session pid lock");
+    }
 
     outcome
 }
@@ -246,7 +250,6 @@ where
 
     let mut mic_text_chunks: Vec<crate::types::TranscriptChunk> = Vec::new();
     let mut sys_text_chunks: Vec<crate::types::TranscriptChunk> = Vec::new();
-    let mut audio_pages: Vec<u8> = Vec::new();
 
     while let Some(frame_result) = capture_stream.next().await {
         let frame = frame_result?;
@@ -267,14 +270,21 @@ where
             .push_pcm(&pcm_for_audio)
             .map_err(CoreError::Pipeline)?;
         if !page.is_empty() {
-            audio_pages.extend_from_slice(&page);
+            // Per docs/system-design.md §8.3: audio is the source of
+            // truth, so each completed page is durably appended with
+            // fdatasync on Unix / FlushFileBuffers on Windows. A crash
+            // mid-session loses at most the most recent partial page.
+            append_durable(&audio_path, &page)?;
         }
 
         for chunk in chunks_for_stt {
-            let result = process_chunk(chunk, stt, &transcript_path, id, hooks, diarizer).await?;
-            match result.target {
-                StoreTarget::Mic => mic_text_chunks.push(result.text),
-                StoreTarget::System => sys_text_chunks.push(result.text),
+            if let Some(result) =
+                process_chunk(chunk, stt, &transcript_path, id, hooks, diarizer).await?
+            {
+                match result.target {
+                    StoreTarget::Mic => mic_text_chunks.push(result.text),
+                    StoreTarget::System => sys_text_chunks.push(result.text),
+                }
             }
         }
     }
@@ -288,17 +298,19 @@ where
         }
     }
     for chunk in tail_for_stt {
-        let result = process_chunk(chunk, stt, &transcript_path, id, hooks, diarizer).await?;
-        match result.target {
-            StoreTarget::Mic => mic_text_chunks.push(result.text),
-            StoreTarget::System => sys_text_chunks.push(result.text),
+        if let Some(result) =
+            process_chunk(chunk, stt, &transcript_path, id, hooks, diarizer).await?
+        {
+            match result.target {
+                StoreTarget::Mic => mic_text_chunks.push(result.text),
+                StoreTarget::System => sys_text_chunks.push(result.text),
+            }
         }
     }
 
     let tail_page = audio_encoder.finish().map_err(CoreError::Pipeline)?;
-    audio_pages.extend_from_slice(&tail_page);
-    if !audio_pages.is_empty() {
-        atomic_replace(&audio_path, &audio_pages)?;
+    if !tail_page.is_empty() {
+        append_durable(&audio_path, &tail_page)?;
     }
 
     let attributed = diarizer
@@ -371,12 +383,19 @@ async fn process_chunk<S: SttProvider, D: Diarizer>(
     session_id: SessionId,
     hooks: &[Box<dyn Hook>],
     _diarizer: &D,
-) -> Result<ChunkOutcome, CoreError> {
+) -> Result<Option<ChunkOutcome>, CoreError> {
     let target = match chunk.source {
         FrameSource::System => StoreTarget::System,
         FrameSource::Mic | FrameSource::Mixed => StoreTarget::Mic,
     };
-    let audio_chunk = build_audio_chunk(&chunk)?;
+    let audio_chunk = match build_audio_chunk(&chunk) {
+        Ok(audio) => audio,
+        Err(CoreError::Pipeline(PipelineError::EmptyChunk)) => {
+            warn!(target = ?target_kind(target), "empty chunk dropped before stt");
+            return Ok(None);
+        }
+        Err(other) => return Err(other),
+    };
     let transcript = stt.transcribe(audio_chunk).await?;
 
     let speaker = match chunk.source {
@@ -402,10 +421,10 @@ async fn process_chunk<S: SttProvider, D: Diarizer>(
     )
     .await;
 
-    Ok(ChunkOutcome {
+    Ok(Some(ChunkOutcome {
         text: transcript,
         target,
-    })
+    }))
 }
 
 const fn target_kind(target: StoreTarget) -> &'static str {
@@ -417,10 +436,7 @@ const fn target_kind(target: StoreTarget) -> &'static str {
 
 fn build_audio_chunk(chunk: &EmittedChunk) -> Result<AudioChunk, CoreError> {
     if chunk.frames.is_empty() {
-        warn!("empty chunk emitted; skipping STT");
-        return Err(CoreError::Pipeline(PipelineError::Resample {
-            source_rate: 0,
-        }));
+        return Err(CoreError::Pipeline(PipelineError::EmptyChunk));
     }
     let source_rate = chunk.frames[0].sample_rate;
     let channels = chunk.frames[0].channels.max(1);
@@ -530,7 +546,8 @@ fn build_meta_toml(args: &MetaArgs<'_>) -> Result<String, CoreError> {
             version: env!("CARGO_PKG_VERSION").to_string(),
         },
     };
-    toml::to_string(&meta).map_err(|e| CoreError::Pipeline(PipelineError::OpusEncode(Box::new(e))))
+    toml::to_string(&meta)
+        .map_err(|e| CoreError::Pipeline(PipelineError::MetaSerialize(Box::new(e))))
 }
 
 #[cfg(test)]

@@ -190,6 +190,12 @@ pub enum PipelineError {
 
     #[error("opus encoder failed: {0}")]
     OpusEncode(#[source] BoxError),
+
+    #[error("metadata serialization failed: {0}")]
+    MetaSerialize(#[source] BoxError),
+
+    #[error("empty chunk emitted; dropped without sending to stt")]
+    EmptyChunk,
 }
 
 #[cfg(test)]
