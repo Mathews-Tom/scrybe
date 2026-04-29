@@ -139,22 +139,23 @@ scrybe/
 
 ```rust
 pub trait AudioCapture: Send + 'static {
-    /// Begin capture. Permission prompts (macOS Screen Recording,
-    /// Android MediaProjection) happen here.
-    fn start(&mut self) -> Result<()>;
+    /// Begin capture. Permission prompts (macOS Core Audio Taps tap-creation
+    /// or Screen Recording, Android MediaProjection) happen here.
+    fn start(&mut self) -> Result<(), CaptureError>;
 
     /// Stop capture. Idempotent.
-    fn stop(&mut self) -> Result<()>;
+    fn stop(&mut self) -> Result<(), CaptureError>;
 
-    /// Stream of frames. Closes when `stop()` is called or capture errors.
-    fn frames(&self) -> mpsc::Receiver<AudioFrame>;
+    /// Stream of frames. The stream yields `Err` for transient or terminal
+    /// capture errors and closes when `stop()` is called.
+    fn frames(&self) -> impl Stream<Item = Result<AudioFrame, CaptureError>> + Send + 'static;
 
     /// Static metadata about what this implementation can do.
     fn capabilities(&self) -> Capabilities;
 }
 
 pub struct AudioFrame {
-    pub samples: Vec<f32>,         // interleaved
+    pub samples: Arc<[f32]>,       // interleaved; cheaply cloneable for fan-out
     pub channels: u16,             // 1 (mic-only) or 2 (mic L, system R)
     pub sample_rate: u32,          // raw rate; resampled to 16kHz before STT
     pub timestamp_ns: u64,
@@ -171,7 +172,7 @@ pub struct Capabilities {
 }
 ```
 
-This is the **only** trait that is allowed to vary by `cfg(target_os)`. Once an implementation exists per platform, the trait is frozen forever; changes break every adapter at once.
+This is the **only** trait that is allowed to vary by `cfg(target_os)`. The shape is **Tier 1** stability — frozen at v1.0; changes break every adapter at once. The `Stream`-returning shape replaces the original `mpsc::Receiver` draft (`.docs/development-plan.md` §2.2 H8): it expresses errors in-band without a side-channel and composes with `tokio_stream` adapters used by the pipeline. `Arc<[f32]>` replaces the original `Vec<f32>` draft (§2.2 M8): frames fan out to the channel splitter, the encoder, and the VAD/chunker without per-clone allocation.
 
 ### 4.2 `ContextProvider` — pre-call context
 
