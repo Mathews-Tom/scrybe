@@ -68,3 +68,17 @@ tempfile = "3"
 
 [lints]
 workspace = true
+
+# Tarball generation for `scrybe-cli` is owned by cargo-dist. Other workspace
+# crates (`scrybe`, `scrybe-core`, `scrybe-capture-mac`) are libraries or
+# placeholders and stay opted out via the absence of this block.
+#
+# `cli-shell` and `hook-git` are enabled so the released binary boots straight
+# into the tray + global-hotkey shell with the git auto-commit hook compiled
+# in. `whisper-local` is intentionally NOT enabled here; building whisper-rs
+# in the release workflow needs a verified C++ toolchain on the macos-14
+# runner and is gated to a follow-up release.
+[package.metadata.dist]
+dist = true
+features = ["cli-shell", "hook-git"]
+default-features = true

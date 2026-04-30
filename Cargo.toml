@@ -102,3 +102,20 @@ features = ["std", "objc2"]
 codegen-units = 1
 lto = "thin"
 strip = "symbols"
+
+# cargo-dist is the release-tarball builder driven by `.github/workflows/release.yml`.
+# Cargo treats `[workspace.metadata.*]` as opaque, so this block is invisible to
+# every other tool (clippy, rustc, the egress audit, the LoC budget). Pinned to
+# the 0.25 series per `.docs/development-plan.md` §13.1.
+[workspace.metadata.dist]
+cargo-dist-version = "0.25.1"
+ci = ["github"]
+installers = []
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
+pr-run-mode = "plan"
+allow-dirty = ["ci"]
+publish-jobs = []
+include = ["INSTALL.md", "LICENSE", "README.md"]
+# `scrybe-cli` is the only binary-producing crate in the workspace; it is opted
+# in via its own `[package.metadata.dist]` block. Other workspace members are
+# library or placeholder crates and stay opted out.
