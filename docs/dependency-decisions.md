@@ -126,18 +126,17 @@ These are not Rust dependencies; they run at release time. Versions pinned in `r
 
 | Tool | Version | Role |
 |---|---|---|
-| `cargo-dist` | `0.25` | GitHub Release artifact pipeline; cross-platform builds, signing, notarization integration |
+| `cargo-dist` | `0.25` | GitHub Release artifact pipeline; cross-platform unsigned-binary builds |
 | `cargo-deb` | `2.6` | `.deb` package generation for Linux distros |
-| `cargo-wix` | `0.3` | Windows MSI generation |
+| `cargo-wix` | `0.3` | Windows MSI generation (unsigned through v1.0) |
 | `cargo-ndk` | `3.5` | Android NDK toolchain wrapper |
 | `cargo-vet` | `0.10` | Per-dep audit ledger; required for every direct dep |
 | `cargo-audit` | `0.21` | RustSec advisory scanning; CI gate |
 | `cargo-deny` | `0.18` | License + advisory + bans + sources policy |
 | `cargo-sbom` | `0.9` | CycloneDX SBOM attached to each GitHub Release |
-| `cosign` | `2.4` | Keyless signing via GitHub Actions OIDC |
-| Apple `notarytool` | bundled with Xcode 16+ | macOS notarization |
-| Apple `codesign` | bundled with Xcode 16+ | macOS Developer ID signing |
-| Microsoft `signtool` | Windows SDK 10.0.26100+ | Windows code signing (deferred to v0.4 or later) |
+| `cosign` | `2.4` | Keyless signing of release tarballs via GitHub Actions OIDC (artifact-level CI provenance only; not OS-level code signing) |
+
+OS-level code-signing toolchains (Apple `codesign` / `notarytool`, Microsoft `signtool`) are intentionally absent. macOS and Windows artifacts ship unsigned through v1.0, with `INSTALL.md` documenting `xattr -dr com.apple.quarantine` (macOS) and SmartScreen "More info → Run anyway" (Windows). Rationale: vendor-tied trust dependencies are deferred until after the project has demonstrated longevity. See `.docs/development-plan.md` §13.1.
 
 ## 4. Vendored sources
 

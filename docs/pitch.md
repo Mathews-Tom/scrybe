@@ -116,7 +116,7 @@ The plan is staged honestly:
 | **v0.4** | Add Windows (WASAPI per-process loopback). Optional Parakeet via `sherpa-rs`. | 3 |
 | **v0.5** | Add Android (MediaProjection + Compose UI). Neural diarizer (`pyannote-onnx`) for in-room and multi-party. | 5 |
 | **v0.6** | Hooks complete (git, webhook, indexer). Multilingual regression corpus. Bench gates. | 2 |
-| **v0.9-rc** | Reproducible builds, signing, notarization, packaging (Homebrew, Scoop, AUR, Flatpak, F-Droid). | 2 |
+| **v0.9-rc** | Reproducible builds, packaging (Homebrew, Scoop, AUR, Flatpak, F-Droid). Unsigned binaries on macOS / Windows with documented Gatekeeper / SmartScreen workarounds. | 2 |
 | **v1.0** | Trait freeze, docs polish, release, hold for 6 months. | 1 |
 
 Total v1.0 surface: realistically **15–20k LoC of Rust + ~1.5k Kotlin + ~500 Swift/objc2**, not 6–8k. The leanness story holds against Meetily and anarlog at this number — see the comparison table — but the headline metric is **core/adapter ratio**, not total LoC.
