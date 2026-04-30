@@ -118,4 +118,41 @@ mod tests {
         let body = std::fs::read_to_string(&target).unwrap();
         assert!(body.contains("schema_version = 1"));
     }
+
+    /// E-4 from `.docs/development-plan.md` §7.3.3: the onboarding
+    /// flow must produce a config that round-trips through serialize
+    /// → deserialize → equality with `Config::default()`. A regression
+    /// in `toml::to_string_pretty` or `Config::from_toml_str` (e.g.,
+    /// adding a `#[serde(skip_serializing_if = ...)]` to a defaulted
+    /// field, or renaming a key without a `#[serde(rename)]` shim)
+    /// would silently break this contract — the user runs `scrybe
+    /// init`, the resulting file looks fine, but `scrybe record`
+    /// fails to parse it on the next launch.
+    ///
+    /// The §7.3.3 sub-assert "model downloaded with correct checksum"
+    /// is deferred. It requires either a deterministic ~800 MB
+    /// Whisper fixture (impractical to vendor) or a network mock for
+    /// the model-download step (the v0.1 init flow doesn't perform a
+    /// download — that's a v0.2 deliverable).
+    #[tokio::test]
+    async fn test_init_writes_config_round_trips_to_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("config.toml");
+
+        run(Args {
+            force: false,
+            path: Some(target.clone()),
+        })
+        .await
+        .unwrap();
+
+        let body = std::fs::read_to_string(&target).unwrap();
+        let parsed = Config::from_toml_str(&body, &target).unwrap();
+
+        assert_eq!(
+            parsed,
+            Config::default(),
+            "init must write a config that round-trips back to Config::default()"
+        );
+    }
 }
