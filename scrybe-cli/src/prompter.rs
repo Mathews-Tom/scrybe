@@ -70,6 +70,14 @@ fn read_consent_blocking<W: Write, R: BufRead>(
     writer
         .flush()
         .map_err(|e| ConsentError::TtsUnavailable(e.to_string()))?;
+    // Match the pre-refactor semantics of TtyPrompter::prompt: release
+    // the writer's lock before blocking on the reader. For
+    // W = StdoutLock in production this unblocks any concurrent stdout
+    // writer during the stdin read; for W = Vec<u8> in tests it's a
+    // no-op. Without this drop, both stdio locks would be held for the
+    // duration of read_line, which is a (currently invisible)
+    // behavioral change the original code took pains to avoid.
+    drop(writer);
     let mut buf = String::new();
     reader
         .read_line(&mut buf)
