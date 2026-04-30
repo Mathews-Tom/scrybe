@@ -1969,11 +1969,11 @@ dependencies = [
 
 [[package]]
 name = "scrybe"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 
 [[package]]
 name = "scrybe-capture-mac"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "block2",
@@ -1993,7 +1993,7 @@ dependencies = [
 
 [[package]]
 name = "scrybe-cli"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2021,7 +2021,7 @@ dependencies = [
 
 [[package]]
 name = "scrybe-core"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
