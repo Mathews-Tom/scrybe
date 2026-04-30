@@ -6,12 +6,20 @@
 
 //! `scrybe` CLI — record, list, show, doctor, init.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
+use tokio::runtime::{Builder, Runtime};
 
 mod commands;
 mod prompter;
 mod runtime;
+
+#[cfg(feature = "cli-shell")]
+mod hotkey;
+#[cfg(feature = "cli-shell")]
+mod shell;
+#[cfg(feature = "cli-shell")]
+mod tray;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -25,11 +33,41 @@ struct Cli {
     command: commands::Command,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     let cli = Cli::parse();
     init_tracing();
-    commands::run(cli.command).await
+
+    let runtime = build_runtime()?;
+
+    #[cfg(feature = "cli-shell")]
+    {
+        if let commands::Command::Record(args) = &cli.command {
+            if args.shell {
+                return shell::run_record_with_shell(args.clone(), &runtime);
+            }
+        }
+    }
+
+    #[cfg(not(feature = "cli-shell"))]
+    {
+        if let commands::Command::Record(args) = &cli.command {
+            if args.shell {
+                tracing::info!(
+                    "scrybe record --shell: this binary was built without the cli-shell \
+                     feature; running headless and stopping on SIGINT only."
+                );
+            }
+        }
+    }
+
+    runtime.block_on(commands::run(cli.command))
+}
+
+fn build_runtime() -> Result<Runtime> {
+    Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("building tokio runtime")
 }
 
 fn init_tracing() {

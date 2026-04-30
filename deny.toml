@@ -43,6 +43,14 @@ ignore = [
     # toolchain bumps. Tracked under `.docs/development-plan.md` §6.2
     # delivery item #4 (dependency pins).
     { id = "RUSTSEC-2026-0008", reason = "git2 0.19 unsound advisory; 0.20 upgrade blocked by rustc 1.85 toolchain pin." },
+    # `glib 0.18.5` is pulled in transitively by `tray-icon 0.23 →
+    # muda → gtk-rs 0.18` and only when the optional `cli-shell`
+    # cargo feature is enabled (Linux desktop builds). The default
+    # headless build does not link this graph at all. Upstream
+    # `tray-icon` ≥ 0.24 is expected to migrate to gtk-rs 0.20 which
+    # drops the unsound `VariantStrIter` impl. Re-evaluate when
+    # `tray-icon` ships that bump.
+    { id = "RUSTSEC-2024-0429", reason = "glib 0.18 VariantStrIter unsoundness, optional via tray-icon→muda→gtk-rs 0.18; cli-shell feature only." },
 ]
 
 # OSI/FSF-approved permissive licenses compatible with Apache-2.0 plus
