@@ -765,8 +765,8 @@ flowchart LR
     Source --> CILin["CI: ubuntu-latest"]
     Source --> CIAnd["CI: ubuntu-latest + Android NDK"]
 
-    CIMac --> ArtMac["scrybe-macos-arm64.tar.gz<br/>scrybe-macos-x64.tar.gz<br/>signed + notarized"]
-    CIWin --> ArtWin["scrybe-windows-x64.zip<br/>signed"]
+    CIMac --> ArtMac["scrybe-macos-arm64.tar.gz<br/>scrybe-macos-x64.tar.gz<br/>unsigned + xattr docs"]
+    CIWin --> ArtWin["scrybe-windows-x64.zip<br/>unsigned + SmartScreen docs"]
     CILin --> ArtLin["scrybe-linux-x64.tar.gz<br/>scrybe-linux-arm64.tar.gz<br/>scrybe.AppImage"]
     CIAnd --> ArtAnd["scrybe.apk<br/>F-Droid metadata"]
 
@@ -996,7 +996,7 @@ These are not aspirational; they are the build-fail thresholds. CI runs `scrybe-
 | Local-machine attacker with disk access | Reads recorded audio + transcripts | Out of scope. User's disk encryption is the right layer |
 | Network attacker | MITM on cloud provider call | TLS via `rustls`; certificate pinning not done (would break BYO cloud) |
 | Curious colleague glancing at screen | Sees transcript appearing live | Tray icon shows recording state; `transcript.md` is in user-only perms (0700/0600) |
-| Bad actor in scrybe itself (compromised release) | Trojan binary | Reproducible builds; release artifacts SLSA-attested; signing keys in HSM/hardware token only |
+| Bad actor in scrybe itself (compromised release) | Trojan binary | Reproducible builds; release artifacts SLSA-attested; `cosign` keyless signing of release tarballs via GitHub Actions OIDC (artifact-level CI provenance, not OS-level code signing). macOS Developer ID and Windows code-signing certificates are explicitly out of scope through v1.0 (`.docs/development-plan.md` §13.1) |
 | Participant who did not get a courtesy notice | Trust gap with the other party | Mandatory courtesy-notification step (§5); `ConsentAttestation` in `meta.toml` records the mode and timestamp; `LEGAL.md` covers the user-facing reference matrix |
 | Author held responsible for how someone else uses scrybe | Civil or regulatory exposure | Low. See `LEGAL.md` for the publisher-posture summary. Mitigations: neutral marketing, explicit intended-use statement in README, no managed service, Apache-2.0 §7 (warranty disclaimer) and §8 (limitation of liability) |
 
