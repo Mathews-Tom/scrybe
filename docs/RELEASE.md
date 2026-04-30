@@ -109,8 +109,10 @@ The tag push triggers `.github/workflows/release.yml` automatically, which runs 
 
 #### 9. Watch the release workflow
 
+`gh run watch` accepts a run ID positionally; resolve the latest run from the `release` workflow and pipe it in:
+
 ```bash
-gh run watch --workflow=release.yml
+gh run list --workflow=release.yml --limit 1 --json databaseId --jq '.[0].databaseId' | xargs gh run watch
 ```
 
 Or open the run in a browser:
@@ -208,17 +210,26 @@ When the dev plan reaches §8 (Phase 2) and beyond, the publish set may grow:
 - v0.3.0 introduces the Linux capture adapter (`scrybe-capture-linux`). Same publish question.
 - v1.0.0 freezes Tier-1 traits per `docs/system-design.md` §12. After v1.0, every workspace crate is a candidate for crates.io.
 
-When the publish set changes, this runbook gains additional steps:
+When the publish set changes, this runbook gains additional steps. Order them topologically — every dependent's publish must wait for its dependencies to be live on the crates.io index, because publish-time verification resolves `path + version` deps against the index, not against the local workspace.
+
+Workspace dependency graph:
+
+- `scrybe-core` — no scrybe-* deps
+- `scrybe` — no scrybe-* deps (placeholder)
+- `scrybe-capture-mac` — depends on `scrybe-core`
+- `scrybe-cli` — depends on `scrybe`, `scrybe-core`, `scrybe-capture-mac`
+
+A valid publish order:
 
 ```bash
 # multi-crate publish in dependency order with index-propagation sleeps
 cargo publish -p scrybe-core
-sleep 60                                # let the new scrybe-core land in the index
-cargo publish -p scrybe-capture-mac
+sleep 60                                # let scrybe-core land in the index
+cargo publish -p scrybe                 # independent of scrybe-core, but must precede scrybe-cli
 sleep 60
-cargo publish -p scrybe-cli
+cargo publish -p scrybe-capture-mac     # needs scrybe-core in the index
 sleep 60
-cargo publish -p scrybe                 # placeholder bumps last
+cargo publish -p scrybe-cli             # needs all three above in the index
 ```
 
-The 60-second sleep matters: dependents publish-time-resolve their `path + version` deps against the live crates.io index, not against the local workspace, so the index has to have the new version visible before the dependent's publish job verifies.
+The 60-second sleep matters: dependents publish-time-resolve their `path + version` deps against the live crates.io index, not against the local workspace, so the index has to have the new version visible before the dependent's publish job verifies. Publishing `scrybe-cli` before `scrybe` (or before `scrybe-capture-mac`) would fail at the verify step because the dep's new version wouldn't be on crates.io yet.
