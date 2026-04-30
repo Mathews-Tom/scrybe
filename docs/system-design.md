@@ -1034,7 +1034,7 @@ Three-tier strategy. GitHub-hosted runners cannot grant Screen Recording / Media
 
 | Runner | Tests run |
 |---|---|
-| Apple Silicon Mac, macOS 14.4+, TCC granted per `docs/ci-self-hosted.md` (a Mac mini, MacBook Pro, or any M-series host registered as a `[self-hosted, macos, arm64]` runner) | E2E capture (Core Audio Taps + ScreenCaptureKit fallback), Metal benchmarks, real Whisper |
+| Apple Silicon Mac, macOS 14.4+, registered as a `[self-hosted, macos, arm64]` runner. Manual TCC grants may not be required — verified on macOS 26.4.1 in the PR #20 dispatch run (`Runner.Listener` inherited Audio Capture without a Screen Recording or Microphone prompt). The GUI-grant procedure in `docs/ci-self-hosted.md` step 3 remains authoritative when a future macOS update changes that inheritance | E2E capture (Core Audio Taps + ScreenCaptureKit fallback), Metal benchmarks, real Whisper |
 | Linux box with PipeWire + a Pulse-only VM | E2E capture per backend, distro coverage smoke (Ubuntu 22/24, Fedora, Debian Trixie, Arch via Docker) |
 | Windows VM with WASAPI playback synthetic source | E2E capture, MSI install/run, per-process loopback verification against Zoom/Teams/Meet test apps |
 | Pixel 8 (Phase 5+) via Tailscale + adb | E2E Android capture, battery-drain measurement, MediaProjection permission flow |
