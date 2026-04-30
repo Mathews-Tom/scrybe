@@ -112,6 +112,27 @@ jobs:
       - name: assert no network crates in scrybe-cli default build
         run: python3 scripts/check-egress-baseline.py
 
+  bench-compile:
+    name: bench-compile (criterion harness builds clean)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.85.0
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # `cargo bench --no-run` builds every `[[bench]]` target without
+      # running it. The full Tier-3 throughput-regression gate
+      # (`docs/system-design.md` §11) lives on the self-hosted Mac
+      # runner; GitHub-hosted CPUs are too noisy for absolute numbers.
+      # This job catches bench bitrot — a refactor that breaks the
+      # benchmark harness — on every PR.
+      - name: cargo bench --no-run (workspace)
+        run: cargo bench --workspace --no-run
+      - name: cargo clippy on benches
+        run: cargo clippy --workspace --benches -- -D warnings
+
   dist-plan:
     name: dist-plan (cargo-dist config valid)
     runs-on: ubuntu-latest
