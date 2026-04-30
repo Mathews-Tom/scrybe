@@ -1,0 +1,139 @@
+# Release workflow for scrybe-cli driven by cargo-dist 0.25.
+#
+# Trigger:
+# - Push of a tag matching `v[0-9]+.[0-9]+.[0-9]+*` (e.g. v0.1.0, v0.1.0-rc1).
+# - `workflow_dispatch` for dry-run validation; the dispatch path runs `plan`
+#   and `build` but does NOT create a GitHub Release.
+#
+# Outputs (per `[workspace.metadata.dist]` in `Cargo.toml`):
+# - `scrybe-cli-aarch64-apple-darwin.tar.xz`
+# - `scrybe-cli-x86_64-apple-darwin.tar.xz`
+# - SHA256 manifest aggregating both archives.
+#
+# Each tarball contains the `scrybe` binary, `INSTALL.md`, `LICENSE`, and
+# `README.md`. macOS artifacts are unsigned per `.docs/development-plan.md`
+# §13.1; users strip the quarantine attribute as documented in INSTALL.md.
+
+name: release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+  CARGO_DIST_VERSION: "0.25.1"
+
+jobs:
+  plan:
+    name: plan
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve-tag.outputs.tag }}
+      is-release: ${{ steps.resolve-tag.outputs.is-release }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: resolve tag
+        id: resolve-tag
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+            tag="${GITHUB_REF#refs/tags/}"
+            echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+            echo "is-release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=dispatch-$(date -u +%Y%m%d%H%M%S)" >> "$GITHUB_OUTPUT"
+            echo "is-release=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.85.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: dist-plan
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-dist@${{ env.CARGO_DIST_VERSION }}
+      - name: cargo dist plan
+        run: cargo dist plan --output-format=human
+
+  build:
+    name: build (${{ matrix.target }})
+    needs: plan
+    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - aarch64-apple-darwin
+          - x86_64-apple-darwin
+    env:
+      # Pin SOURCE_DATE_EPOCH and remap workspace paths so artifact bytes do
+      # not depend on the runner's working directory or wall-clock at build
+      # time. Reproducibility verification per `.docs/development-plan.md`
+      # §13.1 lands in a follow-up; this env block is the load-bearing
+      # half of that contract.
+      SOURCE_DATE_EPOCH: "1714464000"
+      RUSTFLAGS: "--remap-path-prefix=${{ github.workspace }}=/build"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.85.0
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: dist-build-${{ matrix.target }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-dist@${{ env.CARGO_DIST_VERSION }}
+      - name: cargo dist build
+        run: cargo dist build --artifacts=local --target=${{ matrix.target }}
+      - name: list artifacts
+        run: ls -la target/distrib/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.target }}
+          path: target/distrib/*
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: release
+    needs: [plan, build]
+    if: needs.plan.outputs.is-release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist-staging
+          pattern: dist-*
+          merge-multiple: true
+      - name: list staged artifacts
+        run: ls -la dist-staging/
+      - name: write SHA256 manifest
+        working-directory: dist-staging
+        run: |
+          shopt -s nullglob
+          : > SHA256SUMS.txt
+          for f in *.tar.* *.zip; do
+            [ -e "$f" ] || continue
+            shasum -a 256 "$f" >> SHA256SUMS.txt
+          done
+          cat SHA256SUMS.txt
+      - name: gh release create
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ needs.plan.outputs.tag }}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "${{ needs.plan.outputs.tag }}" \
+            --generate-notes \
+            --verify-tag \
+            dist-staging/*
