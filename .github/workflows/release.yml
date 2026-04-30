@@ -130,10 +130,17 @@ jobs:
       - name: gh release create
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Route the resolved tag through env so bash dereferences a variable
+          # rather than having `${{ }}` template-substitution splice it into
+          # the script body. Inline interpolation of a value an attacker can
+          # influence (a tag name) is the textbook GitHub Actions command-
+          # injection vector — the tag-pattern filter does not constrain
+          # shell metacharacters because `*` matches them.
+          TAG: ${{ needs.plan.outputs.tag }}
         run: |
-          gh release create "${{ needs.plan.outputs.tag }}" \
+          gh release create "$TAG" \
             --repo "${GITHUB_REPOSITORY}" \
-            --title "${{ needs.plan.outputs.tag }}" \
+            --title "$TAG" \
             --generate-notes \
             --verify-tag \
             dist-staging/*
