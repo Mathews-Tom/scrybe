@@ -32,8 +32,7 @@ use std::time::Duration;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use scrybe_core::pipeline::{
-    resample_linear, ChunkSink, Chunker, ChunkerConfig, EmittedChunk, Encoder, EncoderConfig,
-    EnergyVad, NullEncoder, Vad,
+    resample_linear, Chunker, ChunkerConfig, Encoder, EncoderConfig, EnergyVad, NullEncoder, Vad,
 };
 use scrybe_core::types::{AudioFrame, FrameSource};
 
@@ -94,14 +93,6 @@ fn bench_resample(c: &mut Criterion) {
     group.finish();
 }
 
-struct CountingSink(usize);
-
-impl ChunkSink for CountingSink {
-    fn accept(&mut self, _chunk: EmittedChunk) {
-        self.0 += 1;
-    }
-}
-
 fn bench_chunker(c: &mut Criterion) {
     let mut group = c.benchmark_group("chunker");
     for &frames_per_run in &[10_usize, 50, 200] {
@@ -118,7 +109,8 @@ fn bench_chunker(c: &mut Criterion) {
                         EnergyVad::default(),
                         FrameSource::Mic,
                     );
-                    let mut sink = CountingSink(0);
+                    let mut count = 0_usize;
+                    let mut sink = |_c| count += 1;
                     for i in 0..frames_per_run {
                         let ts = (i as u64 * FRAME_SAMPLES as u64 * 1_000_000_000)
                             / u64::from(SAMPLE_RATE);
@@ -126,7 +118,7 @@ fn bench_chunker(c: &mut Criterion) {
                         chunker.push(frame, &mut sink);
                     }
                     chunker.finish(&mut sink);
-                    sink.0
+                    count
                 });
             },
         );
