@@ -14,7 +14,7 @@ curl --proto '=https' --tlsv1.2 -LsSf \
 scrybe doctor
 ```
 
-The installer detects your CPU architecture, downloads the matching tarball, verifies its SHA256 against the release's signed manifest, extracts the binary into `~/.cargo/bin/` (or `~/.local/bin/` if cargo is not present), and adds that directory to your `PATH` if needed.
+The installer detects your CPU architecture, downloads the matching tarball, verifies its SHA256 against the release's checksum manifest (`dist-manifest.json`), extracts the binary into `~/.cargo/bin/` (or `~/.local/bin/` if cargo is not present), and adds that directory to your `PATH` if needed.
 
 `curl` does not attach `com.apple.quarantine` to its downloads, so Gatekeeper's "Apple cannot verify" dialog never fires for binaries installed this way — you do not need to run `xattr` by hand.
 
@@ -24,7 +24,7 @@ The installer detects your CPU architecture, downloads the matching tarball, ver
 
 ## macOS — manual install (audit-friendly)
 
-Use this path if you want to inspect every file before it lands on disk, run cosign verification yourself, or operate in an environment where piping `curl` into `sh` is forbidden.
+Use this path if you want to inspect every file before it lands on disk, verify each archive's SHA256 by hand, or operate in an environment where piping `curl` into `sh` is forbidden. cosign-based provenance verification will land in a future release per `.docs/development-plan.md` §13.1.
 
 ### 1. Pick the right tarball
 
