@@ -46,3 +46,46 @@ pub async fn run(cmd: Command) -> Result<()> {
         Command::Doctor(a) => doctor::run(a).await,
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_run_dispatches_list_command_to_list_run() {
+        let dir = tempfile::tempdir().unwrap();
+
+        run(Command::List(list::Args {
+            root: Some(dir.path().to_path_buf()),
+        }))
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_run_dispatches_show_command_and_propagates_resolve_error() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let err = run(Command::Show(show::Args {
+            id_or_folder: "missing".into(),
+            root: Some(dir.path().to_path_buf()),
+            no_transcript: false,
+        }))
+        .await
+        .unwrap_err();
+
+        assert!(err.to_string().contains("missing"));
+    }
+
+    #[tokio::test]
+    async fn test_run_dispatches_doctor_command() {
+        let dir = tempfile::tempdir().unwrap();
+
+        run(Command::Doctor(doctor::Args {
+            root: Some(dir.path().to_path_buf()),
+        }))
+        .await
+        .unwrap();
+    }
+}

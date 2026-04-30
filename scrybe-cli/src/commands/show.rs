@@ -151,4 +151,115 @@ mod tests {
 
         assert!(err.to_string().contains("matches 2 folders"));
     }
+
+    #[test]
+    fn test_resolve_folder_returns_path_when_absolute_dir_supplied() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("session-abs");
+        std::fs::create_dir(&folder).unwrap();
+        let unrelated = tempfile::tempdir().unwrap();
+
+        let resolved = resolve_folder(unrelated.path(), folder.to_str().unwrap()).unwrap();
+
+        assert_eq!(resolved, folder);
+    }
+
+    #[test]
+    fn test_resolve_folder_returns_error_when_root_is_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let bogus = dir.path().join("nonexistent");
+
+        let err = resolve_folder(&bogus, "anything").unwrap_err();
+
+        assert!(err.to_string().contains("storage root"));
+    }
+
+    fn write_session(dir: &std::path::Path, folder: &str) -> PathBuf {
+        let folder_path = dir.join(folder);
+        std::fs::create_dir(&folder_path).unwrap();
+        std::fs::write(
+            folder_path.join("transcript.md"),
+            "# title\n\n**Me** [00:00:00]: hello\n",
+        )
+        .unwrap();
+        std::fs::write(
+            folder_path.join("notes.md"),
+            "## TL;DR\n- a meeting happened\n",
+        )
+        .unwrap();
+        folder_path
+    }
+
+    #[tokio::test]
+    async fn test_run_prints_transcript_and_notes_for_existing_session() {
+        let dir = tempfile::tempdir().unwrap();
+        write_session(dir.path(), "2026-04-29-1430-acme-01HXYZ");
+
+        run(Args {
+            id_or_folder: "2026-04-29-1430-acme-01HXYZ".into(),
+            root: Some(dir.path().to_path_buf()),
+            no_transcript: false,
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_run_skips_transcript_when_no_transcript_flag_set() {
+        let dir = tempfile::tempdir().unwrap();
+        write_session(dir.path(), "2026-04-29-1430-acme-01HXYZ");
+
+        run(Args {
+            id_or_folder: "2026-04-29-1430-acme-01HXYZ".into(),
+            root: Some(dir.path().to_path_buf()),
+            no_transcript: true,
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_run_emits_recovery_hint_when_notes_md_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("2026-04-29-1430-acme-01HXYZ");
+        std::fs::create_dir(&folder).unwrap();
+        std::fs::write(folder.join("transcript.md"), "# title\n").unwrap();
+
+        run(Args {
+            id_or_folder: "2026-04-29-1430-acme-01HXYZ".into(),
+            root: Some(dir.path().to_path_buf()),
+            no_transcript: false,
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_run_returns_error_when_session_does_not_exist() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let err = run(Args {
+            id_or_folder: "nonexistent".into(),
+            root: Some(dir.path().to_path_buf()),
+            no_transcript: false,
+        })
+        .await
+        .unwrap_err();
+
+        assert!(err.to_string().contains("nonexistent"));
+    }
+
+    #[tokio::test]
+    async fn test_run_resolves_session_via_unique_substring() {
+        let dir = tempfile::tempdir().unwrap();
+        write_session(dir.path(), "2026-04-29-1430-acme-01HXYZ");
+
+        run(Args {
+            id_or_folder: "acme".into(),
+            root: Some(dir.path().to_path_buf()),
+            no_transcript: false,
+        })
+        .await
+        .unwrap();
+    }
 }

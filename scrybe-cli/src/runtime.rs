@@ -75,4 +75,25 @@ mod tests {
             assert_eq!(expanded, home.join("scrybe"));
         }
     }
+
+    #[test]
+    fn test_expand_root_returns_home_for_bare_tilde() {
+        let p = PathBuf::from("~");
+
+        let expanded = expand_root(&p);
+
+        if let Some(home) = dirs_home() {
+            assert_eq!(expanded, home);
+        }
+    }
+
+    #[test]
+    fn test_load_or_default_config_returns_default_when_path_does_not_exist() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("SCRYBE_CONFIG", dir.path().join("no-such-config.toml"));
+
+        let cfg = load_or_default_config().unwrap();
+
+        assert_eq!(cfg, scrybe_core::config::Config::default());
+    }
 }
