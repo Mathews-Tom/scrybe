@@ -497,4 +497,34 @@ mod tests {
         assert!(session.path().join("notes.md").exists());
         assert!(session.path().join("meta.toml").exists());
     }
+
+    #[tokio::test]
+    async fn test_wait_for_stop_resolves_when_sender_flips_to_true() {
+        let (tx, rx) = watch::channel(false);
+        let fut = wait_for_stop(rx);
+        tokio::pin!(fut);
+
+        assert!(
+            futures::poll!(&mut fut).is_pending(),
+            "wait_for_stop must remain pending while the flag is false"
+        );
+
+        tx.send(true).unwrap();
+        fut.await;
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_stop_returns_immediately_when_sender_already_true() {
+        let (_tx, rx) = watch::channel(true);
+
+        wait_for_stop(rx).await;
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_stop_resolves_when_sender_dropped() {
+        let (tx, rx) = watch::channel(false);
+        drop(tx);
+
+        wait_for_stop(rx).await;
+    }
 }
