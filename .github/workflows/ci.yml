@@ -112,6 +112,21 @@ jobs:
       - name: assert no network crates in scrybe-cli default build
         run: python3 scripts/check-egress-baseline.py
 
+  dist-plan:
+    name: dist-plan (cargo-dist config valid)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.85.0
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-dist@0.25.1
+      - name: cargo dist plan
+        run: cargo dist plan --output-format=human
+
   coverage:
     name: coverage (workspace + scrybe-core gate)
     runs-on: ubuntu-latest
