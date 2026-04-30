@@ -21,12 +21,14 @@ Each release publishes two macOS archives at `https://github.com/Mathews-Tom/scr
 
 ### 2. Verify the archive
 
-Each archive ships a SHA256 sum on the release page. Confirm the download:
+Each release publishes a `SHA256SUMS.txt` asset alongside the tarballs. Download it from the same release page and verify:
 
 ```sh
-shasum -a 256 scrybe-cli-aarch64-apple-darwin.tar.xz
-# Compare against the SHA256 line on the GitHub Release page.
+curl -LO https://github.com/Mathews-Tom/scrybe/releases/latest/download/SHA256SUMS.txt
+shasum -a 256 -c SHA256SUMS.txt --ignore-missing
 ```
+
+`--ignore-missing` lets `shasum` succeed when only one of the two macOS archives is in your working directory. A line ending in `OK` means the archive matches the manifest; any other output means abort and re-download.
 
 ### 3. Extract and place the binary
 
@@ -97,6 +99,8 @@ The egress audit walks `scrybe-cli`'s default-feature dependency graph and asser
 ```sh
 # Apple Silicon
 curl -LO https://github.com/Mathews-Tom/scrybe/releases/latest/download/scrybe-cli-aarch64-apple-darwin.tar.xz
+curl -LO https://github.com/Mathews-Tom/scrybe/releases/latest/download/SHA256SUMS.txt
+shasum -a 256 -c SHA256SUMS.txt --ignore-missing
 tar -xf scrybe-cli-aarch64-apple-darwin.tar.xz
 mkdir -p ~/.local/bin && mv scrybe-cli-aarch64-apple-darwin/scrybe ~/.local/bin/
 xattr -dr com.apple.quarantine ~/.local/bin/scrybe
@@ -106,6 +110,8 @@ scrybe doctor
 ```sh
 # Intel Mac
 curl -LO https://github.com/Mathews-Tom/scrybe/releases/latest/download/scrybe-cli-x86_64-apple-darwin.tar.xz
+curl -LO https://github.com/Mathews-Tom/scrybe/releases/latest/download/SHA256SUMS.txt
+shasum -a 256 -c SHA256SUMS.txt --ignore-missing
 tar -xf scrybe-cli-x86_64-apple-darwin.tar.xz
 mkdir -p ~/.local/bin && mv scrybe-cli-x86_64-apple-darwin/scrybe ~/.local/bin/
 xattr -dr com.apple.quarantine ~/.local/bin/scrybe
