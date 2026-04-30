@@ -107,10 +107,21 @@ strip = "symbols"
 # Cargo treats `[workspace.metadata.*]` as opaque, so this block is invisible to
 # every other tool (clippy, rustc, the egress audit, the LoC budget). Pinned to
 # the 0.25 series per `.docs/development-plan.md` §13.1.
+#
+# `installers = ["shell"]` makes cargo-dist publish a `scrybe-cli-installer.sh`
+# release asset that arch-detects, downloads the right tarball, verifies the
+# SHA256 manifest, extracts, and places the binary on PATH in a single
+# `curl | sh` invocation. As a side effect of being downloaded by `curl`
+# (not Safari), the installed binary never gets the `com.apple.quarantine`
+# attribute, so Gatekeeper's "Apple cannot verify" dialog does not fire —
+# the unsigned-binary friction documented in `INSTALL.md` is bypassed for
+# users who choose this path. Manual-tarball users still need the
+# `xattr -dr com.apple.quarantine` step; that flow remains documented as
+# the audit-friendly alternative.
 [workspace.metadata.dist]
 cargo-dist-version = "0.25.1"
 ci = ["github"]
-installers = []
+installers = ["shell"]
 targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
 pr-run-mode = "plan"
 allow-dirty = ["ci"]
