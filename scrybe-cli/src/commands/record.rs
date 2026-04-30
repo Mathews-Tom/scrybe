@@ -180,19 +180,12 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
     Ok(())
 }
 
-/// Future that completes the first time `stop_rx` flips to `true`.
-/// Used as the `take_until` argument so the synthetic stream tears
-/// down deterministically when SIGINT, the global hotkey, or the tray
-/// Quit menu fires.
+/// Future that completes the first time `stop_rx` flips to `true`,
+/// or when every `Sender` has been dropped. Used as the `take_until`
+/// argument so the synthetic stream tears down deterministically
+/// when SIGINT, the global hotkey, or the tray Quit menu fires.
 async fn wait_for_stop(mut stop_rx: watch::Receiver<bool>) {
-    if *stop_rx.borrow_and_update() {
-        return;
-    }
-    while stop_rx.changed().await.is_ok() {
-        if *stop_rx.borrow() {
-            return;
-        }
-    }
+    let _ = stop_rx.wait_for(|stopped| *stopped).await;
 }
 
 fn spawn_sigint_listener(stop_tx: watch::Sender<bool>) -> JoinHandle<()> {
