@@ -1034,12 +1034,12 @@ Three-tier strategy. GitHub-hosted runners cannot grant Screen Recording / Media
 
 | Runner | Tests run |
 |---|---|
-| Mac mini M2 (with TCC permissions pre-granted via signed test-helper) | E2E capture (Core Audio Taps + ScreenCaptureKit fallback), Metal benchmarks, real Whisper |
+| Apple Silicon Mac, macOS 14.4+, TCC granted per `docs/ci-self-hosted.md` (a Mac mini, MacBook Pro, or any M-series host registered as a `[self-hosted, macos, arm64]` runner) | E2E capture (Core Audio Taps + ScreenCaptureKit fallback), Metal benchmarks, real Whisper |
 | Linux box with PipeWire + a Pulse-only VM | E2E capture per backend, distro coverage smoke (Ubuntu 22/24, Fedora, Debian Trixie, Arch via Docker) |
 | Windows VM with WASAPI playback synthetic source | E2E capture, MSI install/run, per-process loopback verification against Zoom/Teams/Meet test apps |
 | Pixel 8 (Phase 5+) via Tailscale + adb | E2E Android capture, battery-drain measurement, MediaProjection permission flow |
 
-Self-hosted runners post results back via a status API (no telemetry from end-user binaries — these are CI-only). Failures here block release tagging but not PR merges. A release tag is gated on **green Tier 1 + green Tier 2 manual run + green Tier 3 within last 7 days**.
+Self-hosted runners post results back via a status API (no telemetry from end-user binaries — these are CI-only). Failures here block release tagging but not PR merges. A release tag is gated on **green Tier 1 + green Tier 2 manual run + green Tier 3 within last 7 days**. The macOS lane is wired up in `.github/workflows/nightly-e2e.yml`, gated by the `NIGHTLY_E2E_ENABLED` repository variable so the workflow stays inert until a runner is registered; setup procedure lives in `docs/ci-self-hosted.md`.
 
 #### Bench gate
 
