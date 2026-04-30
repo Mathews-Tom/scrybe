@@ -8,7 +8,11 @@
 # Outputs (per `[workspace.metadata.dist]` in `Cargo.toml`):
 # - `scrybe-cli-aarch64-apple-darwin.tar.xz`
 # - `scrybe-cli-x86_64-apple-darwin.tar.xz`
-# - SHA256 manifest aggregating both archives.
+# - `scrybe-cli-installer.sh` (cargo-dist shell installer; quick-install path
+#   documented in `INSTALL.md`)
+# - `dist-manifest.json` (cargo-dist artifact-list manifest read by the
+#   installer to resolve and verify per-target tarballs)
+# - `SHA256SUMS.txt` (SHA256 manifest covering tarballs and installer)
 #
 # Each tarball contains the `scrybe` binary, `INSTALL.md`, `LICENSE`, and
 # `README.md`. macOS artifacts are unsigned per `.docs/development-plan.md`
