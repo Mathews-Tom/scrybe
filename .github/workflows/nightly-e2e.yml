@@ -33,6 +33,15 @@ on:
 permissions:
   contents: read
 
+# Serialize scheduled runs against the same runner pool. With a single
+# registered runner this is a no-op; with multiple runners it prevents
+# two nightly invocations from racing on the cargo target/cache shared
+# by `Swatinem/rust-cache@v2`. `cancel-in-progress: false` so a long
+# run is allowed to finish rather than being killed by the next tick.
+concurrency:
+  group: nightly-e2e-mac
+  cancel-in-progress: false
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: "1"
@@ -41,7 +50,12 @@ env:
 jobs:
   e2e-mac:
     name: e2e (macos, self-hosted)
-    if: vars.NIGHTLY_E2E_ENABLED == 'true'
+    # Belt-and-suspenders: the repo-variable gate is the primary lane
+    # toggle, the `github.repository` check prevents a fork that
+    # happens to register a runner with the same labels and set
+    # NIGHTLY_E2E_ENABLED=true from inadvertently running this lane
+    # against its own infrastructure.
+    if: github.repository == 'Mathews-Tom/scrybe' && vars.NIGHTLY_E2E_ENABLED == 'true'
     runs-on: [self-hosted, macos, arm64]
     timeout-minutes: 45
     env:
