@@ -1,0 +1,93 @@
+# Tier-3 nightly E2E workflow per `docs/system-design.md` §11.
+#
+# Runs the `#[ignore]`-gated capture tests in `scrybe-capture-mac` (and
+# any future `scrybe-cli` E2E tests per `.docs/development-plan.md`
+# §7.3.3) against a self-hosted Apple Silicon runner. GitHub-hosted
+# `macos-14` cannot grant Screen Recording or Microphone TCC, so the
+# live Core Audio Taps path is unverifiable on hosted CI; this workflow
+# closes that gap.
+#
+# Triggers:
+# - schedule: nightly at 09:00 UTC (≈ 02:00 PT, 04:00 ET).
+# - workflow_dispatch: manual rerun.
+#
+# We deliberately do NOT trigger on pull_request — a PR from an
+# untrusted fork would otherwise execute arbitrary code on the
+# maintainer's hardware. Adding pull_request here without re-evaluating
+# the trust model is a supply-chain regression.
+#
+# Lane gate:
+# - The job evaluates `vars.NIGHTLY_E2E_ENABLED == 'true'`. Until the
+#   maintainer registers a self-hosted runner and flips the flag via
+#   `gh variable set NIGHTLY_E2E_ENABLED --body 'true'`, scheduled runs
+#   short-circuit without queueing on a non-existent runner. See
+#   `docs/ci-self-hosted.md` for the full setup procedure.
+
+name: nightly-e2e
+
+on:
+  schedule:
+    - cron: "0 9 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  e2e-mac:
+    name: e2e (macos, self-hosted)
+    if: vars.NIGHTLY_E2E_ENABLED == 'true'
+    runs-on: [self-hosted, macos, arm64]
+    timeout-minutes: 45
+    env:
+      SCRYBE_TEST_CAPTURE: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.85.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: nightly-e2e-mac
+      - name: print runner identity
+        run: |
+          sw_vers
+          uname -a
+          rustc --version
+          cargo --version
+          whoami
+          # `tccutil reset` is privileged; we cannot inspect the active
+          # TCC grants from inside the runner. The runner-identity step
+          # exists so a triager can confirm the host's macOS minor
+          # version is >= 14.4 (the Core Audio Taps API floor).
+      - name: build with mac capture features
+        run: cargo build -p scrybe-capture-mac --features core-audio-tap --all-targets
+      - name: run Tier-2 ignored capture tests
+        # The single in-tree Tier-3 test today is
+        # `test_tap_stream_create_and_drop_on_real_hardware` in
+        # scrybe-capture-mac/src/coreaudio_tap.rs. Additional E-1..E-6
+        # from `.docs/development-plan.md` §7.3.3 land in subsequent
+        # slices and will be picked up by the same `--ignored` flag
+        # without changes here.
+        run: cargo test -p scrybe-capture-mac --features core-audio-tap -- --ignored --nocapture
+      - name: collect runner diagnostics
+        if: always()
+        run: |
+          mkdir -p nightly-e2e-artifacts
+          # Runner self-diagnostic logs are owned by the runner user;
+          # copy what's readable so a failed run carries enough context
+          # for triage without ssh access.
+          cp -v ~/actions-runner/_diag/Runner_*.log nightly-e2e-artifacts/ 2>/dev/null || true
+          cp -v ~/actions-runner/_diag/Worker_*.log nightly-e2e-artifacts/ 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nightly-e2e-logs
+          path: nightly-e2e-artifacts/
+          if-no-files-found: ignore
+          retention-days: 14
