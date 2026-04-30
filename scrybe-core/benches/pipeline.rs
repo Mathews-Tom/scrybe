@@ -77,15 +77,11 @@ fn bench_vad(c: &mut Criterion) {
 
 fn bench_resample(c: &mut Criterion) {
     let mut group = c.benchmark_group("resample");
-    for &(src, dst, secs) in &[
-        (48_000_u32, 16_000_u32, 1),
-        (44_100, 16_000, 1),
-        (16_000, 16_000, 1),
-    ] {
-        let samples = speech_samples((src * secs) as usize, 1_000.0);
+    for &(src, dst) in &[(48_000_u32, 16_000_u32), (44_100, 16_000), (16_000, 16_000)] {
+        let samples = speech_samples(src as usize, 1_000.0);
         group.throughput(Throughput::Elements(samples.len() as u64));
         group.bench_with_input(
-            BenchmarkId::new("linear", format!("{src}_to_{dst}_{secs}s")),
+            BenchmarkId::new("linear", format!("{src}_to_{dst}")),
             &samples,
             |b, samples| b.iter(|| resample_linear(samples, src, dst).expect("resample bench")),
         );
@@ -134,9 +130,9 @@ fn bench_encoder(c: &mut Criterion) {
         bitrate_bps: 32_000,
         page_interval: Duration::from_millis(100),
     };
+    let samples_per_page = (SAMPLE_RATE as usize) / 10;
+    let block = vec![0.5_f32; samples_per_page];
     for &page_count in &[1_usize, 8, 64] {
-        let samples_per_page = (SAMPLE_RATE as usize) / 10;
-        let block = vec![0.5_f32; samples_per_page];
         group.throughput(Throughput::Elements((samples_per_page * page_count) as u64));
         group.bench_with_input(
             BenchmarkId::new("null_encoder/push_pcm", page_count),
