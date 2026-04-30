@@ -103,6 +103,17 @@ codegen-units = 1
 lto = "thin"
 strip = "symbols"
 
+# `cargo-dist` 0.25.x runs `cargo build --profile=dist` for release
+# tarballs and errors out with "profile `dist` is not defined" if this
+# block is missing. Inheriting from `release` keeps tarball builds bit-
+# identical to a plain release build; cargo-dist's reproducibility
+# requirements (SOURCE_DATE_EPOCH + remap-path-prefix) are wired up in
+# `.github/workflows/release.yml` and apply to whichever profile dist
+# uses, so adding profile-specific overrides here would silently
+# diverge the local-built and CI-built artifacts.
+[profile.dist]
+inherits = "release"
+
 # cargo-dist is the release-tarball builder driven by `.github/workflows/release.yml`.
 # Cargo treats `[workspace.metadata.*]` as opaque, so this block is invisible to
 # every other tool (clippy, rustc, the egress audit, the LoC budget). Pinned to
