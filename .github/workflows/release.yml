@@ -120,12 +120,32 @@ jobs:
           merge-multiple: true
       - name: list staged artifacts
         run: ls -la dist-staging/
+      # cargo-dist splits artifacts into "local" (per-target tarballs, built by
+      # the matrix above) and "global" (cross-target outputs — installer
+      # script, dist-manifest.json). The build matrix only emits local; the
+      # shell installer asset that `INSTALL.md` and `README.md` document as
+      # the quick-install path comes out of `dist build --artifacts=global`.
+      # Run it here on the release runner and stage its output alongside the
+      # downloaded tarballs so a single `gh release create` glob picks
+      # everything up.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.85.0
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-dist@${{ env.CARGO_DIST_VERSION }}
+      - name: dist build (global artifacts)
+        run: dist build --artifacts=global
+      - name: stage global artifacts alongside tarballs
+        run: |
+          ls -la target/distrib/
+          cp -v target/distrib/* dist-staging/
       - name: write SHA256 manifest
         working-directory: dist-staging
         run: |
           shopt -s nullglob
           : > SHA256SUMS.txt
-          for f in *.tar.* *.zip; do
+          for f in *.tar.* *.zip *.sh; do
             [ -e "$f" ] || continue
             shasum -a 256 "$f" >> SHA256SUMS.txt
           done
