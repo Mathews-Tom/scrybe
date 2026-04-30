@@ -100,6 +100,18 @@ jobs:
       - name: enforce per-crate LoC ceilings
         run: python3 scripts/check-loc-budget.py
 
+  egress-audit:
+    name: egress-audit (default-feature graph has no network crates)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.85.0
+      - uses: Swatinem/rust-cache@v2
+      - name: assert no network crates in scrybe-cli default build
+        run: python3 scripts/check-egress-baseline.py
+
   coverage:
     name: coverage (workspace + scrybe-core gate)
     runs-on: ubuntu-latest
