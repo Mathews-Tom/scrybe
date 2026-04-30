@@ -58,6 +58,8 @@ The `--labels self-hosted,macos,arm64` triple is what `.github/workflows/nightly
 
 ### 3. Grant Screen Recording + Microphone TCC
 
+> **Empirical note.** PR #20's dispatch run on macOS 26.4.1 with the `DRUK-scrybe` MacBook Pro runner passed the live Core Audio Taps E-1 test (`peak > 0.01` noise floor) without the GUI grants in this section having been performed. `Runner.Listener` inherited Audio Capture authorization through whatever mechanism macOS uses for unsigned `LaunchAgent`-spawned processes on this version. Treat this section as the documented fallback: if the empirical inheritance works on your host, you can skip ahead to step 4; if a future macOS update tightens TCC, come back here.
+
 The runner spawns `cargo test` which spawns the test binary. The test binary in turn calls `AudioHardwareCreateProcessTap` (Core Audio Taps) and `AVCaptureDevice` (microphone). Both are TCC-gated. macOS resolves grants by *the calling binary's code-signature identity, or its absolute path if unsigned*. The grant target therefore depends on what's calling the API:
 
 - The `Runner.Listener` binary (`~/actions-runner/bin/Runner.Listener`) is the long-running process that owns the workflow shell.
