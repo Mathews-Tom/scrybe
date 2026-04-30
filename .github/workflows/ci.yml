@@ -76,8 +76,13 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-audit
+      # `cargo-audit` reads `~/.cargo/audit.toml`, not the workspace-
+      # root `audit.toml` we ship as documentation. Pass `--ignore`
+      # on the CLI to enforce the same ignores. The workspace
+      # `audit.toml` carries the canonical rationale for each entry;
+      # keep both lists in sync when adding or dropping ignores.
       - name: cargo audit
-        run: cargo audit
+        run: cargo audit --ignore RUSTSEC-2024-0421
 
   deny:
     name: deny (advisories, licenses, bans, sources)
