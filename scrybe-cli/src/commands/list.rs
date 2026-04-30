@@ -129,4 +129,77 @@ mod tests {
 
         run(Args { root: Some(bogus) }).await.unwrap();
     }
+
+    #[tokio::test]
+    async fn test_list_succeeds_for_existing_root_with_no_session_folders() {
+        let dir = tempfile::tempdir().unwrap();
+
+        run(Args {
+            root: Some(dir.path().to_path_buf()),
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_list_renders_session_with_meta_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("2026-04-29-1430-acme-01HXYZ");
+        std::fs::create_dir(&folder).unwrap();
+        std::fs::write(
+            folder.join("meta.toml"),
+            "session_id = \"01HXYZ\"\ntitle = \"acme\"\nduration_secs = 75\n",
+        )
+        .unwrap();
+
+        run(Args {
+            root: Some(dir.path().to_path_buf()),
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_list_skips_directories_without_meta_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let with_meta = dir.path().join("2026-04-29-1430-acme-01HXYZ");
+        let without_meta = dir.path().join("2026-04-29-1430-other-02HABCD");
+        std::fs::create_dir(&with_meta).unwrap();
+        std::fs::create_dir(&without_meta).unwrap();
+        std::fs::write(
+            with_meta.join("meta.toml"),
+            "session_id = \"01HXYZ\"\nduration_secs = 30\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("not-a-folder.txt"), b"junk").unwrap();
+
+        run(Args {
+            root: Some(dir.path().to_path_buf()),
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_list_renders_multiple_sessions_sorted_by_folder_name() {
+        let dir = tempfile::tempdir().unwrap();
+        for (folder_name, sid) in [
+            ("2026-04-29-0900-alpha-01AAAA", "01AAAA"),
+            ("2026-04-29-1000-bravo-02BBBB", "02BBBB"),
+        ] {
+            let folder = dir.path().join(folder_name);
+            std::fs::create_dir(&folder).unwrap();
+            std::fs::write(
+                folder.join("meta.toml"),
+                format!("session_id = \"{sid}\"\nduration_secs = 60\n"),
+            )
+            .unwrap();
+        }
+
+        run(Args {
+            root: Some(dir.path().to_path_buf()),
+        })
+        .await
+        .unwrap();
+    }
 }

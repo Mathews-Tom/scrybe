@@ -368,4 +368,84 @@ mod tests {
 
         assert_eq!(result.text, "[silence]");
     }
+
+    #[tokio::test]
+    async fn test_stub_local_llm_returns_template_notes_body() {
+        let llm = StubLocalLlm::new();
+
+        let body = llm.complete("any prompt").await.unwrap();
+
+        assert!(body.contains("## TL;DR"));
+        assert!(body.contains("## Action items"));
+    }
+
+    #[tokio::test]
+    async fn test_binary_channel_diarizer_labels_mic_as_me_and_system_as_them() {
+        let mic = vec![TranscriptChunk {
+            text: "hi".into(),
+            source: FrameSource::Mic,
+            start_ms: 0,
+            duration_ms: 1_000,
+            language: None,
+        }];
+        let sys = vec![TranscriptChunk {
+            text: "hello".into(),
+            source: FrameSource::System,
+            start_ms: 0,
+            duration_ms: 1_000,
+            language: None,
+        }];
+
+        let result = BinaryChannelDiarizer
+            .diarize(&mic, &sys, &MeetingContext::default())
+            .await
+            .unwrap();
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].speaker, SpeakerLabel::Me);
+        assert_eq!(result[1].speaker, SpeakerLabel::Them);
+    }
+
+    #[test]
+    fn test_binary_channel_diarizer_name_returns_binary_channel() {
+        assert_eq!(BinaryChannelDiarizer.name(), "binary-channel");
+    }
+
+    #[test]
+    fn test_stub_local_stt_name_returns_stub_local_stt() {
+        assert_eq!(StubLocalStt::new().name(), "stub-local-stt");
+    }
+
+    #[test]
+    fn test_stub_local_llm_name_returns_stub_local_llm() {
+        assert_eq!(StubLocalLlm::new().name(), "stub-local-llm");
+    }
+
+    #[tokio::test]
+    async fn test_run_writes_session_artifacts_for_synthetic_capture() {
+        // Point config discovery at a tempdir so the test does not
+        // pick up a malformed real config from the developer's home.
+        let cfg_dir = tempfile::tempdir().unwrap();
+        std::env::set_var("SCRYBE_CONFIG", cfg_dir.path().join("no-such-config.toml"));
+        let dir = tempfile::tempdir().unwrap();
+
+        run(Args {
+            title: Some("synthetic".into()),
+            root: Some(dir.path().to_path_buf()),
+            yes: true,
+            consent: ConsentModeArg::Quick,
+            synthetic_secs: 1,
+        })
+        .await
+        .unwrap();
+
+        let mut entries = std::fs::read_dir(dir.path()).unwrap();
+        let session = entries
+            .next()
+            .expect("a session folder must exist")
+            .unwrap();
+        assert!(session.path().join("transcript.md").exists());
+        assert!(session.path().join("notes.md").exists());
+        assert!(session.path().join("meta.toml").exists());
+    }
 }

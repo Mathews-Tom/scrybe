@@ -85,4 +85,13 @@ mod tests {
 
         assert_eq!(prompter.auto_accept, false);
     }
+
+    #[tokio::test]
+    async fn test_tty_prompter_with_auto_accept_returns_ok_for_announce_mode() {
+        let prompter = TtyPrompter::new(true);
+
+        let result = prompter.prompt(ConsentMode::Announce).await;
+
+        assert!(result.is_ok());
+    }
 }
