@@ -805,4 +805,91 @@ mod tests {
         );
         drop(stream);
     }
+
+    /// Hardware-validation test that proves end-to-end audio data flow
+    /// under TCC: spawns `afplay` against a system-shipped audio
+    /// fixture, captures from the live tap for a bounded window, and
+    /// asserts both that frames arrived AND that the captured peak
+    /// amplitude exceeds a noise floor.
+    ///
+    /// The combined assertion uniquely identifies "TCC for Audio
+    /// Capture is granted AND the tap is routed to the default output
+    /// device". The two failure signatures distinguish:
+    ///
+    /// - Zero frames in the capture window → IOProc never fired
+    ///   (`AudioDeviceStart` may have returned a delayed error or the
+    ///   tap was constructed against the wrong device).
+    /// - Frames arrived but peak ≈ 0 → TCC was denied (macOS delivers
+    ///   zero-filled buffers in some versions instead of an explicit
+    ///   error) OR the tap is mirroring a different device than the
+    ///   one `afplay` writes to.
+    /// - Frames arrived AND peak > 0.01 → TCC granted, tap routed
+    ///   correctly, audio data flows end-to-end.
+    ///
+    /// Closes the verification gap left by
+    /// `test_tap_stream_create_and_drop_on_real_hardware`, which only
+    /// exercises the lifecycle (create/drop) and never starts the
+    /// IOProc — so it would pass even with TCC denied.
+    ///
+    /// Per `.docs/development-plan.md` §7.3.3 this is the E-1
+    /// scenario. Runs only on the self-hosted Tier-3 macOS runner per
+    /// `docs/system-design.md` §11.
+    const E1_FIXTURE_PATH: &str = "/System/Library/Sounds/Ping.aiff";
+    const E1_CAPTURE_WINDOW: std::time::Duration = std::time::Duration::from_millis(1_500);
+    const E1_NOISE_FLOOR: f32 = 0.01;
+
+    #[tokio::test(flavor = "current_thread", start_paused = false)]
+    #[ignore = "requires macOS 14.4+ hardware, audio output, and SCRYBE_TEST_CAPTURE=1"]
+    async fn test_tap_captures_nonzero_frames_during_known_audio_playback() {
+        if std::env::var("SCRYBE_TEST_CAPTURE").ok().as_deref() != Some("1") {
+            eprintln!("skipping: SCRYBE_TEST_CAPTURE=1 not set");
+            return;
+        }
+        assert!(
+            std::path::Path::new(E1_FIXTURE_PATH).exists(),
+            "fixture {E1_FIXTURE_PATH} missing — expected on every macOS install"
+        );
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut stream = TapStream::create(tx).expect("create live tap");
+        stream.start().expect("start tap");
+
+        // Spawn afplay synchronously (std::process); the test does not
+        // need to await it — only kill/wait once the capture window
+        // closes — so pulling tokio's `process` feature into dev-deps
+        // would be overhead with no benefit.
+        let mut afplay = std::process::Command::new("/usr/bin/afplay")
+            .arg(E1_FIXTURE_PATH)
+            .spawn()
+            .expect("spawn afplay");
+
+        let deadline = tokio::time::Instant::now() + E1_CAPTURE_WINDOW;
+        let mut frames = Vec::new();
+        loop {
+            match tokio::time::timeout_at(deadline, rx.recv()).await {
+                Ok(Some(Ok(frame))) => frames.push(frame),
+                Ok(Some(Err(e))) => panic!("capture error mid-stream: {e}"),
+                Ok(None) | Err(_) => break,
+            }
+        }
+
+        let _ = afplay.kill();
+        let _ = afplay.wait();
+        let _ = stream.stop();
+
+        let frame_count = frames.len();
+        assert!(
+            frame_count > 0,
+            "no frames received in {E1_CAPTURE_WINDOW:?} — IOProc not firing"
+        );
+        let peak: f32 = frames
+            .iter()
+            .flat_map(|f| f.samples.iter().copied().map(f32::abs))
+            .fold(0.0_f32, f32::max);
+        assert!(
+            peak > E1_NOISE_FLOOR,
+            "captured peak {peak:.4} below noise floor {E1_NOISE_FLOOR} — \
+             TCC denied or tap misrouted ({frame_count} frames received)"
+        );
+    }
 }
