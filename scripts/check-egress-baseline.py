@@ -178,20 +178,37 @@ def run_cargo_tree_with_features(manifest: Path) -> str:
 
 
 def tokio_active_features(feature_output: str) -> set[str]:
-    """Return the union of features active on every `tokio` instance."""
+    """Return the union of features active on every `tokio` instance.
+
+    Raises `RuntimeError` if no `tokio` line was parsed at all. The
+    workspace pins tokio in `Cargo.toml`, so its absence from the dep
+    graph means either the manifest changed (deliberate, audit out of
+    date) or `cargo tree --format` shifted its output schema (the
+    silent-failure case this guard prevents). Either way, fail loud
+    rather than vacuously pass the forbidden-feature check against an
+    empty set.
+    """
+    saw_tokio_line = False
     active: set[str] = set()
     for line in feature_output.splitlines():
         stripped = line.strip()
         if not stripped.startswith("tokio "):
             continue
+        saw_tokio_line = True
         # Format: "tokio v1.42.0 feature1,feature2,..."
         parts = stripped.split(maxsplit=2)
         if len(parts) < 3:
             continue
-        for feature in parts[2].split(","):
-            feature = feature.strip()
+        for raw_feature in parts[2].split(","):
+            feature = raw_feature.strip()
             if feature:
                 active.add(feature)
+    if not saw_tokio_line:
+        raise RuntimeError(
+            "egress audit: no tokio entry found in `cargo tree --format` output; "
+            "either the workspace dropped tokio (update this audit) or cargo's "
+            "tree format changed (update the parser)"
+        )
     return active
 
 
