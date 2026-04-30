@@ -51,6 +51,17 @@ ignore = [
     # drops the unsound `VariantStrIter` impl. Re-evaluate when
     # `tray-icon` ships that bump.
     { id = "RUSTSEC-2024-0429", reason = "glib 0.18 VariantStrIter unsoundness, optional via tray-icon→muda→gtk-rs 0.18; cli-shell feature only." },
+    # `idna 0.5.x` accepts certain malformed Punycode labels that
+    # should be rejected; patched in `idna 1.0.0`. `idna 1.x` brings
+    # in `idna_adapter → icu_normalizer → icu_collections@2.2.0`,
+    # each requiring rustc 1.86; the workspace pins rustc 1.85.0,
+    # forcing this downgrade. The advisory's exposure surface is
+    # IDN-aware URL parsing; `Hook::Git` (the only consumer of the
+    # affected chain via `git2 → url`) parses local-repo paths and
+    # conventional git remote URLs (HTTPS/SSH without IDNs), which
+    # do not exercise the affected Punycode path. Re-evaluate at
+    # the rustc 1.86 toolchain bump.
+    { id = "RUSTSEC-2024-0421", reason = "idna 0.5 Punycode validation; not reachable from Hook::Git's URL surface; pinned via url 2.5.0 to keep workspace within rustc 1.85 MSRV." },
 ]
 
 # OSI/FSF-approved permissive licenses compatible with Apache-2.0 plus
