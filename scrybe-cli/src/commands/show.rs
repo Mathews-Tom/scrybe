@@ -262,4 +262,65 @@ mod tests {
         .await
         .unwrap();
     }
+
+    #[tokio::test]
+    async fn test_run_appends_newline_when_transcript_lacks_trailing_newline() {
+        // Exercises the `if !body.ends_with('\n')` branch in the
+        // transcript section of `run`. Region coverage on `show.rs`
+        // misses this arm because the canonical fixture
+        // (`write_session`) writes a transcript that already ends
+        // with `\n`.
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("2026-04-29-1430-acme-01HXYZ");
+        std::fs::create_dir(&folder).unwrap();
+        std::fs::write(folder.join("transcript.md"), b"no trailing newline").unwrap();
+        std::fs::write(folder.join("notes.md"), b"## TL;DR\n- ok\n").unwrap();
+
+        run(Args {
+            id_or_folder: "2026-04-29-1430-acme-01HXYZ".into(),
+            root: Some(dir.path().to_path_buf()),
+            no_transcript: false,
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_run_appends_newline_when_notes_lack_trailing_newline() {
+        // Symmetric counterpart of the transcript test above for the
+        // notes section's `if !body.ends_with('\n')` arm.
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("2026-04-29-1430-acme-01HXYZ");
+        std::fs::create_dir(&folder).unwrap();
+        std::fs::write(folder.join("transcript.md"), b"# title\n").unwrap();
+        std::fs::write(folder.join("notes.md"), b"no trailing newline").unwrap();
+
+        run(Args {
+            id_or_folder: "2026-04-29-1430-acme-01HXYZ".into(),
+            root: Some(dir.path().to_path_buf()),
+            no_transcript: false,
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_run_skips_transcript_section_when_transcript_md_absent() {
+        // When `no_transcript=false` but `transcript.md` does not
+        // exist, the `transcript_path.exists()` guard should keep the
+        // transcript section silent and the function must still
+        // succeed by rendering only the notes section.
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("2026-04-29-1430-acme-01HXYZ");
+        std::fs::create_dir(&folder).unwrap();
+        std::fs::write(folder.join("notes.md"), b"## TL;DR\n").unwrap();
+
+        run(Args {
+            id_or_folder: "2026-04-29-1430-acme-01HXYZ".into(),
+            root: Some(dir.path().to_path_buf()),
+            no_transcript: false,
+        })
+        .await
+        .unwrap();
+    }
 }
