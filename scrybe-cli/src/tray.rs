@@ -117,9 +117,4 @@ mod tests {
     fn test_indicator_state_recording_returns_recording_tooltip() {
         assert_eq!(IndicatorState::Recording.tooltip(), "scrybe — recording");
     }
-
-    #[test]
-    fn test_tray_command_quit_is_eq_to_itself() {
-        assert_eq!(TrayCommand::Quit, TrayCommand::Quit);
-    }
 }

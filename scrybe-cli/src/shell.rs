@@ -23,6 +23,19 @@
 //! 4. Translates a tray `Quit` or hotkey `Toggle` into a `watch`
 //!    stop signal consumed by the recording task.
 //! 5. Joins the task once it finishes.
+//!
+//! ## Platform validation
+//!
+//! macOS is the validated target for v0.1; the `CFRunLoopRunInMode`
+//! pump is the load-bearing piece. Linux and Windows are *compile*
+//! targets — the same module builds and links — but event delivery
+//! has not been hardware-validated. `tray-icon 0.23` on Linux uses
+//! `libappindicator-rs`, which spawns its own GTK thread, and
+//! `global-hotkey 0.7` on Linux taps X11 / Wayland directly; both
+//! *should* deliver events without an explicit driver, but this is
+//! unverified in CI. Treat Linux / Windows shell support as a
+//! best-effort path until self-hosted Tier-3 runners come online
+//! (`.docs/development-plan.md` §11, §15.5).
 
 use std::time::Duration;
 

@@ -38,7 +38,11 @@ pub enum HotkeyEvent {
 /// Global hotkey listener. Constructed on the thread that owns the
 /// platform run loop; never moved across threads.
 pub struct HotkeyListener {
-    _manager: GlobalHotKeyManager,
+    // Held for its `Drop` impl, which unregisters the hotkey from the
+    // OS. The field is never read directly — the global
+    // `GlobalHotKeyEvent::receiver()` queue is what surfaces events.
+    #[allow(dead_code)]
+    manager: GlobalHotKeyManager,
     hotkey_id: u32,
     events: Receiver<GlobalHotKeyEvent>,
 }
@@ -64,7 +68,7 @@ impl HotkeyListener {
 
         let events = GlobalHotKeyEvent::receiver().clone();
         Ok(Self {
-            _manager: manager,
+            manager,
             hotkey_id,
             events,
         })
