@@ -568,4 +568,52 @@ mod tests {
             .count();
         assert_eq!(speech_count, 0);
     }
+
+    /// E-5 from `.docs/development-plan.md` §7.3.3: cold-start latency.
+    ///
+    /// The §7.3.3 budget is 12 s, anchored to real Whisper warm-up
+    /// (loading `large-v3-turbo` weights, JIT-compiling Metal shaders,
+    /// running a silence buffer to prime the encoder). With the stub
+    /// providers used here, actual elapsed is sub-second; the budget
+    /// loosens to 10 s as a "pipeline didn't hang or pick up an
+    /// unbounded retry loop" guard. The Whisper-warm-up assertion
+    /// returns when `whisper-local` is enabled in CI — currently that
+    /// feature isn't on the default build because `whisper-rs` needs a
+    /// verified C++ toolchain on the macos-14 hosted runner per
+    /// `scrybe-cli/Cargo.toml`'s `[package.metadata.dist]` block.
+    ///
+    /// 10 s is loose enough to absorb CI noise (Windows shared
+    /// runners are the slowest cell in the matrix today; the macos-14
+    /// build job's full pipeline takes ~50 s, of which test startup
+    /// is a few hundred ms). If this test starts flaking, the right
+    /// move is to investigate what's slowing the stub-provider path,
+    /// not to bump the budget further.
+    #[tokio::test]
+    async fn test_run_completes_within_cold_start_budget_with_stub_providers() {
+        const COLD_START_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
+
+        let cfg_dir = tempfile::tempdir().unwrap();
+        std::env::set_var("SCRYBE_CONFIG", cfg_dir.path().join("no-such-config.toml"));
+        let dir = tempfile::tempdir().unwrap();
+
+        let started = std::time::Instant::now();
+        run(Args {
+            title: Some("cold-start".into()),
+            root: Some(dir.path().to_path_buf()),
+            yes: true,
+            consent: ConsentModeArg::Quick,
+            synthetic_secs: 1,
+            shell: false,
+        })
+        .await
+        .unwrap();
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed < COLD_START_BUDGET,
+            "cold-start exceeded {COLD_START_BUDGET:?}: actual {elapsed:?} \
+             — the stub-provider path should complete sub-second; investigate \
+             before bumping this budget"
+        );
+    }
 }
