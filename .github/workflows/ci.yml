@@ -124,8 +124,10 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-dist@0.25.1
-      - name: cargo dist plan
-        run: cargo dist plan --output-format=human
+      # cargo-dist 0.25 ships its binary as `dist`, not `cargo-dist`, so
+      # `cargo dist plan` fails with "no such command: dist".
+      - name: dist plan
+        run: dist plan --output-format=human
 
   coverage:
     name: coverage (workspace + scrybe-core gate)
