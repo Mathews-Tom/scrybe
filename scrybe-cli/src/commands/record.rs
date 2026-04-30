@@ -520,4 +520,52 @@ mod tests {
 
         wait_for_stop(rx).await;
     }
+
+    #[tokio::test]
+    async fn test_run_auto_accepts_consent_via_env_var_when_yes_flag_is_false() {
+        // Exercises the right-hand side of
+        //   `let auto_accept = args.yes
+        //       || std::env::var("SCRYBE_CONSENT_AUTO_ACCEPT").as_deref() == Ok("1");`
+        // Other tests pass `yes: true`, which short-circuits the OR
+        // before the env-var check; this is the only path that
+        // covers the env-var arm. Setting the env var here is safe
+        // because every other record test already auto-accepts via
+        // `yes: true`, so this test cannot flip an unsuspecting
+        // sibling into a different code path.
+        let cfg_dir = tempfile::tempdir().unwrap();
+        std::env::set_var("SCRYBE_CONFIG", cfg_dir.path().join("no-such-config.toml"));
+        std::env::set_var("SCRYBE_CONSENT_AUTO_ACCEPT", "1");
+        let dir = tempfile::tempdir().unwrap();
+
+        let result = run(Args {
+            title: Some("env-consent".into()),
+            root: Some(dir.path().to_path_buf()),
+            yes: false,
+            consent: ConsentModeArg::Quick,
+            synthetic_secs: 1,
+            shell: false,
+        })
+        .await;
+
+        std::env::remove_var("SCRYBE_CONSENT_AUTO_ACCEPT");
+        result.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_synthetic_capture_stream_emits_only_silence_for_zero_seconds() {
+        // `synthetic_capture_stream(0)` short-circuits the speech-frame
+        // branch in the closure; cover the silence-only iteration path.
+        let stream = synthetic_capture_stream(0);
+        let frames: Vec<_> = stream.collect().await;
+
+        let speech_count = frames
+            .iter()
+            .filter(|f| {
+                f.as_ref()
+                    .map(|frame| frame.samples.iter().any(|s| s.abs() > 0.01))
+                    .unwrap_or(false)
+            })
+            .count();
+        assert_eq!(speech_count, 0);
+    }
 }
