@@ -9,4 +9,9 @@
 
 ## Install
 
-See [`INSTALL.md`](INSTALL.md) for the macOS unsigned-binary install flow (download tarball → `xattr -dr com.apple.quarantine`) and the audit-friendly `cargo install --path scrybe-cli` path.
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/Mathews-Tom/scrybe/releases/latest/download/scrybe-cli-installer.sh | sh
+```
+
+See [`INSTALL.md`](INSTALL.md) for the manual-tarball path, the audit-friendly `cargo install` path, and an explanation of why the quick-install command bypasses Gatekeeper without notarization.

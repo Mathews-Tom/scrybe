@@ -6,7 +6,25 @@ This document covers macOS today. Linux and Windows installation paths land in t
 
 ---
 
-## macOS — install from the GitHub Release
+## macOS — quick install (recommended)
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/Mathews-Tom/scrybe/releases/latest/download/scrybe-cli-installer.sh | sh
+scrybe doctor
+```
+
+The installer detects your CPU architecture, downloads the matching tarball, verifies its SHA256 against the release's signed manifest, extracts the binary into `~/.cargo/bin/` (or `~/.local/bin/` if cargo is not present), and adds that directory to your `PATH` if needed.
+
+`curl` does not attach `com.apple.quarantine` to its downloads, so Gatekeeper's "Apple cannot verify" dialog never fires for binaries installed this way — you do not need to run `xattr` by hand.
+
+`scrybe doctor` confirms permission state, disk space, and any missing prerequisites before your first session.
+
+---
+
+## macOS — manual install (audit-friendly)
+
+Use this path if you want to inspect every file before it lands on disk, run cosign verification yourself, or operate in an environment where piping `curl` into `sh` is forbidden.
 
 ### 1. Pick the right tarball
 
@@ -42,7 +60,7 @@ If `~/.local/bin` is not on `$PATH`, add it (`export PATH="$HOME/.local/bin:$PAT
 
 ### 4. Remove the Gatekeeper quarantine attribute
 
-The first time macOS sees an unsigned binary downloaded from a browser, the kernel attaches `com.apple.quarantine` to it. Launching produces a dialog reading "Apple cannot verify this app is free of malware." Remove the attribute once, on the binary itself:
+Browsers attach `com.apple.quarantine` to downloaded files. Launching produces a dialog reading "Apple cannot verify this app is free of malware." Remove the attribute once, on the binary itself:
 
 ```sh
 xattr -dr com.apple.quarantine ~/.local/bin/scrybe
@@ -50,7 +68,7 @@ xattr -dr com.apple.quarantine ~/.local/bin/scrybe
 
 `-d` deletes the attribute; `-r` recurses if you ever extract into a `.app` bundle (scrybe-cli ships a single binary, so the recurse flag is harmless). The first launch after this no longer prompts.
 
-If you re-download the archive in a new browser session, repeat step 4. Quarantine is per-download, not per-binary.
+If you re-download the archive in a new browser session, repeat this step. Quarantine is per-download, not per-binary. The quick-install path above does not need this step because `curl` does not attach the attribute.
 
 ### 5. Verify it runs
 
@@ -63,7 +81,7 @@ scrybe doctor
 
 ---
 
-## macOS — build from source (audit-friendly path)
+## macOS — build from source
 
 The Apache-2.0 source builds cleanly on a stock macOS install with Xcode Command Line Tools and `rustup`:
 
@@ -92,36 +110,18 @@ python3 scripts/check-egress-baseline.py
 
 The egress audit walks `scrybe-cli`'s default-feature dependency graph and asserts that no HTTP, TLS, DNS, or QUIC crate is linked in. The CI gate is the same script.
 
----
-
-## macOS — quick reference
-
-```sh
-# Apple Silicon
-curl -LO https://github.com/Mathews-Tom/scrybe/releases/latest/download/scrybe-cli-aarch64-apple-darwin.tar.xz
-curl -LO https://github.com/Mathews-Tom/scrybe/releases/latest/download/SHA256SUMS.txt
-shasum -a 256 -c SHA256SUMS.txt --ignore-missing
-tar -xf scrybe-cli-aarch64-apple-darwin.tar.xz
-mkdir -p ~/.local/bin && mv scrybe-cli-aarch64-apple-darwin/scrybe ~/.local/bin/
-xattr -dr com.apple.quarantine ~/.local/bin/scrybe
-scrybe doctor
-```
-
-```sh
-# Intel Mac
-curl -LO https://github.com/Mathews-Tom/scrybe/releases/latest/download/scrybe-cli-x86_64-apple-darwin.tar.xz
-curl -LO https://github.com/Mathews-Tom/scrybe/releases/latest/download/SHA256SUMS.txt
-shasum -a 256 -c SHA256SUMS.txt --ignore-missing
-tar -xf scrybe-cli-x86_64-apple-darwin.tar.xz
-mkdir -p ~/.local/bin && mv scrybe-cli-x86_64-apple-darwin/scrybe ~/.local/bin/
-xattr -dr com.apple.quarantine ~/.local/bin/scrybe
-scrybe doctor
-```
+`cargo install` builds the binary on your machine; it never interacts with Gatekeeper, so no `xattr` step is needed for this path either.
 
 ---
 
 ## Why no notarization?
 
-macOS notarization requires an Apple Developer ID enrollment ($99/year) and ties the project's release pipeline to a vendor account. `.docs/development-plan.md` §13.1 documents the trade: until scrybe has demonstrated longevity, vendor-tied trust dependencies stay deferred. The `xattr -dr com.apple.quarantine` step is the documented user-side workaround. The audit-friendly persona is steered to `cargo install --path scrybe-cli` from a verified clone, which does not interact with Gatekeeper at all.
+macOS notarization requires an Apple Developer ID enrollment ($99/year) and ties the project's release pipeline to a vendor account. `.docs/development-plan.md` §13.1 documents the trade: until scrybe has demonstrated longevity, vendor-tied trust dependencies stay deferred. Three documented install paths sidestep Gatekeeper entirely:
+
+| Path | Quarantine bypass |
+|---|---|
+| Quick install (`curl \| sh`) | `curl` does not attach `com.apple.quarantine` |
+| Manual install (browser tarball) | `xattr -dr com.apple.quarantine` step |
+| Build from source (`cargo install`) | Local builds are never quarantined |
 
 This posture is reviewed post-v1.0 if first-run friction is shown to materially block adoption.
