@@ -44,10 +44,20 @@ libc.workspace = true
 windows-sys.workspace = true
 
 [dev-dependencies]
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
 pretty_assertions = "1"
 proptest = "1.5"
 tempfile = "3"
 tokio = { version = "1.42", features = ["macros", "rt-multi-thread", "sync", "time", "test-util"] }
+
+# Pipeline-stage micro-benchmarks per `docs/system-design.md` §11 ("Bench
+# gate") and `.docs/development-plan.md` §7.3.4. Run locally with
+# `cargo bench -p scrybe-core`. CI gates only on `cargo bench --no-run`
+# (compile) — the throughput-regression gate runs on the self-hosted
+# Tier-3 Mac per `system-design.md` §11.
+[[bench]]
+name = "pipeline"
+harness = false
 
 [lints]
 workspace = true
