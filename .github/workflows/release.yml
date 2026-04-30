@@ -59,8 +59,11 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-dist@${{ env.CARGO_DIST_VERSION }}
-      - name: cargo dist plan
-        run: cargo dist plan --output-format=human
+      # cargo-dist 0.25 ships its binary as `dist`, not `cargo-dist`, so
+      # `cargo dist <subcmd>` fails with "no such command: dist". Invoke
+      # the binary directly. Same pattern applies to `dist build` below.
+      - name: dist plan
+        run: dist plan --output-format=human
 
   build:
     name: build (${{ matrix.target }})
@@ -92,8 +95,8 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-dist@${{ env.CARGO_DIST_VERSION }}
-      - name: cargo dist build
-        run: cargo dist build --artifacts=local --target=${{ matrix.target }}
+      - name: dist build
+        run: dist build --artifacts=local --target=${{ matrix.target }}
       - name: list artifacts
         run: ls -la target/distrib/
       - uses: actions/upload-artifact@v4
