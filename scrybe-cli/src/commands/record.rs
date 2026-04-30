@@ -34,11 +34,13 @@ use scrybe_core::types::{
     AttributedChunk, AudioChunk, AudioFrame, ConsentMode, FrameSource, SessionId, SpeakerLabel,
     TranscriptChunk,
 };
+use tokio::sync::watch;
+use tokio::task::JoinHandle;
 
 use crate::prompter::TtyPrompter;
 use crate::runtime::{expand_root, load_or_default_config};
 
-#[derive(ClapArgs, Debug)]
+#[derive(ClapArgs, Clone, Debug)]
 pub struct Args {
     /// Session title for the folder name and notes.
     #[arg(long)]
@@ -68,9 +70,19 @@ pub struct Args {
     /// `system-design.md` §11 Tier 3.
     #[arg(long, default_value_t = 5)]
     pub synthetic_secs: u64,
+
+    /// Attach the desktop status-bar indicator (tray icon with a Quit
+    /// menu) and register the global hotkey from `[capture] hotkey`
+    /// in `config.toml`. The integrated main-thread shell driver that
+    /// surfaces tray and hotkey events into this loop lands in a
+    /// follow-up; this flag currently logs an advisory and otherwise
+    /// runs the headless path. Without `--shell` the recorder stops on
+    /// SIGINT or when the synthetic stream completes.
+    #[arg(long, default_value_t = false)]
+    pub shell: bool,
 }
 
-#[derive(Copy, Clone, Debug, ValueEnum)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 pub enum ConsentModeArg {
     Quick,
     Notify,
@@ -88,6 +100,18 @@ impl From<ConsentModeArg> for ConsentMode {
 }
 
 pub async fn run(args: Args) -> Result<()> {
+    let (stop_tx, stop_rx) = watch::channel(false);
+    let sigint_handle = spawn_sigint_listener(stop_tx);
+    let result = run_with_stop(args, stop_rx).await;
+    sigint_handle.abort();
+    result
+}
+
+/// Drive a session under an externally-supplied stop signal. The
+/// shell driver in `scrybe-cli::shell` calls this directly, feeding
+/// stop into `stop_rx` from tray and hotkey events; the public
+/// `run` entry point above wraps it with a SIGINT-only stop signal.
+pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result<()> {
     let cfg = load_or_default_config()?;
     let root = match &args.root {
         Some(p) => expand_root(p),
@@ -109,7 +133,8 @@ pub async fn run(args: Args) -> Result<()> {
     let user = std::env::var("USER").unwrap_or_else(|_| "scrybe-user".into());
     let started_at = Utc::now();
 
-    let stream = synthetic_capture_stream(args.synthetic_secs);
+    let stream =
+        synthetic_capture_stream(args.synthetic_secs).take_until(Box::pin(wait_for_stop(stop_rx)));
 
     let outputs = run_session(
         SessionInputs {
@@ -153,6 +178,29 @@ pub async fn run(args: Args) -> Result<()> {
         println!("  audio:      {}", outputs.audio_path.display());
     }
     Ok(())
+}
+
+/// Future that completes the first time `stop_rx` flips to `true`.
+/// Used as the `take_until` argument so the synthetic stream tears
+/// down deterministically when SIGINT, the global hotkey, or the tray
+/// Quit menu fires.
+async fn wait_for_stop(mut stop_rx: watch::Receiver<bool>) {
+    if *stop_rx.borrow_and_update() {
+        return;
+    }
+    while stop_rx.changed().await.is_ok() {
+        if *stop_rx.borrow() {
+            return;
+        }
+    }
+}
+
+fn spawn_sigint_listener(stop_tx: watch::Sender<bool>) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            let _ = stop_tx.send(true);
+        }
+    })
 }
 
 /// Synthetic in-process capture source.
@@ -435,6 +483,7 @@ mod tests {
             yes: true,
             consent: ConsentModeArg::Quick,
             synthetic_secs: 1,
+            shell: false,
         })
         .await
         .unwrap();
