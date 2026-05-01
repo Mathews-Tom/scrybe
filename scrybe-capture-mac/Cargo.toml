@@ -1,6 +1,6 @@
 [package]
 name = "scrybe-capture-mac"
-version = "0.1.0"
+version = "0.2.0"
 description = "macOS audio capture adapter for scrybe. Implements scrybe-core's AudioCapture trait via Core Audio Taps (macOS 14.4+) primary path with a ScreenCaptureKit fallback for 13.0–14.3."
 publish = false
 authors.workspace = true
@@ -30,7 +30,7 @@ core-audio-tap = [
 [dependencies]
 async-trait.workspace = true
 futures.workspace = true
-scrybe-core = { path = "../scrybe-core", version = "0.1.0" }
+scrybe-core = { path = "../scrybe-core", version = "0.2.0" }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 tracing.workspace = true
