@@ -39,6 +39,7 @@ LOC_CEILINGS: dict[str, int] = {
     "scrybe-core": 6500,
     "scrybe-cli": 2000,
     "scrybe-capture-mac": 2500,
+    "scrybe-capture-linux": 2500,
 }
 
 
