@@ -10,9 +10,14 @@
 
 mod atomic;
 mod session_dir;
+mod transcript_log;
 
 pub use atomic::{append_durable, atomic_replace, full_fsync};
 pub use session_dir::{
     acquire_session_lock, release_session_lock, session_folder_name, write_stignore_template,
     PID_LOCK_NAME, STIGNORE_NAME,
+};
+pub use transcript_log::{
+    scan_recovery, RecoveryReport, TranscriptPartialLog, TranscriptPartialRecord,
+    TRANSCRIPT_PARTIAL_LOG_NAME,
 };
