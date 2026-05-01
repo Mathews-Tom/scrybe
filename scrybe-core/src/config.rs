@@ -332,6 +332,32 @@ impl Default for LinuxConfig {
     }
 }
 
+/// Backend names accepted by `LinuxConfig::audio_backend`.
+///
+/// Kept as string constants here (rather than importing the
+/// `scrybe-capture-linux` `Backend` enum) because `scrybe-core` must
+/// not depend on a platform adapter crate. Tested for parity with
+/// `scrybe_capture_linux::backend::Backend::from_config_str`.
+pub const LINUX_AUDIO_BACKEND_AUTO: &str = "auto";
+pub const LINUX_AUDIO_BACKEND_PIPEWIRE: &str = "pipewire";
+pub const LINUX_AUDIO_BACKEND_PULSE: &str = "pulse";
+
+impl LinuxConfig {
+    /// Validated view of the configured backend. Returns the canonical
+    /// string (`"auto"`, `"pipewire"`, or `"pulse"`) when the field is
+    /// recognised, or `None` for any other value so the caller can
+    /// surface a useful error rather than silently accepting a typo.
+    #[must_use]
+    pub fn validated_backend(&self) -> Option<&'static str> {
+        match self.audio_backend.as_str() {
+            LINUX_AUDIO_BACKEND_AUTO => Some(LINUX_AUDIO_BACKEND_AUTO),
+            LINUX_AUDIO_BACKEND_PIPEWIRE => Some(LINUX_AUDIO_BACKEND_PIPEWIRE),
+            LINUX_AUDIO_BACKEND_PULSE => Some(LINUX_AUDIO_BACKEND_PULSE),
+            _ => None,
+        }
+    }
+}
+
 impl Config {
     /// Resolve the platform-conventional config path. Honors
     /// `SCRYBE_CONFIG` for tests and air-gapped deployments.
@@ -786,6 +812,44 @@ unknown_extra = true
         let decoded = Config::from_toml_str(&encoded, &fake_path()).unwrap();
 
         assert_eq!(decoded.linux.audio_backend, "pipewire");
+    }
+
+    #[test]
+    fn test_linux_config_validated_backend_accepts_canonical_values() {
+        for value in ["auto", "pipewire", "pulse"] {
+            let cfg = LinuxConfig {
+                audio_backend: value.to_string(),
+            };
+
+            assert_eq!(cfg.validated_backend(), Some(value));
+        }
+    }
+
+    #[test]
+    fn test_linux_config_validated_backend_returns_none_for_unknown_value() {
+        let cfg = LinuxConfig {
+            audio_backend: "alsa".to_string(),
+        };
+
+        assert!(cfg.validated_backend().is_none());
+    }
+
+    #[test]
+    fn test_linux_config_validated_backend_returns_none_for_empty_string() {
+        let cfg = LinuxConfig {
+            audio_backend: String::new(),
+        };
+
+        assert!(cfg.validated_backend().is_none());
+    }
+
+    #[test]
+    fn test_linux_config_validated_backend_is_case_sensitive() {
+        let cfg = LinuxConfig {
+            audio_backend: "PipeWire".to_string(),
+        };
+
+        assert!(cfg.validated_backend().is_none());
     }
 
     #[test]

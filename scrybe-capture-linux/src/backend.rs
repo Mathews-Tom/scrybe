@@ -317,6 +317,22 @@ mod tests {
     }
 
     #[test]
+    fn test_backend_from_config_str_agrees_with_scrybe_core_constants() {
+        assert_eq!(
+            Backend::from_config_str(scrybe_core::config::LINUX_AUDIO_BACKEND_AUTO),
+            Some(Backend::Auto),
+        );
+        assert_eq!(
+            Backend::from_config_str(scrybe_core::config::LINUX_AUDIO_BACKEND_PIPEWIRE),
+            Some(Backend::PipeWire),
+        );
+        assert_eq!(
+            Backend::from_config_str(scrybe_core::config::LINUX_AUDIO_BACKEND_PULSE),
+            Some(Backend::Pulse),
+        );
+    }
+
+    #[test]
     fn test_parse_uid_from_proc_status_returns_none_for_non_numeric_uid() {
         let sample = "Uid:\troot\troot\troot\troot\n";
 
