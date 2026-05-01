@@ -4,17 +4,21 @@
 // You may obtain a copy of the License at
 //     https://www.apache.org/licenses/LICENSE-2.0
 
-//! Adapter-local error type that the lifetime-erased
-//! `CaptureError::Platform` carries up into `scrybe-core`. Mirrors the
-//! adapter pattern in `docs/system-design.md` §4.6 and the Linux
-//! adapter in `scrybe-capture-linux::error`.
+//! Adapter-local error type for the Windows capture path.
+//!
+//! Carried up into `scrybe-core` through the lifetime-erased
+//! `CaptureError::Platform` arm. Mirrors the adapter pattern in
+//! `docs/system-design.md` §4.6 and the Linux adapter in
+//! `scrybe-capture-linux::error`.
 
 use scrybe_core::error::CaptureError;
 
-/// Reason a Windows capture-backend request could not be honored. Every
-/// variant funnels into [`CaptureError::DeviceUnavailable`] so callers
-/// see a uniform error category regardless of which backend failed; the
-/// rendered string preserves the specific cause for diagnostics.
+/// Reason a Windows capture-backend request could not be honored.
+///
+/// Every variant funnels into [`CaptureError::DeviceUnavailable`] so
+/// callers see a uniform error category regardless of which backend
+/// failed; the rendered string preserves the specific cause for
+/// diagnostics.
 #[derive(thiserror::Error, Debug)]
 pub enum WindowsCaptureError {
     #[error("WASAPI loopback backend not yet implemented in this release")]
