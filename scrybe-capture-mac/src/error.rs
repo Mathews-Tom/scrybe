@@ -70,7 +70,7 @@ mod tests {
 
     #[test]
     fn test_mac_capture_error_screencapturekit_chains_inner_source() {
-        let inner = std::io::Error::new(std::io::ErrorKind::Other, "ScrErrCanceled");
+        let inner = std::io::Error::other("ScrErrCanceled");
         let err = MacCaptureError::ScreenCaptureKit(Box::new(inner));
 
         let rendered = err.to_string();

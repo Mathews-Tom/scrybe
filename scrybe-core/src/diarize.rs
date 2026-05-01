@@ -52,7 +52,7 @@ pub trait Diarizer: Send + Sync {
 /// diarizer instead — multi-party remote calls (≥3 attendees) or
 /// single-channel inputs (system audio unavailable).
 #[must_use]
-pub fn requires_neural(capabilities: &Capabilities, ctx: &MeetingContext) -> bool {
+pub const fn requires_neural(capabilities: &Capabilities, ctx: &MeetingContext) -> bool {
     !capabilities.supports_system_audio || ctx.attendees.len() >= 3
 }
 

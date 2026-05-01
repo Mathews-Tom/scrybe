@@ -206,7 +206,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn boxed(message: &'static str) -> BoxError {
-        let err: std::io::Error = std::io::Error::new(std::io::ErrorKind::Other, message);
+        let err: std::io::Error = std::io::Error::other(message);
         Box::new(err)
     }
 
