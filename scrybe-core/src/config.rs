@@ -56,6 +56,12 @@ pub struct Config {
     pub hooks: HooksConfig,
     #[serde(default)]
     pub consent: ConsentConfig,
+    /// Linux-specific capture overrides. Present in the schema on every
+    /// platform so a config file authored on Linux still parses cleanly
+    /// on macOS / Windows; the `scrybe-capture-linux` adapter is the
+    /// only consumer.
+    #[serde(default)]
+    pub linux: LinuxConfig,
 }
 
 const fn default_schema_version() -> u32 {
@@ -73,6 +79,7 @@ impl Default for Config {
             context: ContextConfig::default(),
             hooks: HooksConfig::default(),
             consent: ConsentConfig::default(),
+            linux: LinuxConfig::default(),
         }
     }
 }
@@ -297,6 +304,32 @@ impl Default for WebhookConfig {
 pub struct ConsentConfig {
     #[serde(default)]
     pub default_mode: ConsentMode,
+}
+
+/// `[linux]` block. Linux capture-adapter overrides; ignored on
+/// other platforms.
+///
+/// The `audio_backend` field corresponds to the
+/// `scrybe-capture-linux` `Backend` enum and accepts `"auto"`,
+/// `"pipewire"`, or `"pulse"`. Default is `"auto"` so a user-edited
+/// config that omits the block continues to work.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LinuxConfig {
+    #[serde(default = "default_linux_audio_backend")]
+    pub audio_backend: String,
+}
+
+fn default_linux_audio_backend() -> String {
+    "auto".to_string()
+}
+
+impl Default for LinuxConfig {
+    fn default() -> Self {
+        Self {
+            audio_backend: default_linux_audio_backend(),
+        }
+    }
 }
 
 impl Config {
@@ -684,6 +717,75 @@ default_mode = "notify"
         let c = Config::from_toml_str(toml, &fake_path()).unwrap();
 
         assert_eq!(c.consent.default_mode, ConsentMode::Notify);
+    }
+
+    #[test]
+    fn test_linux_config_default_audio_backend_is_auto() {
+        let c = LinuxConfig::default();
+
+        assert_eq!(c.audio_backend, "auto");
+    }
+
+    #[test]
+    fn test_config_default_includes_linux_block_with_auto_backend() {
+        let c = Config::default();
+
+        assert_eq!(c.linux.audio_backend, "auto");
+    }
+
+    #[test]
+    fn test_config_parses_explicit_linux_audio_backend_pipewire() {
+        let toml = r#"
+[linux]
+audio_backend = "pipewire"
+"#;
+
+        let c = Config::from_toml_str(toml, &fake_path()).unwrap();
+
+        assert_eq!(c.linux.audio_backend, "pipewire");
+    }
+
+    #[test]
+    fn test_config_parses_explicit_linux_audio_backend_pulse() {
+        let toml = r#"
+[linux]
+audio_backend = "pulse"
+"#;
+
+        let c = Config::from_toml_str(toml, &fake_path()).unwrap();
+
+        assert_eq!(c.linux.audio_backend, "pulse");
+    }
+
+    #[test]
+    fn test_config_rejects_unknown_field_inside_linux_block() {
+        let toml = r#"
+[linux]
+audio_backend = "auto"
+unknown_extra = true
+"#;
+
+        let err = Config::from_toml_str(toml, &fake_path()).unwrap_err();
+
+        match err {
+            ConfigError::UnknownKey { key, .. } => assert_eq!(key, "unknown_extra"),
+            ConfigError::Parse { message, .. } => assert!(
+                message.contains("unknown_extra"),
+                "parse fallback should name the key: {message}"
+            ),
+            other => panic!("expected UnknownKey or Parse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_config_round_trip_preserves_linux_audio_backend_override() {
+        let mut original = Config::default();
+        original.linux.audio_backend = "pipewire".to_string();
+
+        let encoded = toml::to_string(&original).unwrap();
+        let decoded = Config::from_toml_str(&encoded, &fake_path()).unwrap();
+
+        assert_eq!(decoded.linux.audio_backend, "pipewire");
     }
 
     #[test]
