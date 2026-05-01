@@ -1,6 +1,6 @@
 [package]
 name = "scrybe-cli"
-version = "0.3.0"
+version = "0.4.0"
 description = "Command-line driver for scrybe: init, record, list, show, doctor."
 publish = false
 authors.workspace = true
@@ -46,9 +46,9 @@ directories.workspace = true
 futures.workspace = true
 global-hotkey = { version = "0.7", optional = true }
 keyboard-types = { version = "0.8", optional = true }
-scrybe = { path = "../scrybe", version = "0.3.0" }
-scrybe-capture-mac = { path = "../scrybe-capture-mac", version = "0.3.0" }
-scrybe-core = { path = "../scrybe-core", version = "0.3.0" }
+scrybe = { path = "../scrybe", version = "0.4.0" }
+scrybe-capture-mac = { path = "../scrybe-capture-mac", version = "0.4.0" }
+scrybe-core = { path = "../scrybe-core", version = "0.4.0" }
 serde.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "fs", "io-util", "sync", "time"] }
 toml.workspace = true
