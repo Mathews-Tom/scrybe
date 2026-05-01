@@ -12,8 +12,12 @@
 //! Adding a variant is a major-version change.
 
 pub mod git;
+#[cfg(feature = "hook-webhook")]
+pub mod webhook;
 
 pub use git::{GitHook, GitHookConfig};
+#[cfg(feature = "hook-webhook")]
+pub use webhook::{sign_body as webhook_sign_body, WebhookHook, WebhookHookConfig};
 
 use std::path::PathBuf;
 use std::sync::Arc;
