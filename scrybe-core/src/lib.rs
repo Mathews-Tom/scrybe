@@ -30,6 +30,8 @@ pub mod session;
 pub mod storage;
 pub mod types;
 
+pub use diarize::{requires_neural, BinaryChannelDiarizer, Diarizer};
+
 pub use error::{
     CaptureError, ConfigError, ConsentError, CoreError, HookError, LlmError, PipelineError,
     StorageError, SttError,
