@@ -58,6 +58,7 @@ impl Backend {
 }
 
 /// Minimum Windows 10 build that supports `AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS`.
+///
 /// Documented at <https://learn.microsoft.com/en-us/windows/win32/api/audioclientactivationparams/ns-audioclientactivationparams-audioclient_activation_params>.
 pub const PROCESS_LOOPBACK_MIN_BUILD: u32 = 20_348;
 
@@ -138,8 +139,15 @@ impl ProbeResult {
 /// test suite green on macOS / Linux developer hosts and CI runners
 /// where this crate is type-checked but never linked into a running
 /// process.
+#[cfg(all(target_os = "windows", feature = "wasapi-loopback"))]
 #[must_use]
 pub fn probe() -> ProbeResult {
+    ProbeResult::from_build(detect_host_build())
+}
+
+#[cfg(not(all(target_os = "windows", feature = "wasapi-loopback")))]
+#[must_use]
+pub const fn probe() -> ProbeResult {
     ProbeResult::from_build(detect_host_build())
 }
 
@@ -202,8 +210,15 @@ const fn detect_host_build() -> u32 {
 
 /// Resolve the configured backend against the live host. Convenience
 /// wrapper around [`probe`] + [`ProbeResult::resolve`].
+#[cfg(all(target_os = "windows", feature = "wasapi-loopback"))]
 #[must_use]
 pub fn detect(requested: Backend) -> Option<Backend> {
+    probe().resolve(requested)
+}
+
+#[cfg(not(all(target_os = "windows", feature = "wasapi-loopback")))]
+#[must_use]
+pub const fn detect(requested: Backend) -> Option<Backend> {
     probe().resolve(requested)
 }
 
