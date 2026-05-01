@@ -47,7 +47,7 @@ Dependency chain: `scrybe-core` (with `hook-git` feature) → `git2 0.19` → `u
 
 Fix: `cargo update -p url --precise 2.5.0` rolls back to the last `url` release before the `idna 1.x` migration (which was the entry point for the entire `icu_*` cluster). Reintroduces `RUSTSEC-2024-0421` (idna 0.5 Punycode validation); ignored in both `audit.toml` and `deny.toml` with documented rationale (Hook::Git's URL surface — local-repo paths and conventional git remotes — does not exercise the affected Punycode path).
 
-Why this leaked through PR-time CI: `ci.yml`'s `build` jobs run `cargo check`, which is more permissive about MSRV mismatches in transitive deps than `cargo build`. `dist build` compiles every transitive crate, hitting the `rust-version` declaration head-on.
+Why this leaked through PR-time CI: not fully characterized. `ci.yml`'s `build` jobs run `cargo check --workspace --all-targets` against the same `Cargo.lock` that `release.yml`'s `dist build` consumed, so the locked `icu_collections@2.2.0` was theoretically reachable from both. Plausible mechanisms include (a) `Swatinem/rust-cache@v2` restoring compiled artifacts so the `rust-version` declaration on the transitive crate wasn't re-evaluated under fresh compilation, (b) cargo's MSRV-aware resolver behaving differently across `--profile=dev` (cargo check default) and `--profile=dist` (cargo-dist), (c) the lockfile being resolved on a developer machine with a newer rustc and the constraint never being checked again until `release.yml`'s cold cache forced a from-scratch compile. The exact path is unverified; the practical fix below catches all of them by running `cargo build --profile=dist` at PR time regardless of the underlying mechanism.
 
 **Round 3 — `dist-staging/*` matched a directory (PR #26).**
 
@@ -59,7 +59,13 @@ A partial GitHub Release was created at this point (release ID 316214887, notes 
 
 **Future hardening (not done in this triage; tracked here).**
 
-Add a `dist-build-host` lane to `ci.yml` that runs `cargo build --profile=dist -p scrybe-cli --features cli-shell,hook-git --no-default-features` on `macos-14`. That single command catches all three failure modes (missing profile, MSRV-via-transitive-dep, build success) at PR time, before a tag is pushed and the cargo-dist matrix is invoked. The runtime cost is one additional macos-14 build per PR (~1 minute incremental); the value is "no more multi-round release-pipeline hotfix sequences after a release tag is in flight". Out of scope for v0.1.0; lands as a `chore/ci-dist-build-host` slice in v0.2 prep.
+Two complementary CI lanes would have caught these issues at PR time, before a tag was pushed:
+
+1. **`dist-build-host`**: run `cargo build --profile=dist -p scrybe-cli --features cli-shell,hook-git --no-default-features` on `macos-14`. Catches Round 1 (missing `[profile.dist]` aborts immediately with the same error) and Round 2 (the MSRV-via-transitive-dep mismatch surfaces under the dist profile's compile path on a fresh cache). One additional macos-14 build per PR, ~1 minute incremental.
+
+2. **`dist-stage-asset-shape`**: after the `dist-build-host` produces `target/distrib/`, run `find target/distrib -maxdepth 1 -not -type f | grep -v "^target/distrib$" || true` and assert the result is empty (or use the same `find -type f | xargs --no-run-if-empty file` chain `release.yml` now uses). Catches Round 3 (the unpacked `scrybe-cli-<target>/` working directory in `target/distrib/` is structurally a release-script issue, not a build issue, so the dist-build lane alone misses it).
+
+Together they catch all three failure modes; neither alone does. Out of scope for v0.1.0; lands as a `chore/ci-dist-build-host` slice in v0.2 prep.
 
 ---
 
