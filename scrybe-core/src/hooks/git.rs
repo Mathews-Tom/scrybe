@@ -123,7 +123,7 @@ async fn commit_notes(
         let repo = Repository::open(&repo_root).map_err(|e| HookError::Hook(Box::new(e)))?;
         let mut index = repo.index().map_err(|e| HookError::Hook(Box::new(e)))?;
         index
-            .add_all([notes].iter(), IndexAddOption::DEFAULT, None)
+            .add_all(std::iter::once(&notes), IndexAddOption::DEFAULT, None)
             .map_err(|e| HookError::Hook(Box::new(e)))?;
         index.write().map_err(|e| HookError::Hook(Box::new(e)))?;
         let oid = index
@@ -134,14 +134,15 @@ async fn commit_notes(
             .map_err(|e| HookError::Hook(Box::new(e)))?;
         let sig = Signature::now("scrybe", "scrybe@localhost")
             .map_err(|e| HookError::Hook(Box::new(e)))?;
-        let parents: Vec<git2::Commit<'_>> = match repo.head() {
-            Ok(head) => head
-                .target()
-                .and_then(|oid| repo.find_commit(oid).ok())
-                .into_iter()
-                .collect(),
-            Err(_) => Vec::new(),
-        };
+        let parents: Vec<git2::Commit<'_>> = repo.head().map_or_else(
+            |_| Vec::new(),
+            |head| {
+                head.target()
+                    .and_then(|oid| repo.find_commit(oid).ok())
+                    .into_iter()
+                    .collect()
+            },
+        );
         let parent_refs: Vec<&git2::Commit<'_>> = parents.iter().collect();
         repo.commit(Some("HEAD"), &sig, &sig, &message, &tree, &parent_refs)
             .map_err(|e| HookError::Hook(Box::new(e)))?;

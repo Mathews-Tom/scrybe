@@ -172,10 +172,13 @@ async fn transcribe_impl(
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
+    #[cfg(not(feature = "whisper-local"))]
     use std::sync::Arc;
+    #[cfg(not(feature = "whisper-local"))]
     use std::time::Duration;
 
     use super::*;
+    #[cfg(not(feature = "whisper-local"))]
     use crate::types::FrameSource;
     use pretty_assertions::assert_eq;
 
