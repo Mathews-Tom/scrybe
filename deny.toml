@@ -76,6 +76,12 @@ allow = [
     "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",
     "BSD-3-Clause",
+    # `webpki-roots 1.x` (transitive via reqwest+rustls) ships under
+    # CDLA-Permissive-2.0. Linux Foundation's permissive data-license
+    # family — same redistribution shape as MIT/BSD with explicit
+    # patent-grant language. Compatible with Apache-2.0 distribution
+    # and used widely in the rustls/webpki ecosystem.
+    "CDLA-Permissive-2.0",
     "CC0-1.0",
     "ISC",
     "MIT",
