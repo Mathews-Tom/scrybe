@@ -370,8 +370,7 @@ mod tests {
             .iter()
             .filter(|f| {
                 f.as_ref()
-                    .map(|frame| frame.samples.iter().any(|s| s.abs() > 0.01))
-                    .unwrap_or(false)
+                    .is_ok_and(|frame| frame.samples.iter().any(|s| s.abs() > 0.01))
             })
             .count();
         assert!(
@@ -562,8 +561,7 @@ mod tests {
             .iter()
             .filter(|f| {
                 f.as_ref()
-                    .map(|frame| frame.samples.iter().any(|s| s.abs() > 0.01))
-                    .unwrap_or(false)
+                    .is_ok_and(|frame| frame.samples.iter().any(|s| s.abs() > 0.01))
             })
             .count();
         assert_eq!(speech_count, 0);
