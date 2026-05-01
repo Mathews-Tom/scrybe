@@ -22,7 +22,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.85.0
+          toolchain: 1.95.0
           components: rustfmt
       - name: cargo fmt --check
         run: cargo fmt --all --check
@@ -38,7 +38,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.85.0
+          toolchain: 1.95.0
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - name: cargo check
@@ -68,11 +68,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # `rustsec/audit-check` compiles cargo-audit from source against the
-      # workspace's pinned 1.85.0 toolchain, but cargo-audit's transitive
-      # icu_*/time/home deps now require rustc 1.86+/1.88+. Install the
-      # prebuilt binary via taiki-e/install-action so the audit job is
-      # decoupled from the workspace toolchain pin.
+      # Install prebuilt cargo-audit via taiki-e/install-action so the
+      # audit job is decoupled from the workspace toolchain bump cycle.
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-audit
@@ -112,7 +109,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.85.0
+          toolchain: 1.95.0
       - uses: Swatinem/rust-cache@v2
       - name: assert no network crates in scrybe-cli default build
         run: python3 scripts/check-egress-baseline.py
@@ -124,7 +121,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.85.0
+          toolchain: 1.95.0
           components: clippy
       - uses: Swatinem/rust-cache@v2
       # `cargo bench --no-run` builds every `[[bench]]` target without
@@ -145,7 +142,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.85.0
+          toolchain: 1.95.0
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
         with:
@@ -164,7 +161,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.85.0
+          toolchain: 1.95.0
           components: llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
       - name: install cargo-llvm-cov

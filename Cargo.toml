@@ -15,7 +15,7 @@ edition = "2021"
 homepage = "https://github.com/Mathews-Tom/scrybe"
 repository = "https://github.com/Mathews-Tom/scrybe"
 license = "Apache-2.0"
-rust-version = "1.85"
+rust-version = "1.95"
 
 [workspace.lints.rust]
 # `deny` rather than `forbid` so the atomic-write recipe in
@@ -54,10 +54,12 @@ toml = "0.8"
 tracing = "0.1"
 ulid = { version = "1", features = ["serde"] }
 # `=2.5.0` precise pin: `url 2.5.x` past .0 pulls `idna 1.x` →
-# `idna_adapter 1.x` → `icu_normalizer 2.2.0` (rustc 1.86 MSRV); the
-# workspace pins rustc 1.85 in `rust-toolchain.toml`. PR #25 introduced
-# this pin against `idna 0.5.x` for the `git2 → url` chain; the same
-# rationale applies once `reqwest`/`wiremock` add their own `url` paths.
+# `idna_adapter 1.x` → `icu_normalizer 2.2.0`. The workspace bumped
+# rustc to 1.95 (rust-toolchain.toml) but the Cargo.lock cascade — git2
+# 0.19 → 0.20, url 2.5.0 → 2.5.x, idna 0.5 → 1.x — needs a deliberate
+# `cargo update` run that regenerates lockfile transitives. Until that
+# follow-up lands, hold the precise pin so the toolchain bump alone
+# doesn't pull in unaudited transitive crates.
 url = { version = "=2.5.0", default-features = false }
 # Mock HTTP for provider/webhook tests. Dev-only; keeps the
 # default-feature graph free of test scaffolding (the `egress-audit`

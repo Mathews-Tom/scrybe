@@ -17,19 +17,16 @@
 [advisories]
 ignore = [
     # `idna 0.5.x` accepts certain malformed Punycode labels that
-    # should be rejected; patched in `idna 1.0.0`. `idna 1.x` brings
-    # in `idna_adapter → icu_normalizer → icu_collections@2.2.0`,
-    # each requiring rustc 1.86; the workspace pins rustc 1.85.0
-    # via `rust-toolchain.toml`, forcing the `url 2.5.0` pin in
-    # `Cargo.lock` which transitively pulls `idna 0.5.x`.
-    #
-    # Exposure surface is IDN-aware URL parsing. The only consumer
-    # of the affected chain is `Hook::Git` (via `git2 → url`), which
-    # parses local-repo paths and conventional git remote URLs
-    # (HTTPS/SSH without internationalized domain names). Those
-    # paths do not exercise the affected Punycode validation.
-    #
-    # Re-evaluate when the workspace `rust-toolchain.toml` moves
-    # past 1.85.0 and the `url` pin can be lifted.
+    # should be rejected; patched in `idna 1.0.0`. Lockfile still
+    # carries `idna 0.5.x` via the `url 2.5.0` precise pin enforced
+    # in the workspace `Cargo.toml`. The toolchain bumped to rustc
+    # 1.95 in `rust-toolchain.toml`, so the MSRV no longer blocks
+    # `idna 1.x`; what remains is a deliberate `cargo update` run
+    # that regenerates the lock cascade. Drop this ignore once that
+    # update lands. Exposure surface is IDN-aware URL parsing; the
+    # only consumer of the affected chain is `Hook::Git` (via
+    # `git2 → url`), which parses local-repo paths and conventional
+    # git remote URLs (HTTPS/SSH without internationalized domain
+    # names), so the affected Punycode validation is not exercised.
     "RUSTSEC-2024-0421",
 ]
