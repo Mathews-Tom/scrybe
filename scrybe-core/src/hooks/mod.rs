@@ -126,7 +126,7 @@ pub struct DispatchOutcome {
 impl DispatchOutcome {
     /// True when every hook acknowledged the event without error.
     #[must_use]
-    pub fn all_ok(&self) -> bool {
+    pub const fn all_ok(&self) -> bool {
         self.failures.is_empty()
     }
 }
@@ -203,10 +203,10 @@ mod tests {
             }
             self.seen.lock().unwrap().push(event.kind());
             if self.fail {
-                Err(HookError::Hook(Box::new(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("{} simulated failure", self.identifier),
-                ))))
+                Err(HookError::Hook(Box::new(std::io::Error::other(format!(
+                    "{} simulated failure",
+                    self.identifier
+                )))))
             } else {
                 Ok(())
             }

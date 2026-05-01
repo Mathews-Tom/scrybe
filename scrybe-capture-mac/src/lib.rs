@@ -160,8 +160,7 @@ impl AudioCapture for MacCapture {
     )]
     fn start(&mut self) -> Result<(), CaptureError> {
         let mut guard = self.state.lock().map_err(|_| {
-            CaptureError::Platform(Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
+            CaptureError::Platform(Box::new(std::io::Error::other(
                 "MacCapture state mutex poisoned",
             )))
         })?;
@@ -199,8 +198,7 @@ impl AudioCapture for MacCapture {
     #[allow(clippy::significant_drop_tightening)]
     fn stop(&mut self) -> Result<(), CaptureError> {
         let mut guard = self.state.lock().map_err(|_| {
-            CaptureError::Platform(Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
+            CaptureError::Platform(Box::new(std::io::Error::other(
                 "MacCapture state mutex poisoned",
             )))
         })?;
