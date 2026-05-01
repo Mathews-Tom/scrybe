@@ -2,6 +2,67 @@
 
 All notable changes to scrybe are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) within the stability tiers documented in `docs/system-design.md` §12.
 
+## [0.4.0] — 2026-05-01
+
+Windows capture trait surface, runtime backend detection, and config wiring; ParakeetLocalProvider seam for the English-priority alternate STT path. v0.4.0 delivers the architectural seam for Windows audio capture per `.docs/development-plan.md` §10 — the new `scrybe-capture-win` crate, the `Backend` enum (`auto`/`wasapi-loopback`/`wasapi-process-loopback`), the `RtlGetVersion`-driven host probe that distinguishes Windows 10 build 20348+ (per-process loopback supported) from earlier builds (system-wide loopback only), and the `[windows] audio_backend` configuration block. The live WASAPI binding (system-wide loopback and `AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS` per-process loopback) is tracked as a v0.4.x follow-up: `WindowsCapture::start()` resolves the requested backend against the live host and returns a clear `CaptureError::DeviceUnavailable` when the live binding is not yet wired in. This mirrors the macOS-first / Linux-first pattern from v0.1.0 and v0.3.0.
+
+`ParakeetLocalProvider` ships in the same release as the third local STT path alongside `WhisperLocalProvider` and `OpenAiCompatSttProvider`. The provider type, config struct, and trait wiring are in place; the live `sherpa-rs` binding sits behind the `parakeet-local` cargo feature and lands as a v0.4.x follow-up. Without the feature, `transcribe()` returns `SttError::ModelNotLoaded` with a message naming the missing feature, mirroring the `WhisperLocalProvider` scaffold pattern.
+
+The publish posture from v0.1.0 / v0.2.0 / v0.3.0 carries forward unchanged: only `scrybe` (the placeholder) publishes to crates.io. `scrybe-core`, `scrybe-capture-mac`, `scrybe-capture-linux`, `scrybe-capture-win`, and `scrybe-cli` stay workspace-private (`publish = false`).
+
+### What you can actually do at v0.4.0
+
+- Everything you could at v0.3.0 (macOS Core Audio Taps capture, local whisper-rs, local Ollama, OpenAI-compatible cloud STT/LLM, ICS calendar context, signed webhooks, `Hook::Git` auto-commit, channel-split `BinaryChannelDiarizer`, `transcript.partial.jsonl` write-ahead log, Linux `audio_backend` selector), plus:
+- Compose against the `scrybe_capture_win::AudioCapture` impl from a Windows build. The `WindowsCapture` adapter implements the same `start`/`stop`/`frames`/`capabilities` contract as `MacCapture` and `LinuxCapture`, with the same `Arc<Mutex<SharedState>>` ownership shape and the same `inject_for_test` / `close_for_test` integration-test surface.
+- Choose a backend via `windows.audio_backend = "auto" | "wasapi-loopback" | "wasapi-process-loopback"` in `config.toml`. Default is `"auto"`, which the runtime resolves against the host build number reported by `RtlGetVersion`. Auto prefers per-process loopback on Windows 10 build 20348+ and falls back to system-wide loopback on earlier builds; a host that cannot expose either backend (or any non-Windows host) collapses to `Backend::Auto → None`, which surfaces as `DeviceUnavailable` with the `NoBackendAvailable` rationale.
+- Distinguish a "needs newer Windows" host from a fully unsupported host: an explicit `windows.audio_backend = "wasapi-process-loopback"` on a build older than 20348 returns `RequestedBackendUnavailable { requested: "wasapi-process-loopback" }` rather than silently falling through to system-wide loopback.
+- Reference `ParakeetLocalProvider` and `ParakeetLocalConfig` from any consumer of `scrybe_core::providers`. The provider name (`parakeet-local:tdt-v2`) and the `*.partial`-rejection at construction time match the `WhisperLocalProvider` shape so `scrybe-cli` can switch between the two via `[stt] provider = "parakeet-local"` once the live binding lands.
+
+### Added
+
+- `scrybe-capture-win` crate (under the 2 500-LoC ceiling enforced by `scripts/check-loc-budget.py`). New workspace member listed in the root `Cargo.toml`.
+- `scrybe_capture_win::WindowsCapture` implementing `scrybe_core::capture::AudioCapture`. Mirrors the `MacCapture` and `LinuxCapture` shapes — `Arc<Mutex<SharedState>>` ownership, `tokio::sync::mpsc::unbounded_channel` plumbing, single-consumer `frames()` semantics. `start()` / `stop()` are idempotent; calling `start()` after `stop()` returns `DeviceUnavailable` (the adapter is single-use across a `start → stop → start` cycle, per the macOS / Linux adapter precedent). `inject_for_test` / `close_for_test` test surfaces match the macOS adapter byte-for-byte.
+- `scrybe_capture_win::backend::{Backend, ProbeResult, probe, detect, PROCESS_LOOPBACK_MIN_BUILD, WASAPI_LOOPBACK_MIN_BUILD}`. `Backend` is a three-variant enum (`Auto`/`WasapiLoopback`/`WasapiProcessLoopback`) with a `from_config_str` parser and an `as_str` round-trip. `ProbeResult::from_build(host_build)` derives availability flags from the OS build number; tests construct it directly to exercise resolution against any host shape without requiring a live Windows runner. `detect()` reads the host build via `RtlGetVersion` (the version-lying-suppression API in `ntdll.dll`) on Windows hosts when the `wasapi-loopback` feature is on; on non-Windows hosts and feature-disabled builds it returns `0` so the resolution table collapses to `None` rather than promising an unreachable backend.
+- `scrybe_capture_win::error::WindowsCaptureError` — adapter-local error type with `WasapiLoopbackDisabled`, `WasapiProcessLoopbackDisabled`, `NoBackendAvailable`, `RequestedBackendUnavailable { requested }`, and `ProcessLoopbackRequiresNewerBuild { build }`. Promotes uniformly to `CaptureError::DeviceUnavailable` via `From` so the pipeline error-handling path stays identical to the macOS / Linux adapters.
+- `scrybe_core::config::WindowsConfig` (Tier-2 stable, additive). New `[windows]` block with `audio_backend: String` defaulting to `"auto"`. `#[serde(deny_unknown_fields)]` matches the rest of the schema, so a typo'd field surfaces with a line number. The `Config::default()` shape includes `windows: WindowsConfig::default()`; configs authored before v0.4.0 (no `[windows]` block) continue to load unchanged because the field carries `#[serde(default)]`.
+- `scrybe_core::config::{WINDOWS_AUDIO_BACKEND_AUTO, WINDOWS_AUDIO_BACKEND_WASAPI_LOOPBACK, WINDOWS_AUDIO_BACKEND_WASAPI_PROCESS_LOOPBACK}` constants. Tested for parity with `scrybe_capture_win::backend::Backend::from_config_str` so the `scrybe-core` schema and the adapter enum stay in lock-step.
+- `scrybe_core::providers::parakeet_local::{ParakeetLocalProvider, ParakeetLocalConfig}` behind the new `parakeet-local` cargo feature. The provider mirrors the `WhisperLocalProvider` shape: the type exists in every build, `transcribe()` returns `SttError::ModelNotLoaded` when the feature is disabled, and `*.partial` model paths are rejected with `SttError::ModelCorrupt` at construction time. The default model label is `tdt-v2`, naming Parakeet TDT v2; the v3 follow-up will switch the label without touching the trait surface.
+- New unit tests on `scrybe-capture-win` covering: backend parsing + as-str round-trip, `ProbeResult::from_build` across the four representative host shapes (zero / Vista / Windows 10 19044 / Windows 11 22621), `Backend::Auto` resolution preferring per-process loopback over system-wide loopback when both are supported, explicit-backend resolution returning `None` when the requested backend is unavailable, error-promotion to `CaptureError::DeviceUnavailable` for all five error variants, capability advertisement, `frames()` single-consumer semantics, `stop()` idempotence, and start-after-stop returning `DeviceUnavailable`. New unit tests on `scrybe-core::config` covering the `[windows]` block parsing path, default value, unknown-field rejection, and round-trip. New unit tests on `scrybe_core::providers::parakeet_local` covering name formatting, `*.partial` rejection, `is_partial` extension matching, and the feature-disabled `transcribe()` surface.
+
+### Changed
+
+- Workspace LoC budget gate (`scripts/check-loc-budget.py`) extended with a `scrybe-capture-win: 2500` ceiling and `scrybe-core` raised from `6500` to `7500` to absorb the new `WindowsConfig` block, the `ParakeetLocalProvider` scaffold, and the parity-constant test surface.
+- All workspace crates bumped from `0.3.0` to `0.4.0`. Path-dep version pins follow. `scrybe::tests::test_version_constant_matches_cargo_metadata` updated to lock against the `0.4.x` line.
+
+### Deprecated / Removed
+
+- Nothing.
+
+### Security
+
+- `cargo audit` and `cargo deny` policies are unchanged from v0.3.0 (same advisory ignores, same license clarifies).
+- The default-feature graph is unchanged — `scrybe-capture-win` and `parakeet_local` add no runtime dependencies. `egress-audit` CI lane verifies on every PR.
+- The `WindowsCaptureError` `From` impl uniformly produces `CaptureError::DeviceUnavailable`, never `Platform`. There is no path by which a v0.4.0 build can emit a `CaptureError::Platform` from the Windows adapter, which keeps the lifetime-erased `Platform` boxing surface unused on Windows until the live binding lands.
+- `RtlGetVersion` is invoked through an in-tree `extern "system"` declaration inside an `#[allow(unsafe_code)]` block; the `unsafe_code = "deny"` workspace lint stays untouched on every other crate. The struct shape is fixed by the Win32 ABI and verified against the documented `OSVERSIONINFOW` layout.
+
+### Known limitations
+
+- **WASAPI live binding deferred.** v0.4.0 ships the trait surface, the backend-detection logic, the host-build probe, and the configuration block. The live `windows-sys` WASAPI binding (system-wide loopback via `IAudioClient::Initialize` with `AUDCLNT_STREAMFLAGS_LOOPBACK`, per-process loopback via `ActivateAudioInterfaceAsync` + `AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS`) is tracked as a v0.4.x follow-up; this release surfaces a clear `CaptureError::DeviceUnavailable` rather than attempting capture against an un-validated FFI shape. Validation requires Windows hardware that the maintainer's macOS-only development environment does not provide; the CI matrix's `windows-latest` runner does not host an audio device suitable for end-to-end loopback verification.
+- **Parakeet live binding deferred.** v0.4.0 ships the provider scaffold; the `sherpa-rs` integration that links the upstream `sherpa-onnx` C++ runtime lands as a v0.4.x follow-up gated on the `parakeet-local` cargo feature.
+- **MSI installer deferred.** `cargo-wix` packaging for Windows release artifacts is documented for the v0.4.x stream but not shipped in v0.4.0. The `INSTALL.md` SmartScreen "More info → Run anyway" walkthrough is the remaining v0.4.x deliverable.
+- **Self-hosted Windows Tier-3 runner not yet registered.** The `nightly-e2e.yml` workflow grew a macOS lane in v0.1.0; the Linux + PipeWire / Pulse and Windows + WASAPI equivalents wait on hardware availability.
+
+### Workspace
+
+- 6 crates (`scrybe`, `scrybe-core`, `scrybe-capture-mac`, `scrybe-capture-linux`, `scrybe-capture-win`, `scrybe-cli`).
+- Publish posture unchanged: only `scrybe` publishes to crates.io.
+
+### Contributors
+
+- Maintainer: Mathews Tom.
+
+[0.4.0]: https://github.com/Mathews-Tom/scrybe/releases/tag/v0.4.0
+
 ## [0.3.0] — 2026-05-01
 
 Linux capture trait surface, runtime backend detection, and config wiring. v0.3.0 delivers the architectural seam for Linux audio capture per `.docs/development-plan.md` §9 — the new `scrybe-capture-linux` crate, the `Backend` enum (`auto`/`pipewire`/`pulse`), the `XDG_RUNTIME_DIR` socket probe that distinguishes a PipeWire host from a Pulse-only host, and the `[linux] audio_backend` configuration block. The live PipeWire and PulseAudio bindings are tracked as a v0.3.x follow-up: `LinuxCapture::start()` resolves the requested backend against the live host and returns a clear `CaptureError::DeviceUnavailable` when the live binding is not yet wired in. This mirrors the macOS-first pattern (PR #8 shipped the `scrybe-capture-mac` scaffold; PR #11 added the live Core Audio Tap binding).
