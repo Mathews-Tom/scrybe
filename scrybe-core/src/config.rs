@@ -22,6 +22,8 @@ use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 
 use crate::error::ConfigError;
+use crate::providers::retry::RetryPolicy;
+use crate::types::ConsentMode;
 
 /// Current schema version. Persisted into the on-disk file so older
 /// installs can detect a forward-incompatible config without crashing.
@@ -49,7 +51,11 @@ pub struct Config {
     #[serde(default)]
     pub llm: LlmConfig,
     #[serde(default)]
+    pub context: ContextConfig,
+    #[serde(default)]
     pub hooks: HooksConfig,
+    #[serde(default)]
+    pub consent: ConsentConfig,
 }
 
 const fn default_schema_version() -> u32 {
@@ -64,7 +70,9 @@ impl Default for Config {
             capture: CaptureConfig::default(),
             stt: SttConfig::default(),
             llm: LlmConfig::default(),
+            context: ContextConfig::default(),
             hooks: HooksConfig::default(),
+            consent: ConsentConfig::default(),
         }
     }
 }
@@ -144,6 +152,10 @@ pub struct SttConfig {
     pub base_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key_env: Option<String>,
+    /// Retry policy applied by cloud STT providers. Defaults to the
+    /// system-wide default; see [`RetryPolicy::default`].
+    #[serde(default)]
+    pub retry: RetryPolicy,
 }
 
 fn default_stt_provider() -> String {
@@ -166,6 +178,7 @@ impl Default for SttConfig {
             language: default_stt_language(),
             base_url: None,
             api_key_env: None,
+            retry: RetryPolicy::default(),
         }
     }
 }
@@ -183,6 +196,9 @@ pub struct LlmConfig {
     pub notes_template: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key_env: Option<String>,
+    /// Retry policy applied by cloud LLM providers.
+    #[serde(default)]
+    pub retry: RetryPolicy,
 }
 
 fn default_llm_provider() -> String {
@@ -209,8 +225,27 @@ impl Default for LlmConfig {
             model: default_llm_model(),
             notes_template: default_notes_template(),
             api_key_env: None,
+            retry: RetryPolicy::default(),
         }
     }
+}
+
+/// `[context]` block. Lists the context-provider names to consult and
+/// (optionally) the path to the local `.ics` calendar for
+/// `IcsFileProvider`.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContextConfig {
+    /// Provider names in priority order. The CLI registers a provider
+    /// only if its name appears here. Default is empty, which means the
+    /// session uses CLI-flag context only — preserves v0.1 behavior.
+    #[serde(default)]
+    pub sources: Vec<String>,
+    /// Path to the local `.ics` calendar consulted by
+    /// `IcsFileProvider`. `None` disables the provider even when
+    /// `"ics"` appears in `sources`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ics_path: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -218,6 +253,50 @@ impl Default for LlmConfig {
 pub struct HooksConfig {
     #[serde(default)]
     pub enabled: Vec<String>,
+    /// Webhook hook configuration. Present only when `"webhook"` is in
+    /// `enabled`; absent in the default config so v0.1 installs do not
+    /// surface a half-configured block.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webhook: Option<WebhookConfig>,
+}
+
+/// `[hooks.webhook]` block. The HMAC secret is loaded from the
+/// environment variable named in `secret_env`; the secret value never
+/// appears in the config file.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WebhookConfig {
+    pub url: String,
+    /// Environment variable that holds the HMAC-SHA256 secret. `None`
+    /// produces an unsigned webhook (acceptable for receivers that
+    /// authenticate by URL alone).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_env: Option<String>,
+    #[serde(default = "default_webhook_timeout_ms")]
+    pub timeout_ms: u32,
+}
+
+const fn default_webhook_timeout_ms() -> u32 {
+    10_000
+}
+
+impl Default for WebhookConfig {
+    fn default() -> Self {
+        Self {
+            url: String::new(),
+            secret_env: None,
+            timeout_ms: default_webhook_timeout_ms(),
+        }
+    }
+}
+
+/// `[consent]` block. Sets the default mode used when no `--consent`
+/// CLI flag is passed; the floor is `Quick` per `system-design.md` §5.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConsentConfig {
+    #[serde(default)]
+    pub default_mode: ConsentMode,
 }
 
 impl Config {
@@ -518,6 +597,93 @@ system_audio = true
         } else if cfg!(target_os = "linux") {
             assert!(path_str.contains("scrybe"));
         }
+    }
+
+    #[test]
+    fn test_config_default_includes_empty_context_and_default_consent_mode() {
+        let c = Config::default();
+
+        assert!(c.context.sources.is_empty());
+        assert!(c.context.ics_path.is_none());
+        assert!(c.hooks.webhook.is_none());
+        assert_eq!(c.consent.default_mode, ConsentMode::Quick);
+    }
+
+    #[test]
+    fn test_config_round_trips_default_through_toml_with_new_v0_2_blocks() {
+        let original = Config::default();
+
+        let encoded = toml::to_string(&original).unwrap();
+        let decoded = Config::from_toml_str(&encoded, &fake_path()).unwrap();
+
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn test_config_parses_explicit_retry_block_under_stt() {
+        let toml = r#"
+[stt]
+provider = "openai-compat"
+model = "whisper-large-v3"
+base_url = "https://api.groq.com/openai/v1"
+api_key_env = "GROQ_API_KEY"
+
+[stt.retry]
+max_attempts = 5
+initial_backoff_ms = 250
+max_backoff_ms = 16000
+"#;
+        let c = Config::from_toml_str(toml, &fake_path()).unwrap();
+
+        assert_eq!(c.stt.retry.max_attempts, 5);
+        assert_eq!(c.stt.retry.initial_backoff_ms, 250);
+        assert_eq!(c.stt.retry.max_backoff_ms, 16_000);
+    }
+
+    #[test]
+    fn test_config_parses_context_sources_and_ics_path() {
+        let toml = r#"
+[context]
+sources = ["cli", "ics"]
+ics_path = "/Users/tom/.calendars/work.ics"
+"#;
+        let c = Config::from_toml_str(toml, &fake_path()).unwrap();
+
+        assert_eq!(c.context.sources, vec!["cli", "ics"]);
+        assert_eq!(
+            c.context.ics_path,
+            Some(PathBuf::from("/Users/tom/.calendars/work.ics"))
+        );
+    }
+
+    #[test]
+    fn test_config_parses_webhook_block_with_optional_secret_env() {
+        let toml = r#"
+[hooks]
+enabled = ["webhook"]
+
+[hooks.webhook]
+url = "https://example.com/scrybe-webhook"
+secret_env = "SCRYBE_WEBHOOK_SECRET"
+timeout_ms = 5000
+"#;
+        let c = Config::from_toml_str(toml, &fake_path()).unwrap();
+
+        let webhook = c.hooks.webhook.expect("webhook block parsed");
+        assert_eq!(webhook.url, "https://example.com/scrybe-webhook");
+        assert_eq!(webhook.secret_env.as_deref(), Some("SCRYBE_WEBHOOK_SECRET"));
+        assert_eq!(webhook.timeout_ms, 5_000);
+    }
+
+    #[test]
+    fn test_config_parses_consent_default_mode() {
+        let toml = r#"
+[consent]
+default_mode = "notify"
+"#;
+        let c = Config::from_toml_str(toml, &fake_path()).unwrap();
+
+        assert_eq!(c.consent.default_mode, ConsentMode::Notify);
     }
 
     #[test]
