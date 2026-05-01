@@ -25,6 +25,7 @@
 //! to_writer`) so the on-disk shape stays stable across compiler /
 //! serde version bumps that change inline-writer behavior.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -167,8 +168,7 @@ pub fn scan_recovery(session_folder: &Path) -> Result<RecoveryReport, StorageErr
         Err(e) => return Err(StorageError::Io(e)),
     };
 
-    let mut latest_per_seq: std::collections::BTreeMap<u64, TranscriptPartialRecord> =
-        std::collections::BTreeMap::new();
+    let mut latest_per_seq: BTreeMap<u64, TranscriptPartialRecord> = BTreeMap::new();
     let mut malformed = 0_u64;
 
     for line in text.lines() {
