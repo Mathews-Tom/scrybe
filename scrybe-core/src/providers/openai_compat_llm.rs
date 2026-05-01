@@ -133,20 +133,29 @@ impl OpenAiCompatLlmProvider {
                 Ok(b) => b,
                 Err(e) => return RetryOutcome::Permanent(LlmError::Transport(Box::new(e))),
             };
-            let content = parsed
+            // Empty `choices` is an upstream-decoding failure (the
+            // response shape is a 200 with no usable content) rather
+            // than a prompt-rendering failure on our side.
+            // `LlmError::PromptRendering` is documented for
+            // "implementation rejects the prompt shape", so surface
+            // the empty-choices case as a transport-class error
+            // wrapping a synthetic `io::Error` until
+            // `LlmError::Decoding` lands as a Tier-2 variant.
+            return parsed
                 .choices
                 .into_iter()
                 .next()
                 .map(|c| c.message.content)
-                .ok_or_else(|| {
-                    LlmError::PromptRendering(
-                        "upstream returned 200 but choices array was empty".to_string(),
-                    )
-                });
-            return match content {
-                Ok(text) => RetryOutcome::Ok(text),
-                Err(err) => RetryOutcome::Permanent(err),
-            };
+                .map_or_else(
+                    || {
+                        RetryOutcome::Permanent(LlmError::Transport(Box::new(
+                            std::io::Error::other(
+                                "upstream returned 200 with empty choices array",
+                            ),
+                        )))
+                    },
+                    RetryOutcome::Ok,
+                );
         }
 
         if is_transient_status(status) {
@@ -300,7 +309,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_openai_compat_llm_empty_choices_returns_prompt_rendering_error() {
+    async fn test_openai_compat_llm_empty_choices_returns_transport_error() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/chat/completions"))
@@ -314,7 +323,15 @@ mod tests {
 
         let err = provider.complete("p").await.unwrap_err();
 
-        assert!(matches!(err, LlmError::PromptRendering(_)));
+        match err {
+            LlmError::Transport(source) => {
+                assert!(
+                    source.to_string().contains("empty choices"),
+                    "expected empty-choices diagnostic in error chain: {source}"
+                );
+            }
+            other => panic!("expected LlmError::Transport, got {other:?}"),
+        }
     }
 
     #[tokio::test]

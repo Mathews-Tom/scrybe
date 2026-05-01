@@ -64,6 +64,13 @@ struct WebhookPayload<'a> {
     session_id: String,
     notes_path: Option<String>,
     transcript_path: Option<String>,
+    /// `Display`-rendered error chain on `SessionFailed`, omitted for
+    /// success-path events. Receivers cannot reconstruct the original
+    /// error type — the `LifecycleEvent::SessionFailed` variant carries
+    /// `Arc<dyn Error + Send + Sync + 'static>` which has no JSON
+    /// serialization — but the rendered string preserves the
+    /// `#[source]` chain that the CLI also reports.
+    error: Option<String>,
 }
 
 impl WebhookHook {
@@ -91,12 +98,27 @@ impl WebhookHook {
                 session_id: id.to_string_26(),
                 notes_path: None,
                 transcript_path: Some(transcript_path.display().to_string()),
+                error: None,
             }),
             LifecycleEvent::NotesGenerated { id, notes_path } => Some(WebhookPayload {
                 event: event.kind(),
                 session_id: id.to_string_26(),
                 notes_path: Some(notes_path.display().to_string()),
                 transcript_path: None,
+                error: None,
+            }),
+            // `SessionFailed` is the failure-path counterpart to
+            // `SessionEnd`. Receivers configured for completion alerts
+            // must see this; without it the webhook silently never
+            // fires when the session crashed. Skipping `HookFailed` on
+            // purpose — a webhook returning an error reentering
+            // `dispatch_hooks` would loop.
+            LifecycleEvent::SessionFailed { id, error } => Some(WebhookPayload {
+                event: event.kind(),
+                session_id: id.to_string_26(),
+                notes_path: None,
+                transcript_path: None,
+                error: Some(format!("{error}")),
             }),
             _ => None,
         }
@@ -339,6 +361,51 @@ mod tests {
             }
             other => panic!("expected HookFailed, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_webhook_hook_posts_session_failed_payload_with_error_chain() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(wpath("/scrybe/webhook"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let hook = WebhookHook::new(config_for(&server, None)).unwrap();
+        let id = SessionId::new();
+        let event = LifecycleEvent::SessionFailed {
+            id,
+            error: Arc::new(std::io::Error::other("disk full at /var/scrybe")),
+        };
+
+        hook.on_event(&event).await.unwrap();
+
+        let received = server.received_requests().await.unwrap();
+        assert_eq!(received.len(), 1);
+        let body: serde_json::Value = serde_json::from_slice(&received[0].body).unwrap();
+        assert_eq!(body["event"], "session_failed");
+        assert_eq!(body["session_id"], id.to_string_26());
+        assert_eq!(body["error"], "disk full at /var/scrybe");
+        assert!(body["transcript_path"].is_null());
+        assert!(body["notes_path"].is_null());
+    }
+
+    #[tokio::test]
+    async fn test_webhook_hook_skips_hook_failed_to_avoid_dispatcher_loop() {
+        let server = MockServer::start().await;
+        // No mock; any POST would fail. The hook must early-out on
+        // HookFailed because emitting on it would let a webhook
+        // failure re-enter dispatch_hooks via the synthetic
+        // HookFailed event the dispatcher emits.
+        let hook = WebhookHook::new(config_for(&server, None)).unwrap();
+        let event = LifecycleEvent::HookFailed {
+            id: SessionId::new(),
+            hook_name: "another-hook".into(),
+            error: Arc::new(std::io::Error::other("simulated")),
+        };
+
+        hook.on_event(&event).await.unwrap();
     }
 
     #[test]
