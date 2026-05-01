@@ -2,6 +2,59 @@
 
 All notable changes to scrybe are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) within the stability tiers documented in `docs/system-design.md` §12.
 
+## [0.3.0] — 2026-05-01
+
+Linux capture trait surface, runtime backend detection, and config wiring. v0.3.0 delivers the architectural seam for Linux audio capture per `.docs/development-plan.md` §9 — the new `scrybe-capture-linux` crate, the `Backend` enum (`auto`/`pipewire`/`pulse`), the `XDG_RUNTIME_DIR` socket probe that distinguishes a PipeWire host from a Pulse-only host, and the `[linux] audio_backend` configuration block. The live PipeWire and PulseAudio bindings are tracked as a v0.3.x follow-up: `LinuxCapture::start()` resolves the requested backend against the live host and returns a clear `CaptureError::DeviceUnavailable` when the live binding is not yet wired in. This mirrors the macOS-first pattern (PR #8 shipped the `scrybe-capture-mac` scaffold; PR #11 added the live Core Audio Tap binding).
+
+The publish posture from v0.1.0 / v0.2.0 carries forward unchanged: only `scrybe` (the placeholder) publishes to crates.io. `scrybe-core`, `scrybe-capture-mac`, `scrybe-capture-linux`, and `scrybe-cli` stay workspace-private (`publish = false`).
+
+### What you can actually do at v0.3.0
+
+- Everything you could at v0.2.0 (macOS Core Audio Taps capture, local whisper-rs, local Ollama, OpenAI-compatible cloud STT/LLM, ICS calendar context, signed webhooks, `Hook::Git` auto-commit, channel-split `BinaryChannelDiarizer`, `transcript.partial.jsonl` write-ahead log), plus:
+- Compose against the `scrybe_capture_linux::AudioCapture` impl from a Linux build. The `LinuxCapture` adapter implements the same `start`/`stop`/`frames`/`capabilities` contract as `MacCapture`, with the same `Arc<Mutex<SharedState>>` ownership shape and the same `inject_for_test` / `close_for_test` integration-test surface.
+- Choose a backend via `linux.audio_backend = "auto" | "pipewire" | "pulse"` in `config.toml`. Default is `"auto"`, which the runtime resolves against the user-session sockets under `XDG_RUNTIME_DIR`. Auto prefers PipeWire over Pulse on hosts where both sockets are present (the `pipewire-pulse` shim creates a Pulse socket on PipeWire-default hosts; naive Pulse-first selection would route through the shim instead of the native API).
+- Distinguish a Pulse-only host (RHEL 8 / Ubuntu 20.04 LTS) from a fully unsupported host: the runtime detection still recognises the `pulse/native` socket, even though the live Pulse binding is not yet shipped. Configurators see `DeviceUnavailable: PulseAudio backend not yet implemented in this release` rather than a generic "no backend" error.
+
+### Added
+
+- `scrybe-capture-linux` crate (621 LoC under the 2 500-LoC ceiling enforced by `scripts/check-loc-budget.py`). New workspace member listed in the root `Cargo.toml`.
+- `scrybe_capture_linux::LinuxCapture` implementing `scrybe_core::capture::AudioCapture`. Mirrors the `MacCapture` shape — `Arc<Mutex<SharedState>>` ownership, `tokio::sync::mpsc::unbounded_channel` plumbing, single-consumer `frames()` semantics. `start()` / `stop()` are idempotent; calling `start()` after `stop()` returns `DeviceUnavailable` (the adapter is single-use across a `start → stop → start` cycle, per the macOS adapter precedent). `inject_for_test` / `close_for_test` test surfaces match the macOS adapter byte-for-byte.
+- `scrybe_capture_linux::backend::{Backend, ProbeResult, probe, detect}`. `Backend` is a three-variant enum (`Auto`/`PipeWire`/`Pulse`) with a `from_config_str` parser and an `as_str` round-trip. `probe(xdg_runtime_dir)` returns a pure `ProbeResult` testable against a tempdir tree. `detect(requested)` reads `XDG_RUNTIME_DIR` (or falls back to `/run/user/<uid>` parsed from `/proc/self/status`) and returns the resolved backend, or `None` if no supported socket is present.
+- `scrybe_capture_linux::error::LinuxCaptureError` — adapter-local error type with `PipeWireDisabled`, `PulseDisabled`, `NoBackendAvailable`, `RequestedBackendUnavailable { requested }`. Promotes uniformly to `CaptureError::DeviceUnavailable` via `From` so the pipeline error-handling path stays identical to the macOS / future Windows adapters.
+- `scrybe_core::config::LinuxConfig` (Tier-2 stable, additive). New `[linux]` block with `audio_backend: String` defaulting to `"auto"`. `#[serde(deny_unknown_fields)]` matches the rest of the schema, so a typo'd field surfaces with a line number. The `Config::default()` shape includes `linux: LinuxConfig::default()`; configs authored before v0.3.0 (no `[linux]` block) continue to load unchanged because the field carries `#[serde(default)]`.
+- 38 unit tests on `scrybe-capture-linux` covering: backend parsing + as-str round-trip, socket probing across all four (pipewire-only, pulse-only, both, neither) tempdir layouts, `Backend::Auto` resolution preferring PipeWire over Pulse on dual-socket hosts, explicit-backend resolution returning `None` when the requested socket is missing, `/proc/self/status` UID parsing (real layout, missing field, non-numeric), error-promotion to `CaptureError::DeviceUnavailable` for all four error variants, capability advertisement, `frames()` single-consumer semantics, `stop()` idempotence, and start-after-stop returning `DeviceUnavailable`. 6 new unit tests on `scrybe-core::config` covering the `[linux]` block parsing path, default value, unknown-field rejection, and round-trip.
+
+### Changed
+
+- Workspace LoC budget gate (`scripts/check-loc-budget.py`) extended with a `scrybe-capture-linux: 2500` ceiling. Current LoC: 621.
+
+### Deprecated / Removed
+
+- Nothing.
+
+### Security
+
+- `cargo audit` and `cargo deny` policies are unchanged from v0.2.0 (same advisory ignores, same license clarifies).
+- The default-feature graph is unchanged — `scrybe-capture-linux` adds no runtime dependencies. `egress-audit` CI lane verifies on every PR.
+- The `LinuxCaptureError` `From` impl uniformly produces `CaptureError::DeviceUnavailable`, never `Platform`. There is no path by which a v0.3.0 build can emit a `CaptureError::Platform` from the Linux adapter, which keeps the lifetime-erased `Platform` boxing surface unused on Linux until the live binding lands.
+
+### Known limitations
+
+- **PipeWire and PulseAudio live bindings deferred.** v0.3.0 ships the trait surface, the backend-detection logic, and the configuration block. The live `pipewire 0.9` and `libpulse-binding 2.28` bindings are tracked as v0.3.x follow-ups; this release surfaces a clear `CaptureError::DeviceUnavailable` rather than attempting capture against an un-validated FFI shape. Validation requires Linux hardware that the maintainer's macOS-only development environment does not provide; the CI matrix's `ubuntu-latest` runner does not host a PipeWire daemon either.
+- **Distro packaging deferred.** `cargo deb` for Ubuntu 22+ / Debian 12+, AUR `scrybe-bin`, and Flatpak manifest are documented for the v0.3.x stream but not shipped in v0.3.0.
+- **Self-hosted Linux Tier-3 runner not yet registered.** The `nightly-e2e.yml` workflow grew a macOS lane in v0.1.0; the Linux + PipeWire / Pulse equivalent waits on hardware availability.
+
+### Workspace
+
+- 5 crates (`scrybe`, `scrybe-core`, `scrybe-capture-mac`, `scrybe-capture-linux`, `scrybe-cli`).
+- Publish posture unchanged: only `scrybe` publishes to crates.io.
+
+### Contributors
+
+- Maintainer: Mathews Tom.
+
+[0.3.0]: https://github.com/Mathews-Tom/scrybe/releases/tag/v0.3.0
+
 ## [0.2.0] — 2026-05-01
 
 Cloud providers, calendar context, signed webhooks, and channel-split diarization land on top of the macOS-alpha foundation. v0.1.0 was a vertical slice of the local-only path — record on macOS, transcribe with whisper-rs, summarize with Ollama, write markdown to disk. v0.2.0 is the horizontal expansion across the four extension seams: a second `SttProvider` and `LlmProvider` (OpenAI-compatible HTTP for Groq / OpenAI / Together / vLLM / self-hosted), a second `ContextProvider` (`IcsFileProvider`), a second `Hook` (HMAC-SHA256-signed webhook), and the v0.1-default `BinaryChannelDiarizer` impl materialized in code rather than a trait shape. Storage gains the crash-recovery write-ahead log documented in `docs/system-design.md` §8.3. Configuration gains four additive blocks (`[stt.retry]`, `[llm.retry]`, `[context]`, `[hooks.webhook]`, `[consent.default_mode]`); every default preserves v0.1 behavior and `schema_version` stays at 1.
