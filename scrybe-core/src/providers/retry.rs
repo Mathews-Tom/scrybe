@@ -142,11 +142,11 @@ mod tests {
         let p = RetryPolicy::default();
 
         assert_eq!(p.backoff_for(1), Duration::from_millis(500));
-        assert_eq!(p.backoff_for(2), Duration::from_millis(1_000));
-        assert_eq!(p.backoff_for(3), Duration::from_millis(2_000));
-        assert_eq!(p.backoff_for(4), Duration::from_millis(4_000));
-        assert_eq!(p.backoff_for(5), Duration::from_millis(8_000));
-        assert_eq!(p.backoff_for(6), Duration::from_millis(8_000));
+        assert_eq!(p.backoff_for(2), Duration::from_secs(1));
+        assert_eq!(p.backoff_for(3), Duration::from_secs(2));
+        assert_eq!(p.backoff_for(4), Duration::from_secs(4));
+        assert_eq!(p.backoff_for(5), Duration::from_secs(8));
+        assert_eq!(p.backoff_for(6), Duration::from_secs(8));
     }
 
     #[test]

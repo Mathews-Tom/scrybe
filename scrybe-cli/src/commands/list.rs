@@ -80,7 +80,9 @@ pub async fn run(args: Args) -> Result<()> {
     }
     println!("{:<48} {:<28} duration  title", "folder", "session_id");
     for (folder, snap) in entries {
-        let duration = snap.duration_secs.map_or("?".to_string(), format_duration);
+        let duration = snap
+            .duration_secs
+            .map_or_else(|| "?".to_string(), format_duration);
         let title = snap.title.unwrap_or_else(|| "(untitled)".into());
         println!(
             "{:<48} {:<28} {:<9} {title}",
