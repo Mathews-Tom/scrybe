@@ -20,6 +20,13 @@ hook-git = ["dep:git2"]
 # BLAS depending on platform). Off by default so the workspace builds
 # without C++ toolchain; scrybe-cli enables it via its own feature flag.
 whisper-local = ["dep:whisper-rs"]
+# Enables ParakeetLocalProvider via sherpa-rs (links sherpa-onnx C++
+# runtime). Off by default so the workspace builds without an ONNX C++
+# toolchain; scrybe-cli enables it on opt-in. When the feature is
+# disabled the type still exists but transcribe() returns
+# SttError::ModelNotLoaded. The live binding lands as a v0.4.x
+# follow-up tracked in `.docs/development-plan.md` §10.2.
+parakeet-local = []
 # OpenAI-compatible STT and LLM providers (Groq, OpenAI, Together,
 # vLLM, …). Pulls in `reqwest` with rustls-only TLS; the
 # `egress-audit` CI lane stays green only on the default-feature graph.
