@@ -10,6 +10,12 @@
 //! v1.0 because it is serialized into the LLM prompt template and into
 //! `meta.toml`. Adding a field requires a major version bump.
 
+#[cfg(feature = "context-ics")]
+pub mod ics;
+
+#[cfg(feature = "context-ics")]
+pub use ics::{IcsFileConfig, IcsFileProvider, MatchWindow};
+
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
