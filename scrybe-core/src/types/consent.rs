@@ -15,11 +15,15 @@ use serde::{Deserialize, Serialize};
 
 /// Three configurable courtesy-notification modes (`docs/system-design.md` §5).
 /// `Quick` is the floor: the consent step cannot be disabled.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ConsentMode {
+    /// Modal CLI prompt; default for solo dictation.
+    #[default]
     Quick,
+    /// Modal CLI prompt + chat-message injection.
     Notify,
+    /// Modal CLI prompt + chat-message injection + spoken disclosure.
     Announce,
 }
 
