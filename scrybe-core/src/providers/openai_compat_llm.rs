@@ -149,9 +149,7 @@ impl OpenAiCompatLlmProvider {
                 .map_or_else(
                     || {
                         RetryOutcome::Permanent(LlmError::Transport(Box::new(
-                            std::io::Error::other(
-                                "upstream returned 200 with empty choices array",
-                            ),
+                            std::io::Error::other("upstream returned 200 with empty choices array"),
                         )))
                     },
                     RetryOutcome::Ok,
