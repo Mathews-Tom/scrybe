@@ -33,10 +33,12 @@ use crate::error::SttError;
 use crate::providers::SttProvider;
 use crate::types::{AudioChunk, TranscriptChunk};
 
-/// Configuration for `ParakeetLocalProvider`. The `model_path` MUST
-/// point to a verified Parakeet model directory containing the encoder,
-/// decoder, joiner, and tokens files; the loader rejects `*.partial`
-/// candidates per `system-design.md` §8.1 model-download recovery.
+/// Configuration for `ParakeetLocalProvider`.
+///
+/// The `model_path` MUST point to a verified Parakeet model directory
+/// containing the encoder, decoder, joiner, and tokens files; the
+/// loader rejects `*.partial` candidates per `system-design.md` §8.1
+/// model-download recovery.
 #[derive(Clone, Debug)]
 pub struct ParakeetLocalConfig {
     /// Path to the directory containing the Parakeet model artifacts.
@@ -46,7 +48,7 @@ pub struct ParakeetLocalConfig {
 }
 
 impl ParakeetLocalConfig {
-    /// Construct with sensible v0.4 defaults: TDT v2, English-only.
+    /// Construct with the default Parakeet TDT v2 model label.
     #[must_use]
     pub fn new(model_path: PathBuf) -> Self {
         Self {
@@ -104,6 +106,26 @@ impl SttProvider for ParakeetLocalProvider {
     fn name(&self) -> &str {
         &self.name
     }
+}
+
+#[cfg(feature = "parakeet-local")]
+#[allow(clippy::unused_async)]
+async fn transcribe_impl(
+    config: &ParakeetLocalConfig,
+    _chunk: AudioChunk,
+) -> Result<TranscriptChunk, SttError> {
+    // The `parakeet-local` cargo feature is reserved for the live
+    // `sherpa-rs` integration tracked in `.docs/development-plan.md`
+    // §10.2; until that lands, enabling the feature surfaces an
+    // explicit `ModelNotLoaded` rather than a phantom successful
+    // transcription. This keeps the feature an honest opt-in: a
+    // dependent crate that flips it on gets a typed error rather than
+    // a silent fallback path.
+    Err(SttError::ModelNotLoaded(format!(
+        "scrybe-core's `parakeet-local` feature is enabled but the \
+         sherpa-rs live binding has not landed yet; cannot load {}",
+        config.model_path.display()
+    )))
 }
 
 #[cfg(not(feature = "parakeet-local"))]
@@ -187,5 +209,32 @@ mod tests {
             panic!("expected ModelNotLoaded with feature disabled");
         };
         assert!(message.contains("parakeet-local"));
+    }
+
+    #[cfg(feature = "parakeet-local")]
+    #[tokio::test]
+    async fn test_transcribe_returns_model_not_loaded_when_live_binding_pending() {
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        use crate::types::FrameSource;
+
+        let provider = ParakeetLocalProvider::new(ParakeetLocalConfig::new(PathBuf::from(
+            "/models/parakeet-tdt-v2",
+        )))
+        .unwrap();
+        let chunk = AudioChunk {
+            samples: Arc::from(vec![0.0_f32; 16_000]),
+            source: FrameSource::Mic,
+            start: Duration::ZERO,
+            duration: Duration::from_secs(1),
+        };
+
+        let err = provider.transcribe(chunk).await.unwrap_err();
+
+        let SttError::ModelNotLoaded(message) = err else {
+            panic!("expected ModelNotLoaded while live binding is pending");
+        };
+        assert!(message.contains("sherpa-rs"));
     }
 }
