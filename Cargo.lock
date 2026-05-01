@@ -2355,7 +2355,6 @@ dependencies = [
  "futures",
  "pretty_assertions",
  "scrybe-core",
- "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
