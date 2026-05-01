@@ -1,0 +1,42 @@
+[package]
+name = "scrybe-capture-win"
+version = "0.3.0"
+description = "Windows audio capture adapter for scrybe. Implements scrybe-core's AudioCapture trait via WASAPI loopback (Vista+, system-wide) with a per-process loopback variant on Windows 10 build 20348+ that routes through AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS."
+publish = false
+authors.workspace = true
+edition.workspace = true
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+# Enables the live WASAPI binding. Off by default so the workspace can
+# be type-checked on macOS and Linux hosts; the Windows CI lane and the
+# release build flip it on. The cargo feature parallels the
+# `core-audio-tap` feature on `scrybe-capture-mac`.
+#
+# This release ships a feature-gated `RtlGetVersion` host probe behind
+# `extern "system"` declarations defined in-tree — no `windows-sys`
+# dependency is required yet. The live WASAPI binding (system-wide
+# loopback and `AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS` per-process
+# loopback) lands as a v0.4.x follow-up and will pull in `windows-sys`
+# at that point.
+wasapi-loopback = []
+
+[dependencies]
+async-trait.workspace = true
+futures.workspace = true
+scrybe-core = { path = "../scrybe-core", version = "0.3.0" }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+tracing.workspace = true
+
+[dev-dependencies]
+pretty_assertions = "1"
+tempfile = "3"
+tokio = { version = "1.42", features = ["macros", "rt-multi-thread", "test-util", "time"] }
+
+[lints]
+workspace = true
