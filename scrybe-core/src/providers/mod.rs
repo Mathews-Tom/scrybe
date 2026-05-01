@@ -12,6 +12,7 @@ pub mod llm;
 pub mod openai_compat_llm;
 #[cfg(feature = "openai-compat")]
 pub mod openai_compat_stt;
+pub mod parakeet_local;
 pub mod retry;
 pub mod stt;
 pub mod whisper_local;
@@ -21,6 +22,7 @@ pub use llm::LlmProvider;
 pub use openai_compat_llm::{OpenAiCompatLlmConfig, OpenAiCompatLlmProvider};
 #[cfg(feature = "openai-compat")]
 pub use openai_compat_stt::{OpenAiCompatSttConfig, OpenAiCompatSttProvider};
+pub use parakeet_local::{ParakeetLocalConfig, ParakeetLocalProvider};
 pub use retry::{retry_with_policy, RetryPolicy};
 pub use stt::SttProvider;
 pub use whisper_local::{WhisperLocalConfig, WhisperLocalProvider};
