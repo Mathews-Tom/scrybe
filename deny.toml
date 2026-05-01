@@ -37,12 +37,12 @@ version = 2
 yanked = "warn"
 unmaintained = "workspace"
 ignore = [
-    # `git2 0.19 → 0.20` would resolve this advisory but pulls
-    # transitive `icu_*` deps that require rustc 1.86; the workspace
-    # `rust-toolchain.toml` pins 1.85.0. Re-evaluate the moment the
-    # toolchain bumps. Tracked under `.docs/development-plan.md` §6.2
-    # delivery item #4 (dependency pins).
-    { id = "RUSTSEC-2026-0008", reason = "git2 0.19 unsound advisory; 0.20 upgrade blocked by rustc 1.85 toolchain pin." },
+    # `git2 0.19 → 0.20` would resolve this advisory but the
+    # `Cargo.lock` cascade (libgit2-sys, openssl-sys et al) has not
+    # been regenerated since the toolchain moved to rustc 1.95 in
+    # `rust-toolchain.toml`. Drop this ignore alongside a deliberate
+    # `cargo update -p git2` follow-up.
+    { id = "RUSTSEC-2026-0008", reason = "git2 0.19 unsound advisory; 0.20 upgrade pending lockfile regeneration after the rustc 1.95 toolchain bump." },
     # `glib 0.18.5` is pulled in transitively by `tray-icon 0.23 →
     # muda → gtk-rs 0.18` and only when the optional `cli-shell`
     # cargo feature is enabled (Linux desktop builds). The default
@@ -52,16 +52,14 @@ ignore = [
     # `tray-icon` ships that bump.
     { id = "RUSTSEC-2024-0429", reason = "glib 0.18 VariantStrIter unsoundness, optional via tray-icon→muda→gtk-rs 0.18; cli-shell feature only." },
     # `idna 0.5.x` accepts certain malformed Punycode labels that
-    # should be rejected; patched in `idna 1.0.0`. `idna 1.x` brings
-    # in `idna_adapter → icu_normalizer → icu_collections@2.2.0`,
-    # each requiring rustc 1.86; the workspace pins rustc 1.85.0,
-    # forcing this downgrade. The advisory's exposure surface is
-    # IDN-aware URL parsing; `Hook::Git` (the only consumer of the
-    # affected chain via `git2 → url`) parses local-repo paths and
-    # conventional git remote URLs (HTTPS/SSH without IDNs), which
-    # do not exercise the affected Punycode path. Re-evaluate at
-    # the rustc 1.86 toolchain bump.
-    { id = "RUSTSEC-2024-0421", reason = "idna 0.5 Punycode validation; not reachable from Hook::Git's URL surface; pinned via url 2.5.0 to keep workspace within rustc 1.85 MSRV." },
+    # should be rejected; patched in `idna 1.0.0`. Lockfile still
+    # carries `idna 0.5.x` via the `url 2.5.0` precise pin in the
+    # workspace `Cargo.toml`. Workspace toolchain is rustc 1.95
+    # which no longer blocks `idna 1.x`; the remaining work is a
+    # deliberate `cargo update` run that regenerates the cascade.
+    # Exposure surface is IDN-aware URL parsing not reachable from
+    # `Hook::Git`. Drop this ignore once the lockfile is regenerated.
+    { id = "RUSTSEC-2024-0421", reason = "idna 0.5 Punycode validation; not reachable from Hook::Git's URL surface; pinned via url 2.5.0 pending lockfile regeneration after the rustc 1.95 toolchain bump." },
 ]
 
 # OSI/FSF-approved permissive licenses compatible with Apache-2.0 plus
