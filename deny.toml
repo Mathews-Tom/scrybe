@@ -103,6 +103,20 @@ license-files = [
     { path = "LICENSE", hash = 0xbd0eed23 },
 ]
 
+# `ical 0.10` ships an unmodified Apache-2.0 LICENSE file but omits
+# the `license = "Apache-2.0"` field from its manifest, so cargo-deny
+# sees `no-license-field` and rejects. The LICENSE file is verbatim
+# Apache 2.0 (CRC32 0xfde55789); clarify makes the implicit explicit.
+# Pulled in via `scrybe-core --features context-ics` for
+# `IcsFileProvider`. Drop this clarify if upstream adds the manifest
+# field in a future release.
+[[licenses.clarify]]
+name = "ical"
+expression = "Apache-2.0"
+license-files = [
+    { path = "LICENSE", hash = 0xfde55789 },
+]
+
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
