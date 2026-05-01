@@ -165,9 +165,17 @@ jobs:
           # shell metacharacters because `*` matches them.
           TAG: ${{ needs.plan.outputs.tag }}
         run: |
+          # `dist-staging/*` would also match the unpacked
+          # `scrybe-cli-<target>/` working directories cargo-dist leaves
+          # in target/distrib alongside the tarballs. `gh release create`
+          # rejects directory paths with "is a directory" — the v0.1.0
+          # first-attempt run hit exactly that. Restrict the upload to
+          # regular files at depth 1 via `find -type f`.
+          mapfile -t ASSETS < <(find dist-staging -maxdepth 1 -type f)
+          printf 'staging file: %s\n' "${ASSETS[@]}"
           gh release create "$TAG" \
             --repo "${GITHUB_REPOSITORY}" \
             --title "$TAG" \
             --generate-notes \
             --verify-tag \
-            dist-staging/*
+            "${ASSETS[@]}"
