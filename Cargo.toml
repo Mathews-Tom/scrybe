@@ -5,6 +5,7 @@ members = [
     "scrybe-core",
     "scrybe-cli",
     "scrybe-capture-mac",
+    "scrybe-capture-linux",
 ]
 
 [workspace.package]
