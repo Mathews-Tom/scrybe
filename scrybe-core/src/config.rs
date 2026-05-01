@@ -62,6 +62,12 @@ pub struct Config {
     /// only consumer.
     #[serde(default)]
     pub linux: LinuxConfig,
+    /// Windows-specific capture overrides. Present in the schema on
+    /// every platform so a config file authored on Windows still parses
+    /// cleanly on macOS / Linux; the `scrybe-capture-win` adapter is the
+    /// only consumer.
+    #[serde(default)]
+    pub windows: WindowsConfig,
 }
 
 const fn default_schema_version() -> u32 {
@@ -80,6 +86,7 @@ impl Default for Config {
             hooks: HooksConfig::default(),
             consent: ConsentConfig::default(),
             linux: LinuxConfig::default(),
+            windows: WindowsConfig::default(),
         }
     }
 }
@@ -353,6 +360,63 @@ impl LinuxConfig {
             LINUX_AUDIO_BACKEND_AUTO => Some(LINUX_AUDIO_BACKEND_AUTO),
             LINUX_AUDIO_BACKEND_PIPEWIRE => Some(LINUX_AUDIO_BACKEND_PIPEWIRE),
             LINUX_AUDIO_BACKEND_PULSE => Some(LINUX_AUDIO_BACKEND_PULSE),
+            _ => None,
+        }
+    }
+}
+
+/// `[windows]` block. Windows capture-adapter overrides; ignored on
+/// other platforms.
+///
+/// The `audio_backend` field corresponds to the
+/// `scrybe-capture-win` `Backend` enum and accepts `"auto"`,
+/// `"wasapi-loopback"`, or `"wasapi-process-loopback"`. Default is
+/// `"auto"` so a user-edited config that omits the block continues
+/// to work; auto resolves to per-process loopback on Windows 10 build
+/// 20348+ and falls back to system-wide loopback on older builds.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WindowsConfig {
+    #[serde(default = "default_windows_audio_backend")]
+    pub audio_backend: String,
+}
+
+fn default_windows_audio_backend() -> String {
+    "auto".to_string()
+}
+
+impl Default for WindowsConfig {
+    fn default() -> Self {
+        Self {
+            audio_backend: default_windows_audio_backend(),
+        }
+    }
+}
+
+/// Backend names accepted by `WindowsConfig::audio_backend`.
+///
+/// Kept as string constants here (rather than importing the
+/// `scrybe-capture-win` `Backend` enum) because `scrybe-core` must
+/// not depend on a platform adapter crate. Tested for parity with
+/// `scrybe_capture_win::backend::Backend::from_config_str`.
+pub const WINDOWS_AUDIO_BACKEND_AUTO: &str = "auto";
+pub const WINDOWS_AUDIO_BACKEND_WASAPI_LOOPBACK: &str = "wasapi-loopback";
+pub const WINDOWS_AUDIO_BACKEND_WASAPI_PROCESS_LOOPBACK: &str = "wasapi-process-loopback";
+
+impl WindowsConfig {
+    /// Validated view of the configured backend. Returns the canonical
+    /// string (`"auto"`, `"wasapi-loopback"`, or `"wasapi-process-loopback"`)
+    /// when the field is recognised, or `None` for any other value so
+    /// the caller can surface a useful error rather than silently
+    /// accepting a typo.
+    #[must_use]
+    pub fn validated_backend(&self) -> Option<&'static str> {
+        match self.audio_backend.as_str() {
+            WINDOWS_AUDIO_BACKEND_AUTO => Some(WINDOWS_AUDIO_BACKEND_AUTO),
+            WINDOWS_AUDIO_BACKEND_WASAPI_LOOPBACK => Some(WINDOWS_AUDIO_BACKEND_WASAPI_LOOPBACK),
+            WINDOWS_AUDIO_BACKEND_WASAPI_PROCESS_LOOPBACK => {
+                Some(WINDOWS_AUDIO_BACKEND_WASAPI_PROCESS_LOOPBACK)
+            }
             _ => None,
         }
     }
@@ -847,6 +911,113 @@ unknown_extra = true
     fn test_linux_config_validated_backend_is_case_sensitive() {
         let cfg = LinuxConfig {
             audio_backend: "PipeWire".to_string(),
+        };
+
+        assert!(cfg.validated_backend().is_none());
+    }
+
+    #[test]
+    fn test_windows_config_default_audio_backend_is_auto() {
+        let c = WindowsConfig::default();
+
+        assert_eq!(c.audio_backend, "auto");
+    }
+
+    #[test]
+    fn test_config_default_includes_windows_block_with_auto_backend() {
+        let c = Config::default();
+
+        assert_eq!(c.windows.audio_backend, "auto");
+    }
+
+    #[test]
+    fn test_config_parses_explicit_windows_audio_backend_wasapi_loopback() {
+        let toml = r#"
+[windows]
+audio_backend = "wasapi-loopback"
+"#;
+
+        let c = Config::from_toml_str(toml, &fake_path()).unwrap();
+
+        assert_eq!(c.windows.audio_backend, "wasapi-loopback");
+    }
+
+    #[test]
+    fn test_config_parses_explicit_windows_audio_backend_wasapi_process_loopback() {
+        let toml = r#"
+[windows]
+audio_backend = "wasapi-process-loopback"
+"#;
+
+        let c = Config::from_toml_str(toml, &fake_path()).unwrap();
+
+        assert_eq!(c.windows.audio_backend, "wasapi-process-loopback");
+    }
+
+    #[test]
+    fn test_config_rejects_unknown_field_inside_windows_block() {
+        let toml = r#"
+[windows]
+audio_backend = "auto"
+unknown_extra = true
+"#;
+
+        let err = Config::from_toml_str(toml, &fake_path()).unwrap_err();
+
+        match err {
+            ConfigError::UnknownKey { key, .. } => assert_eq!(key, "unknown_extra"),
+            ConfigError::Parse { message, .. } => assert!(
+                message.contains("unknown_extra"),
+                "parse fallback should name the key: {message}"
+            ),
+            other => panic!("expected UnknownKey or Parse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_config_round_trip_preserves_windows_audio_backend_override() {
+        let mut original = Config::default();
+        original.windows.audio_backend = "wasapi-process-loopback".to_string();
+
+        let encoded = toml::to_string(&original).unwrap();
+        let decoded = Config::from_toml_str(&encoded, &fake_path()).unwrap();
+
+        assert_eq!(decoded.windows.audio_backend, "wasapi-process-loopback");
+    }
+
+    #[test]
+    fn test_windows_config_validated_backend_accepts_canonical_values() {
+        for value in ["auto", "wasapi-loopback", "wasapi-process-loopback"] {
+            let cfg = WindowsConfig {
+                audio_backend: value.to_string(),
+            };
+
+            assert_eq!(cfg.validated_backend(), Some(value));
+        }
+    }
+
+    #[test]
+    fn test_windows_config_validated_backend_returns_none_for_unknown_value() {
+        let cfg = WindowsConfig {
+            audio_backend: "wasapi".to_string(),
+        };
+
+        assert!(cfg.validated_backend().is_none());
+    }
+
+    #[test]
+    fn test_windows_config_validated_backend_returns_none_for_empty_string() {
+        let cfg = WindowsConfig {
+            audio_backend: String::new(),
+        };
+
+        assert!(cfg.validated_backend().is_none());
+    }
+
+    #[test]
+    fn test_windows_config_validated_backend_is_case_sensitive() {
+        let cfg = WindowsConfig {
+            audio_backend: "WASAPI-Loopback".to_string(),
         };
 
         assert!(cfg.validated_backend().is_none());
