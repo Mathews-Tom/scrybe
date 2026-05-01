@@ -2314,6 +2314,20 @@ name = "scrybe"
 version = "0.2.0"
 
 [[package]]
+name = "scrybe-capture-linux"
+version = "0.2.0"
+dependencies = [
+ "async-trait",
+ "futures",
+ "pretty_assertions",
+ "scrybe-core",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "scrybe-capture-mac"
 version = "0.2.0"
 dependencies = [

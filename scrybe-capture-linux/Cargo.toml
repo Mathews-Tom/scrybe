@@ -1,0 +1,27 @@
+[package]
+name = "scrybe-capture-linux"
+version = "0.2.0"
+description = "Linux audio capture adapter for scrybe. Implements scrybe-core's AudioCapture trait via PipeWire (primary, modern distros) with a PulseAudio fallback for RHEL 8 / Ubuntu 20.04 LTS hosts."
+publish = false
+authors.workspace = true
+edition.workspace = true
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+futures.workspace = true
+scrybe-core = { path = "../scrybe-core", version = "0.2.0" }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+tracing.workspace = true
+
+[dev-dependencies]
+pretty_assertions = "1"
+tempfile = "3"
+tokio = { version = "1.42", features = ["macros", "rt-multi-thread", "test-util", "time"] }
+
+[lints]
+workspace = true
