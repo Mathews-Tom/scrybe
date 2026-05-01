@@ -30,9 +30,14 @@ the upstream repository:
 
 ## When does this crate ship something runnable
 
-`scrybe-core`, `scrybe-capture-mac`, and `scrybe-cli` are scheduled to
-ship at `v0.1.0` as a macOS-only alpha. Track progress on the upstream
-repository's release tags.
+The macOS-only alpha shipped at `v0.1.0` (2026-05-01); `v0.2.0` adds
+cloud STT/LLM providers (OpenAI-compatible), local `.ics` calendar
+context, an HMAC-signed webhook hook, and channel-split diarization
+for 1:1 remote calls. The runnable surface lives in the workspace-
+private `scrybe-core`, `scrybe-capture-mac`, and `scrybe-cli` crates;
+binaries are distributed as GitHub Release tarballs with a
+`curl | sh` installer. Track progress on the upstream repository's
+release tags.
 
 ## License
 
