@@ -20,6 +20,16 @@ hook-git = ["dep:git2"]
 # BLAS depending on platform). Off by default so the workspace builds
 # without C++ toolchain; scrybe-cli enables it via its own feature flag.
 whisper-local = ["dep:whisper-rs"]
+# OpenAI-compatible STT and LLM providers (Groq, OpenAI, Together,
+# vLLM, …). Pulls in `reqwest` with rustls-only TLS; the
+# `egress-audit` CI lane stays green only on the default-feature graph.
+openai-compat = ["dep:reqwest", "dep:url"]
+# `IcsFileProvider` — calendar context from local `.ics` files via
+# the `ical` crate.
+context-ics = ["dep:ical"]
+# `WebhookHook` — async POST + HMAC-SHA256-signed payload to a
+# configured URL.
+hook-webhook = ["dep:reqwest", "dep:url", "dep:hmac", "dep:sha2", "dep:hex"]
 
 [dependencies]
 async-trait.workspace = true
@@ -27,14 +37,20 @@ chrono.workspace = true
 directories.workspace = true
 futures.workspace = true
 git2 = { version = "0.19", default-features = false, optional = true }
+hex = { workspace = true, optional = true }
+hmac = { workspace = true, optional = true }
+ical = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
+sha2 = { workspace = true, optional = true }
 tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 toml.workspace = true
 tracing.workspace = true
 ulid.workspace = true
+url = { workspace = true, optional = true }
 whisper-rs = { version = "0.13", optional = true, default-features = false }
 
 [target.'cfg(unix)'.dependencies]
@@ -48,7 +64,8 @@ criterion = { version = "0.5", default-features = false, features = ["cargo_benc
 pretty_assertions = "1"
 proptest = "1.5"
 tempfile = "3"
-tokio = { version = "1.42", features = ["macros", "rt-multi-thread", "sync", "time", "test-util"] }
+tokio = { version = "1.42", features = ["macros", "net", "rt-multi-thread", "sync", "time", "test-util"] }
+wiremock = { workspace = true }
 
 # Pipeline-stage micro-benchmarks per `docs/system-design.md` §11 ("Bench
 # gate") and `.docs/development-plan.md` §7.3.4. Run locally with
