@@ -22,6 +22,7 @@ use async_trait::async_trait;
 use reqwest::{Client, ClientBuilder, StatusCode};
 use serde::Deserialize;
 
+use crate::config::LlmConfig;
 use crate::error::LlmError;
 use crate::providers::llm::LlmProvider;
 use crate::providers::retry::{retry_with_policy, RetryFailure, RetryOutcome, RetryPolicy};
@@ -96,6 +97,34 @@ impl OpenAiCompatLlmProvider {
             .build()
             .map_err(|e| LlmError::Transport(Box::new(e)))?;
         Ok(Self { config, client })
+    }
+
+    /// Construct from the user-facing `[llm]` config block. Reads
+    /// `api_key_env` from the process environment (empty when unset,
+    /// which `try_complete` interprets as "omit Authorization header" —
+    /// the documented Ollama / self-hosted vLLM path). The
+    /// `display_name` reported in `meta.toml` is `"<provider>:<model>"`
+    /// so users can distinguish a Groq run from an Ollama run at a
+    /// glance.
+    ///
+    /// # Errors
+    ///
+    /// `LlmError::Transport` when `reqwest` cannot build the client.
+    pub fn from_config(cfg: &LlmConfig) -> Result<Self, LlmError> {
+        let api_key = cfg
+            .api_key_env
+            .as_deref()
+            .and_then(|name| std::env::var(name).ok())
+            .unwrap_or_default();
+        let display_name = format!("{}:{}", cfg.provider, cfg.model);
+        Self::new(OpenAiCompatLlmConfig {
+            base_url: cfg.base_url.clone(),
+            api_key,
+            model: cfg.model.clone(),
+            display_name,
+            retry: cfg.retry,
+            ..OpenAiCompatLlmConfig::default()
+        })
     }
 
     fn endpoint(&self) -> String {
@@ -365,5 +394,55 @@ mod tests {
         let provider = OpenAiCompatLlmProvider::new(config_for(&server)).unwrap();
 
         assert_eq!(provider.name(), "test-llm");
+    }
+
+    #[test]
+    fn test_from_config_composes_display_name_as_provider_colon_model() {
+        let cfg = LlmConfig {
+            provider: "ollama".into(),
+            base_url: "http://localhost:11434/v1".into(),
+            model: "llama3.1:8b".into(),
+            api_key_env: None,
+            ..LlmConfig::default()
+        };
+
+        let provider = OpenAiCompatLlmProvider::from_config(&cfg).unwrap();
+
+        assert_eq!(provider.name(), "ollama:llama3.1:8b");
+    }
+
+    #[test]
+    fn test_from_config_treats_missing_api_key_env_as_empty_string() {
+        let cfg = LlmConfig {
+            provider: "ollama".into(),
+            base_url: "http://localhost:11434/v1".into(),
+            model: "llama3.1:8b".into(),
+            api_key_env: None,
+            ..LlmConfig::default()
+        };
+
+        let provider = OpenAiCompatLlmProvider::from_config(&cfg).unwrap();
+
+        assert_eq!(provider.config.api_key, "");
+    }
+
+    #[test]
+    fn test_from_config_reads_api_key_from_named_env_var() {
+        // Use a long, unique env var name so concurrent tests don't
+        // collide. Test sets it just before reading and unsets after.
+        let var = "SCRYBE_TEST_OPENAI_COMPAT_LLM_FROM_CONFIG_KEY";
+        std::env::set_var(var, "secret-token-abc");
+        let cfg = LlmConfig {
+            provider: "openai-compat".into(),
+            base_url: "https://api.groq.com/openai/v1".into(),
+            model: "llama3-70b-8192".into(),
+            api_key_env: Some(var.into()),
+            ..LlmConfig::default()
+        };
+
+        let provider = OpenAiCompatLlmProvider::from_config(&cfg).unwrap();
+        std::env::remove_var(var);
+
+        assert_eq!(provider.config.api_key, "secret-token-abc");
     }
 }
