@@ -39,16 +39,33 @@ pub struct WhisperLocalConfig {
 }
 
 impl WhisperLocalConfig {
-    /// Construct with sensible v0.1 defaults: language auto-detection,
-    /// `large-v3-turbo` label.
+    /// Construct with sensible defaults: language auto-detection, and
+    /// `model_label` derived from the model file's stem so
+    /// `meta.toml [providers].stt` reflects the actual loaded weights
+    /// (e.g. `ggml-base.en.bin` → `ggml-base.en`). Callers can override
+    /// `model_label` directly if a different reporting string is
+    /// desired (e.g., a build embedding multiple models).
     #[must_use]
     pub fn new(model_path: PathBuf) -> Self {
+        let model_label = derive_model_label(&model_path);
         Self {
             model_path,
             language: "auto".to_string(),
-            model_label: "large-v3-turbo".to_string(),
+            model_label,
         }
     }
+}
+
+/// Derive a reporting label from a model file path. Uses the file
+/// stem (the filename without the final extension) so e.g.
+/// `/Users/.../ggml-base.en.bin` becomes `ggml-base.en`. Returns
+/// `unknown` only when the path lacks any usable filename component;
+/// in practice every callable model path has one.
+fn derive_model_label(model_path: &Path) -> String {
+    model_path
+        .file_stem()
+        .and_then(|os| os.to_str())
+        .map_or_else(|| "unknown".to_string(), ToString::to_string)
 }
 
 /// Local Whisper provider. The struct exists in every build; runtime
@@ -190,6 +207,28 @@ mod tests {
         .unwrap();
 
         assert_eq!(provider.name(), "whisper-local:large-v3-turbo");
+    }
+
+    #[test]
+    fn test_whisper_local_provider_name_reflects_actual_model_file() {
+        // Regression for the v1.0.1 bug where meta.toml reported
+        // `whisper-local:large-v3-turbo` regardless of the actual
+        // loaded file. The label is now derived from the file stem.
+        let provider = WhisperLocalProvider::new(WhisperLocalConfig::new(PathBuf::from(
+            "/Users/druk/Library/Application Support/scrybe/models/ggml-base.en.bin",
+        )))
+        .unwrap();
+
+        assert_eq!(provider.name(), "whisper-local:ggml-base.en");
+    }
+
+    #[test]
+    fn test_derive_model_label_handles_pathological_inputs() {
+        assert_eq!(derive_model_label(Path::new("foo.bin")), "foo");
+        assert_eq!(derive_model_label(Path::new("foo.en.bin")), "foo.en");
+        assert_eq!(derive_model_label(Path::new("/abs/foo.bin")), "foo");
+        assert_eq!(derive_model_label(Path::new("noext")), "noext");
+        assert_eq!(derive_model_label(Path::new("")), "unknown");
     }
 
     #[test]
