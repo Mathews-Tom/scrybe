@@ -179,18 +179,22 @@ cosign is artifact-level CI provenance, not OS-level code signing. Gatekeeper's 
 
 ## Verify reproducibility
 
-`.github/workflows/reproducibility.yml` builds each release tarball twice on a fresh macOS-14 runner from divergent workspace paths, then asserts SHA256 equality across legs. The contract holds because the release workflow pins `SOURCE_DATE_EPOCH=1714464000`, sets `RUSTFLAGS=--remap-path-prefix=$workspace=/build`, and locks the toolchain to `1.95.0` via `rust-toolchain.toml`. Reproducing locally takes those same three inputs:
+`.github/workflows/reproducibility.yml` builds each release tarball twice on a fresh macOS-14 runner from divergent workspace paths and compares SHA256 across legs. The release workflow pins `SOURCE_DATE_EPOCH=1714464000`, sets `RUSTFLAGS=--remap-path-prefix=$workspace=/build -C link-args=-Wl,-no_uuid`, and locks the toolchain to `1.95.0` via `rust-toolchain.toml`.
+
+The lane runs in **advisory mode** at v0.9.0-rc1. The four inputs above are not yet sufficient to make cargo-dist tarballs bit-identical on `macos-14`; tracking down the residual non-determinism is a v0.9.x → v1.0 follow-up. Both legs' artifacts upload on every run so an investigator can pull them down and run `diffoscope leg-a/scrybe leg-b/scrybe` to localise the divergence.
+
+Local reproduction recipe (matches the CI inputs):
 
 ```sh
 git clone --branch v0.9.0-rc1 https://github.com/Mathews-Tom/scrybe.git scrybe
 cd scrybe
 SOURCE_DATE_EPOCH=1714464000 \
-  RUSTFLAGS="--remap-path-prefix=$(pwd)=/build" \
+  RUSTFLAGS="--remap-path-prefix=$(pwd)=/build -C link-args=-Wl,-no_uuid" \
   cargo dist build --artifacts=local --target=aarch64-apple-darwin
 shasum -a 256 target/distrib/scrybe-cli-aarch64-apple-darwin.tar.xz
 ```
 
-The emitted hash matches the one in the release's `SHA256SUMS.txt` exactly. Discrepancies on macOS today most often trace to `/usr/lib/libSystem.B.dylib` version differences across host SDK versions; if you hit one, file an issue with `xcodebuild -showsdks` output and your `rustc -vV` to help calibrate the next build pin.
+Comparison against a published release tag's `SHA256SUMS.txt` is informative but not yet authoritative — until the v0.9.x reproducibility-hardening lands, divergences here are expected. File an issue with `xcodebuild -showsdks` and `rustc -vV` if you investigate; the diffoscope output is the load-bearing artifact.
 
 ---
 
