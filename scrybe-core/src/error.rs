@@ -196,6 +196,9 @@ pub enum PipelineError {
 
     #[error("empty chunk emitted; dropped without sending to stt")]
     EmptyChunk,
+
+    #[error("diarizer unavailable: {reason}")]
+    DiarizerUnavailable { reason: String },
 }
 
 #[cfg(test)]
@@ -317,5 +320,29 @@ mod tests {
         };
 
         assert_eq!(err.to_string(), "resample failed: source rate 44100 Hz");
+    }
+
+    #[test]
+    fn test_pipeline_error_diarizer_unavailable_renders_reason_in_display() {
+        let err = PipelineError::DiarizerUnavailable {
+            reason: "live binding pending".into(),
+        };
+
+        assert_eq!(
+            err.to_string(),
+            "diarizer unavailable: live binding pending"
+        );
+    }
+
+    #[test]
+    fn test_pipeline_error_diarizer_unavailable_promotes_through_core_error() {
+        let core: CoreError = PipelineError::DiarizerUnavailable {
+            reason: "feature off".into(),
+        }
+        .into();
+
+        assert!(core
+            .to_string()
+            .starts_with("pipeline: diarizer unavailable"));
     }
 }
