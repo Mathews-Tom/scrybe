@@ -28,6 +28,15 @@ on:
 
 permissions:
   contents: write
+  # `id-token: write` is required by `sigstore/cosign-installer` so the
+  # release job can mint a short-lived OIDC token tied to this workflow
+  # run. Cosign uses that token to obtain a Fulcio-issued certificate
+  # and signs each release artifact keylessly. The certificate's SAN
+  # records `https://github.com/Mathews-Tom/scrybe/.github/workflows/release.yml@<ref>`
+  # so a downstream `cosign verify-blob` invocation can prove the asset
+  # came from this workflow on this commit, without scrybe having to
+  # manage a private key. See `INSTALL.md` "Verify a release with cosign".
+  id-token: write
 
 env:
   CARGO_TERM_COLOR: always
@@ -80,11 +89,12 @@ jobs:
           - aarch64-apple-darwin
           - x86_64-apple-darwin
     env:
-      # Pin SOURCE_DATE_EPOCH and remap workspace paths so artifact bytes do
-      # not depend on the runner's working directory or wall-clock at build
-      # time. Reproducibility verification per `.docs/development-plan.md`
-      # §13.1 lands in a follow-up; this env block is the load-bearing
-      # half of that contract.
+      # Pin SOURCE_DATE_EPOCH and remap workspace paths so artifact bytes
+      # do not depend on the runner's working directory or wall-clock at
+      # build time. The bit-equality contract is verified on every PR
+      # by `.github/workflows/reproducibility.yml`, which builds each
+      # target twice from divergent workspace paths and asserts SHA256
+      # equality across legs.
       SOURCE_DATE_EPOCH: "1714464000"
       RUSTFLAGS: "--remap-path-prefix=${{ github.workspace }}=/build"
     steps:
@@ -137,23 +147,58 @@ jobs:
           toolchain: 1.95.0
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-dist@${{ env.CARGO_DIST_VERSION }}
+          tool: cargo-dist@${{ env.CARGO_DIST_VERSION }},cargo-cyclonedx@0.5.7,cosign@2.4.1
       - name: dist build (global artifacts)
         run: dist build --artifacts=global
       - name: stage global artifacts alongside tarballs
         run: |
           ls -la target/distrib/
           cp -v target/distrib/* dist-staging/
+      # CycloneDX SBOM covering the workspace dependency graph. Emitted
+      # at release time (not in the build matrix) because it is a
+      # cross-target manifest derived from `Cargo.lock`, not from any
+      # individual tarball. Shipped as `scrybe-cli-sbom.cdx.json` so
+      # downstream consumers running `cargo audit` / `osv-scanner`
+      # against the SBOM can reproduce the workspace's vulnerability
+      # posture without checking out source.
+      - name: generate CycloneDX SBOM
+        run: |
+          cargo cyclonedx --format json --override-filename scrybe-cli-sbom
+          mv scrybe-cli-sbom.cdx.json dist-staging/scrybe-cli-sbom.cdx.json
+          ls -la dist-staging/scrybe-cli-sbom.cdx.json
       - name: write SHA256 manifest
         working-directory: dist-staging
         run: |
           shopt -s nullglob
           : > SHA256SUMS.txt
-          for f in *.tar.* *.zip *.sh; do
+          for f in *.tar.* *.zip *.sh *.cdx.json; do
             [ -e "$f" ] || continue
             shasum -a 256 "$f" >> SHA256SUMS.txt
           done
           cat SHA256SUMS.txt
+      # Cosign keyless signing covers SHA256SUMS.txt (the canonical
+      # checksum manifest — verifying it transitively covers every
+      # asset whose hash appears in the file) and the SBOM (consumed
+      # standalone by supply-chain tools). Each `sign-blob` invocation
+      # emits both the signature (`<asset>.sig`) and the Fulcio
+      # certificate (`<asset>.pem`) so a verifier can reconstruct the
+      # OIDC chain without contacting Sigstore. `--yes` accepts the
+      # transparency-log prompt non-interactively; `cosign-experimental`
+      # is no longer required as of cosign 2.x.
+      - name: cosign sign release manifest + SBOM
+        working-directory: dist-staging
+        env:
+          COSIGN_YES: "true"
+        run: |
+          set -euo pipefail
+          for asset in SHA256SUMS.txt scrybe-cli-sbom.cdx.json; do
+            [ -e "$asset" ] || { echo "::error::missing $asset"; exit 1; }
+            cosign sign-blob \
+              --output-signature "${asset}.sig" \
+              --output-certificate "${asset}.pem" \
+              "$asset"
+          done
+          ls -la *.sig *.pem
       - name: gh release create
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
