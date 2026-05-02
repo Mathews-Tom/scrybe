@@ -11,6 +11,7 @@
 use anyhow::Result;
 use clap::Subcommand;
 
+pub mod bench;
 pub mod doctor;
 pub mod init;
 pub mod list;
@@ -29,6 +30,8 @@ pub enum Command {
     Show(show::Args),
     /// Diagnostic checks: egress, disk, permissions, model checksums.
     Doctor(doctor::Args),
+    /// Aggregate Criterion bench results into a versioned snapshot.
+    Bench(bench::BenchArgs),
 }
 
 /// Dispatch the parsed subcommand.
@@ -44,6 +47,7 @@ pub async fn run(cmd: Command) -> Result<()> {
         Command::List(a) => list::run(a).await,
         Command::Show(a) => show::run(a).await,
         Command::Doctor(a) => doctor::run(a).await,
+        Command::Bench(a) => bench::run(a).await,
     }
 }
 

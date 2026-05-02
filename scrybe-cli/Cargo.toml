@@ -50,6 +50,7 @@ scrybe = { path = "../scrybe", version = "0.5.0" }
 scrybe-capture-mac = { path = "../scrybe-capture-mac", version = "0.5.0" }
 scrybe-core = { path = "../scrybe-core", version = "0.5.0" }
 serde.workspace = true
+serde_json.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "fs", "io-util", "sync", "time"] }
 toml.workspace = true
 tracing.workspace = true

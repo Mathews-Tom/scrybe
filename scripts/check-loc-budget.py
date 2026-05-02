@@ -37,7 +37,12 @@ from pathlib import Path
 LOC_CEILINGS: dict[str, int] = {
     "scrybe": 100,
     "scrybe-core": 8500,
-    "scrybe-cli": 2000,
+    # 2000 was the v0.5 ceiling. Raised to 2300 to absorb the
+    # `scrybe bench` subcommand (criterion-snapshot harvester per
+    # `docs/system-design.md` §11 / `.docs/development-plan.md` §12.1).
+    # The subcommand lands as ~445 LoC including tests; further growth
+    # in scrybe-cli should still trip this gate.
+    "scrybe-cli": 2300,
     "scrybe-capture-mac": 2500,
     "scrybe-capture-linux": 2500,
     "scrybe-capture-win": 2500,
