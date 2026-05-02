@@ -7,6 +7,7 @@ members = [
     "scrybe-capture-mac",
     "scrybe-capture-linux",
     "scrybe-capture-win",
+    "scrybe-capture-mic",
     "scrybe-android",
 ]
 

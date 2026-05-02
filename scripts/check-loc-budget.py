@@ -46,6 +46,12 @@ LOC_CEILINGS: dict[str, int] = {
     "scrybe-capture-mac": 2500,
     "scrybe-capture-linux": 2500,
     "scrybe-capture-win": 2500,
+    # Cross-platform mic adapter via cpal. Closes the v0.1 mic-only path
+    # documented in `.docs/development-plan.md` §7.2 that shipped under
+    # synthetic providers through v1.0. Ceiling sized for the cpal stream
+    # owner + per-format conversion + tests; raise if a per-platform
+    # device-listing surface is added.
+    "scrybe-capture-mic": 1500,
     "scrybe-android": 2500,
 }
 
