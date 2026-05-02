@@ -1049,15 +1049,60 @@ No mocking framework. No DI container. Concrete types in production; mock struct
 
 ## 12. Versioning and stability
 
-### Trait stability tiers
+The stability matrix below is the v1.0 commitment. Each row names every type, file, and CLI flag the project is willing to keep stable, evolve, or churn freely. Anything not listed is implicitly Tier 3 (no commitment) — if it matters to your downstream usage, file an issue and ask for it to be promoted.
 
-| Tier | Surface | Stability commitment |
-|---|---|---|
-| **Tier 1 (frozen at v1.0)** | `AudioCapture`, `MeetingContext`, `LifecycleEvent`, `ConsentAttestation`, on-disk `meta.toml` schema | Breaking changes require major version bump and 6-month deprecation |
-| **Tier 2 (stable but evolving)** | `ContextProvider`, `SttProvider`, `LlmProvider`, `Diarizer`, `Hook`, CLI flags, `notes.md` template variables | Breaking changes in minor versions allowed but documented in CHANGELOG |
-| **Tier 3 (internal)** | Anything in `scrybe-core::internal::*`, pipeline structs, `transcript.md` formatting details | No stability guarantee |
+### 12.1 Tier 1 — frozen at v1.0
 
-### Release cadence
+Breaking changes require a major-version bump (`v2.0`) and a 6-month deprecation window with a `LifecycleEvent::SchemaDeprecated` warning emitted by every supported `0.6.x` and `0.9.x` release before the cutover.
+
+| Surface | Concrete locations |
+|---|---|
+| `AudioCapture` trait | `scrybe-core::capture::AudioCapture`, `AudioFrame { samples: Arc<[f32]>, channels, sample_rate, timestamp_ns, source }`, `FrameSource`, `Capabilities`, `PermissionModel` |
+| `MeetingContext` shape | `scrybe-core::context::MeetingContext { title, attendees, agenda, prior_notes, language, extra }`. Adding a field with `#[serde(default)]` is non-breaking; renaming or removing a field is breaking |
+| `LifecycleEvent` variant set | The seven variants in §4.5. Adding a variant is breaking (consumers exhaustive-match), so future events go into a `LifecycleEvent::Extension` payload |
+| `ConsentAttestation` schema | `scrybe-core::types::ConsentAttestation { mode, attested_at, by_user, chat_message_sent, chat_message_target, tts_announce_played }` and the `[consent]` table key set in `meta.toml` |
+| `meta.toml` on-disk schema (v1) | `session_id`, `title`, `started_at`, `ended_at`, `duration_secs`, `language`, `[capture]`, `[consent]`, `[providers]`, `[hooks]`, `[scrybe].version`. The schema is monotonic: an older reader must reject `meta.toml` files whose `[scrybe].version` is greater than its own |
+| Storage-layout invariants | `<root>/<YYYY-MM-DD-HHMM-title-ULID>/{audio.opus, transcript.md, notes.md, meta.toml, pid.lock, .stignore, transcript.partial.jsonl}`; the ULID-suffixed folder name; the per-session `pid.lock` file format (single line, decimal pid) |
+| Atomic-write guarantees | `meta.toml` and `notes.md` are atomic-replace; `transcript.md` and `audio.opus` are append-only with `fdatasync`/`F_FULLFSYNC` per chunk-boundary. Crashes leave at-most-one torn trailing chunk |
+| Apache-2.0 license | `LICENSE` is the unmodified Apache 2.0 text. License changes are major-version events on principle |
+
+### 12.2 Tier 2 — stable, may evolve in minor releases
+
+Breaking changes are permitted in minor versions and **must** appear in `CHANGELOG.md` under a `### Breaking` heading. Affected releases bump the second SemVer component (`0.6.0` → `0.7.0`, `1.0.0` → `1.1.0`).
+
+| Surface | Concrete locations |
+|---|---|
+| Provider traits | `scrybe-core::providers::SttProvider`, `LlmProvider`, `RetryPolicy`. Variants of `SttError`, `LlmError`, `HookError`, `StorageError`, `ConfigError`, `ConsentError`, `PipelineError`, `CaptureError` may grow new variants in minor releases; non-additive changes (rename, removal) are breaking |
+| `ContextProvider` trait | `scrybe-core::context::ContextProvider`. Implementations: `CliFlagProvider`, `IcsFileProvider` |
+| `Diarizer` trait | `scrybe-core::diarize::Diarizer`, `DiarizerKind`, `BinaryChannelDiarizer`, `PyannoteOnnxDiarizer`. The trait shape may evolve as the neural backend matures (e.g. streaming attribution); frozen at v1.0 |
+| `Hook` trait | `scrybe-core::hooks::Hook`, `dispatch_hooks`, `DispatchOutcome`. Implementations: `GitHook`, `WebhookHook`, `TantivyIndexerHook`. Hook config structs (`GitHookConfig`, `WebhookHookConfig`, `TantivyIndexerHookConfig`) are stable but may add fields with serde defaults |
+| `[hooks.tantivy]` index | `<storage.root>/.index/` is regenerable from session folders via `TantivyIndexerHook::rebuild_all`. The on-disk index format itself is **not** Tier 1 — a tantivy major-version bump invalidates existing indexes; `rebuild_all` is the supported recovery |
+| CLI subcommands | `scrybe init`, `record`, `list`, `show`, `doctor`, `bench`. Flag and exit-code semantics are stable; output formatting is Tier 3 |
+| `config.toml` schema | The `[storage]`, `[capture]`, `[stt]`, `[llm]`, `[context]`, `[hooks]`, `[consent]`, `[linux]`, `[windows]`, `[android]`, `[diarizer]` blocks at `schema_version = 1`. Schema bumps must include a forward-compat migration path |
+| `notes.md` template variables | `{{ title }}`, `{{ started_at }}`, `{{ ended_at }}`, `{{ duration }}`, `{{ attendees }}`, `{{ transcript }}` |
+| Bench snapshot format | `<storage.root>/.bench/<git-sha>.json` produced by `scrybe bench`; `BenchSnapshot` struct fields (`git_sha`, `generated_at_secs`, `criterion_dir`, `benches[]`). Adding fields with serde defaults is non-breaking |
+| Multilingual manifest schema | `tests/fixtures/multilingual/MANIFEST.toml` `schema_version = 1`. The harness rejects `schema_version` greater than the build understands |
+
+### 12.3 Tier 3 — internal, no stability commitment
+
+Anything below changes between releases without a CHANGELOG entry. Downstream users reach into Tier 3 at their own risk.
+
+| Surface | Notes |
+|---|---|
+| `scrybe-core::pipeline::*` internals | `Chunker`, `EnergyVad`, `NullEncoder`, `resample_linear`. Backward-compatible signatures are best-effort; no guarantee |
+| `transcript.md` line format | `**Speaker** [HH:MM:SS]: text\n` is current shape but is not a parse contract. Consumers should read `transcript.partial.jsonl` for structured access |
+| Capture-adapter internals | `scrybe-capture-{mac,linux,win,android}::*` non-`AudioCapture` types. The trait surface is Tier 1; everything else is implementation detail |
+| `tantivy` schema fields | The `session_id`/`kind`/`title`/`body` fields inside the index are an implementation detail; `IndexHit` is the public read shape (Tier 2) |
+| Internal error variants | `MacCaptureError`, `WinCaptureError`, `LinuxCaptureError`, `AndroidCaptureError` and equivalents convert to `CaptureError::Platform` at the boundary; the inner variants are Tier 3 |
+| Tracing field names | `tracing::Subscriber` consumers must not pattern-match on field names — they are debugging aids |
+
+### 12.4 Tier-promotion procedure
+
+When a Tier 3 type proves itself worth keeping stable, the promotion path is: (1) open a tracking issue with two real downstream call sites; (2) freeze the shape in a minor release behind the existing surface; (3) add a row to §12.2 in the same release; (4) the next major release may promote to Tier 1 if the type genuinely belongs there.
+
+Demotion is forbidden for Tier 1 (the major-version bump is the only escape) and discouraged for Tier 2 (CHANGELOG-deprecation cycle of two minor releases).
+
+### 12.5 Release cadence
 
 Time-boxed minor releases every 6 weeks. No "release when ready" — predictability matters more than feature completeness for an OSS project. If a feature isn't ready, it doesn't ship; the release goes out anyway with what is ready.
 
