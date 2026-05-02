@@ -37,6 +37,11 @@ context-ics = ["dep:ical"]
 # `WebhookHook` — async POST + HMAC-SHA256-signed payload to a
 # configured URL.
 hook-webhook = ["dep:reqwest", "dep:url", "dep:hmac", "dep:sha2", "dep:hex"]
+# `TantivyIndexerHook` — incremental local full-text index at
+# `<storage.root>/.index/`. Local-only; never source-of-truth (the
+# index is regenerable from session folders via `rebuild_all`). See
+# `docs/system-design.md` §12.1.
+hook-tantivy = ["dep:tantivy"]
 # Enables the live `pyannote-onnx` runtime backend behind
 # `PyannoteOnnxDiarizer`. Off by default so the workspace builds
 # without an ONNX C++ toolchain; the trait surface and the cluster-to-
@@ -59,6 +64,7 @@ reqwest = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 sha2 = { workspace = true, optional = true }
+tantivy = { workspace = true, optional = true }
 tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

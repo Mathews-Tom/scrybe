@@ -12,10 +12,12 @@
 //! Adding a variant is a major-version change.
 
 pub mod git;
+pub mod indexer;
 #[cfg(feature = "hook-webhook")]
 pub mod webhook;
 
 pub use git::{GitHook, GitHookConfig};
+pub use indexer::{IndexHit, TantivyIndexerHook, TantivyIndexerHookConfig};
 #[cfg(feature = "hook-webhook")]
 pub use webhook::{sign_body as webhook_sign_body, WebhookHook, WebhookHookConfig};
 
