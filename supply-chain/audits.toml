@@ -13,5 +13,13 @@
 # uncovered — `objc2-core-audio*` (Apple bindings, no upstream feed
 # reviews them) and `whisper-rs` (vendored Codeberg primary) are the
 # leading candidates per the dependency-decisions doc.
+#
+# `supply-chain/imports.lock` is intentionally not committed at
+# v0.9.0-rc1. The first contributor running `cargo vet` against this
+# config generates `imports.lock` from the live upstream feeds and
+# commits it alongside the first audit entries. Until then the `vet`
+# CI lane runs in advisory mode (`continue-on-error: true` in
+# `.github/workflows/ci.yml`) — a missing `imports.lock` does not
+# block PRs.
 
 [audits]
