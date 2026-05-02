@@ -230,6 +230,29 @@ fn feature_disabled_error() -> HookError {
     )))
 }
 
+/// Read a session-folder file (`notes.md`, `transcript.md`) when
+/// present. `NotFound` returns `None` silently (the file may simply
+/// not have been generated yet); any other IO error logs a warning
+/// at `tracing::warn!` so a permission-denied or disk-corruption
+/// failure surfaces in operator logs instead of looking identical to
+/// "no notes yet."
+#[cfg(feature = "hook-tantivy")]
+fn read_session_file(session_dir: &Path, name: &str) -> Option<String> {
+    let path = session_dir.join(name);
+    match std::fs::read_to_string(&path) {
+        Ok(body) => Some(body),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "skipping unreadable session file during index"
+            );
+            None
+        }
+    }
+}
+
 /// Read `meta.toml`'s `title` field. Tolerant of missing or unparseable
 /// files: a session whose `meta.toml` is in flight should still be
 /// searchable by transcript text. Gated on the feature in production
@@ -266,7 +289,7 @@ mod backend {
     use tantivy::schema::{Field, Schema, STORED, STRING, TEXT};
     use tantivy::{doc, Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument, Term};
 
-    use super::{read_title, IndexHit, META_FILE, NOTES_FILE, TRANSCRIPT_FILE};
+    use super::{read_session_file, read_title, IndexHit, META_FILE, NOTES_FILE, TRANSCRIPT_FILE};
     use crate::error::HookError;
     use crate::types::SessionId;
 
@@ -348,7 +371,7 @@ mod backend {
 
             let title = read_title(&session_dir.join(META_FILE));
 
-            if let Ok(notes_body) = std::fs::read_to_string(session_dir.join(NOTES_FILE)) {
+            if let Some(notes_body) = read_session_file(session_dir, NOTES_FILE) {
                 writer
                     .add_document(doc!(
                         self.fields.session_id => session_id_str.clone(),
@@ -359,8 +382,7 @@ mod backend {
                     .map_err(|e| HookError::Hook(Box::new(e)))?;
             }
 
-            if let Ok(transcript_body) = std::fs::read_to_string(session_dir.join(TRANSCRIPT_FILE))
-            {
+            if let Some(transcript_body) = read_session_file(session_dir, TRANSCRIPT_FILE) {
                 writer
                     .add_document(doc!(
                         self.fields.session_id => session_id_str,
@@ -438,7 +460,7 @@ mod backend {
         ) -> Result<(), HookError> {
             let session_id_str = id.to_string_26();
             let title = read_title(&session_dir.join(META_FILE));
-            if let Ok(body) = std::fs::read_to_string(session_dir.join(NOTES_FILE)) {
+            if let Some(body) = read_session_file(session_dir, NOTES_FILE) {
                 writer
                     .add_document(doc!(
                         self.fields.session_id => session_id_str.clone(),
@@ -448,7 +470,7 @@ mod backend {
                     ))
                     .map_err(|e| HookError::Hook(Box::new(e)))?;
             }
-            if let Ok(body) = std::fs::read_to_string(session_dir.join(TRANSCRIPT_FILE)) {
+            if let Some(body) = read_session_file(session_dir, TRANSCRIPT_FILE) {
                 writer
                     .add_document(doc!(
                         self.fields.session_id => session_id_str,
