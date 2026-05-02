@@ -1,24 +1,25 @@
 # Local cargo-vet audits for crates that no upstream feed (Mozilla,
 # Embark, Google, Bytecode Alliance, ISRG, Zcash) has yet covered.
 #
-# v0.9.0-rc1 ships the wiring; the audit work is a v0.9.x follow-up
-# tracked in `CHANGELOG.md`. Empty `[audits]` is the documented zero
-# state for `cargo vet`. The first real audit entries land when the
+# v0.9.0-rc1 shipped the wiring; the audit work continues as a
+# v1.0.x → v1.1 follow-up tracked in `CHANGELOG.md` and
+# `MAINTENANCE.md` §5. Empty `[audits]` is the documented zero state
+# for `cargo vet`. The first real audit entries land when the
 # maintainer reviews the source of each direct workspace dependency
 # that none of the imported feeds vouch for, then commits a
 # `[[audits.<crate>]]` block recording the version, criteria
 # (`safe-to-deploy` for production code, `safe-to-run` for build /
 # test scaffolding), and the date / who. The expected first batch
-# covers crates that the audits/imports survey at v0.9.0-rc1 leaves
-# uncovered — `objc2-core-audio*` (Apple bindings, no upstream feed
-# reviews them) and `whisper-rs` (vendored Codeberg primary) are the
-# leading candidates per the dependency-decisions doc.
+# covers crates the audits/imports survey leaves uncovered —
+# `objc2-core-audio*` (Apple bindings, no upstream feed reviews them)
+# and `whisper-rs` (vendored Codeberg primary) are the leading
+# candidates per the dependency-decisions doc.
 #
-# `supply-chain/imports.lock` is intentionally not committed at
-# v0.9.0-rc1. The first contributor running `cargo vet` against this
-# config generates `imports.lock` from the live upstream feeds and
-# commits it alongside the first audit entries. Until then the `vet`
-# CI lane runs in advisory mode (`continue-on-error: true` in
+# `supply-chain/imports.lock` is intentionally not committed at v1.0.
+# The first contributor running `cargo vet` against this config
+# generates `imports.lock` from the live upstream feeds and commits
+# it alongside the first audit entries. Until then the `vet` CI lane
+# runs in advisory mode (`continue-on-error: true` in
 # `.github/workflows/ci.yml`) — a missing `imports.lock` does not
 # block PRs.
 
