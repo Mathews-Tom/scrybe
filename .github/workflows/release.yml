@@ -91,12 +91,16 @@ jobs:
     env:
       # Pin SOURCE_DATE_EPOCH and remap workspace paths so artifact bytes
       # do not depend on the runner's working directory or wall-clock at
-      # build time. The bit-equality contract is verified on every PR
-      # by `.github/workflows/reproducibility.yml`, which builds each
-      # target twice from divergent workspace paths and asserts SHA256
-      # equality across legs.
+      # build time. `-Wl,-no_uuid` suppresses the Mach-O LC_UUID load
+      # command, which the macOS linker otherwise populates with a
+      # cryptographic hash that is not derivable from the input bytes
+      # (it changes per link invocation). Without this flag, two
+      # otherwise-identical builds produce different binaries even
+      # under SOURCE_DATE_EPOCH + remap-path-prefix. The bit-equality
+      # contract is verified on every PR by
+      # `.github/workflows/reproducibility.yml`.
       SOURCE_DATE_EPOCH: "1714464000"
-      RUSTFLAGS: "--remap-path-prefix=${{ github.workspace }}=/build"
+      RUSTFLAGS: "--remap-path-prefix=${{ github.workspace }}=/build -C link-args=-Wl,-no_uuid"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

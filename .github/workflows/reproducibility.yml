@@ -86,12 +86,16 @@ jobs:
       - name: dist build (leg A)
         working-directory: scrybe
         env:
-          RUSTFLAGS: "--remap-path-prefix=${{ github.workspace }}/scrybe=/build"
+          # `-Wl,-no_uuid` matches `release.yml` and is the load-bearing
+          # half of bit-equality on macOS. The linker otherwise embeds a
+          # per-invocation LC_UUID that defeats reproducibility under
+          # SOURCE_DATE_EPOCH + remap-path-prefix alone.
+          RUSTFLAGS: "--remap-path-prefix=${{ github.workspace }}/scrybe=/build -C link-args=-Wl,-no_uuid"
         run: dist build --artifacts=local --target=${{ matrix.target }}
       - name: dist build (leg B)
         working-directory: scrybe-rebuild
         env:
-          RUSTFLAGS: "--remap-path-prefix=${{ github.workspace }}/scrybe-rebuild=/build"
+          RUSTFLAGS: "--remap-path-prefix=${{ github.workspace }}/scrybe-rebuild=/build -C link-args=-Wl,-no_uuid"
         run: dist build --artifacts=local --target=${{ matrix.target }}
       - name: compare SHA256 across legs
         run: |
