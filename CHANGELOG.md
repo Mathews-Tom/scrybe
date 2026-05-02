@@ -2,6 +2,56 @@
 
 All notable changes to scrybe are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) within the stability tiers documented in `docs/system-design.md` §12.
 
+## [1.0.1] — 2026-05-02
+
+Closes the v0.1 mic-only path documented in `.docs/development-plan.md` §7.2 ("scrybe record — start session; press hotkey or --title flag; mic-only capture; live append to transcript.md; run Whisper after each chunk") that shipped under the synthetic 440 Hz sine generator and stub providers through v1.0. Two opt-in flags surface real audio capture and real Whisper transcription on `scrybe record`.
+
+The publish posture from v1.0 carries forward unchanged: only `scrybe` (the placeholder) publishes to crates.io. No Tier-1 surface changes — the orchestrator's `S: SttProvider` generic stays sized; CLI-side enum dispatch (`CliStt`) bridges the stub and live providers without touching `scrybe-core`'s public surface.
+
+### Added
+
+- `scrybe-capture-mic` workspace crate — cross-platform microphone adapter implementing `scrybe_core::capture::AudioCapture` via cpal 0.15. Mirrors the `MacCapture` / `LinuxCapture` / `WindowsCapture` shape: `Arc<Mutex<SharedState>>` ownership, `tokio::sync::mpsc::unbounded_channel` plumbing, single-consumer `frames()` semantics, in-tree `UnboundedReceiverStream` shim, `inject_for_test` / `close_for_test` integration-test surface. The cpal `Stream` is `!Send`; the live binding owns it on a dedicated `scrybe-mic-capture` OS thread with shutdown via `std::sync::mpsc::channel::<()>`. F32 / I16 / U16 sample formats convert to `f32` per `AudioFrame` at callback time using `cpal::FromSample`. Behind the `live-mic` feature; without it, `MicCapture::start()` returns `CaptureError::PermissionDenied` so cross-platform CI hosts that cannot link cpal still compile the crate. New crate listed in the root `Cargo.toml` with a 1500 LoC ceiling in `scripts/check-loc-budget.py`.
+- `scrybe record --source {synthetic,mic}` flag. `synthetic` (default) keeps the deterministic 440 Hz sine-source path so CI smoke-tests stay hermetic. `mic` opens the host's default input device through `scrybe-capture-mic::MicCapture`. Behind the new `mic-capture` feature on `scrybe-cli` which forwards to `scrybe-capture-mic/live-mic`. Without the feature, `--source mic` returns `CaptureError::PermissionDenied` per the adapter contract. The `mic_keepalive: Option<MicCapture>` binding in `run_with_stop` keeps the dedicated cpal capture thread alive for the lifetime of `run_session`.
+- `scrybe record --whisper-model <PATH>` flag. When set AND the binary is built with `--features whisper-local`, the STT provider becomes `WhisperLocalProvider` against the supplied `.bin` / `.gguf` weights. Without the feature, supplying the flag errors at start time (`--whisper-model … provided but binary built without --features whisper-local`) rather than silently falling back to the stub. `*.partial` paths are rejected per the existing `WhisperLocalProvider::new` contract; the CLI surfaces the rejection as a context-chained `loading whisper.cpp model at <path>` error.
+- `mic-capture` cargo feature on `scrybe-cli`, forwarding to `scrybe-capture-mic/live-mic`. Off by default so the cpal transitive dependency tree (CoreAudio / ALSA / WASAPI bindings) stays out of default-feature builds; the `egress-audit` CI lane stays green.
+- `INSTALL.md` "Record from a real microphone with local Whisper transcription" section. Documents the two-feature build (`cargo install --features cli-shell,hook-git,mic-capture,whisper-local`), the model-download recipe, the Microphone-permission grant on first run, the four common whisper.cpp model sizes with RAM use and realtime factor on M1 Pro, and the `*.partial`-rejection guard.
+- Three new unit tests on `scrybe-cli`: `test_capture_source_arg_default_is_synthetic`, `test_build_stt_provider_returns_stub_when_no_model_path_supplied`, plus two mutually-exclusive feature-gated tests covering the no-feature error path and the live-feature `*.partial` rejection. Six new unit tests on `scrybe-capture-mic` covering capabilities, default constructor, single-consumer `frames()`, inject round-trip, and feature-gated start/stop semantics.
+
+### Changed
+
+- All workspace crates bump from `1.0.0` to `1.0.1`. Path-dep version pins follow. The SemVer guard test in `scrybe::tests::test_version_constant_matches_cargo_metadata` continues to assert `starts_with("1.0.")` — 1.0.1 satisfies the existing lock, so no test change.
+- `scrybe-cli` LoC ceiling raised from 2300 to 2500 in `scripts/check-loc-budget.py` to absorb the new flag wiring + three new tests; the new code is ~140 LoC including tests. The bump rationale is recorded inline at the ceiling.
+- `scrybe-cli/src/commands/record.rs` module docstring rewritten to describe the v1.0.1 mic + Whisper flags instead of the v0.1 deferral.
+
+### Deprecated / Removed
+
+- Nothing.
+
+### Security
+
+- `cargo audit` and `cargo deny` policies are unchanged from v1.0.0 (same advisory ignores, same license clarifies). cpal pulls in `coreaudio-sys` / `alsa-sys` / `windows-sys` per platform — none on the `egress-audit` denylist; the lane reports clean.
+- `scrybe record --source mic` triggers the OS Microphone-permission prompt on macOS the first time it runs. The permission grant lives in System Settings → Privacy & Security → Microphone and is per-binary; rebuilding the binary requires re-granting.
+- `scrybe record --whisper-model <PATH>` rejects `*.partial` paths up-front. An interrupted whisper.cpp model download (which writes `<name>.bin.partial` then renames to `<name>.bin`) cannot silently produce a corrupt transcript.
+
+### Known limitations
+
+- **System audio capture is not yet wired into `scrybe record`.** The `scrybe-capture-mac::MacCapture` adapter (Core Audio Taps, hardware-validated at v0.1 per PR #20) exists but is not consumed by `scrybe record`. v1.0.1 ships mic-only; system+mic stereo capture (the v0.2-scoped channel-split path documented in `.docs/development-plan.md` §8.2 deliverable #1) remains a follow-up.
+- **Tray icon and global hotkey not implemented.** `scrybe record --shell` still prints an advisory and runs the headless path (SIGINT to stop). Wiring `scrybe-cli::tray` and `scrybe-cli::hotkey` into `run_with_stop` is a separate v1.x deliverable.
+- **Notes step still uses the stub LLM.** `WhisperLocalProvider` produces real transcripts; the LLM summary at session-end remains the canned stub. Wiring an Ollama / openai-compat LLM into `scrybe record` is a separate v1.x deliverable.
+- **`PermissionModel::Microphone` not added.** The Tier-1 enum is frozen at v1.0; `MicCapture` reuses the closest existing variant per platform (`CoreAudioTap` on macOS, `PipeWirePortal` on Linux, `WasapiLoopback` on Windows). The field is informational and does not gate behavior. A `Microphone` variant is a v2.0 breaking-change candidate.
+- **Reproducibility and `cargo-vet` lanes unchanged from v1.0.0** — both remain advisory; promotion to blocking remains a v1.0.x → v1.1 deliverable.
+
+### Workspace
+
+- 8 crates (was 7 at v1.0.0): `scrybe`, `scrybe-core`, `scrybe-capture-mac`, `scrybe-capture-linux`, `scrybe-capture-win`, `scrybe-capture-mic` (new), `scrybe-android`, `scrybe-cli`.
+- Publish posture unchanged: only `scrybe` publishes to crates.io. `scrybe-capture-mic` is `publish = false` like the other adapter crates.
+
+### Contributors
+
+- Maintainer: Mathews Tom.
+
+[1.0.1]: https://github.com/Mathews-Tom/scrybe/releases/tag/v1.0.1
+
 ## [1.0.0] — 2026-05-02
 
 First stable release. v1.0 freezes the Tier-1 surface documented in `docs/system-design.md` §12.1 and commits to a six-month no-scope-expansion window per `MAINTENANCE.md` §1. The functional surface is unchanged from v0.9.0-rc1; this is the stability cut, not a feature release. Workspace crates bump from `0.9.0-rc1` to `1.0.0` and the SemVer guard test in `scrybe::tests::test_version_constant_matches_cargo_metadata` re-locks at the `1.0.x` line.
