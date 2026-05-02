@@ -181,7 +181,7 @@ cosign is artifact-level CI provenance, not OS-level code signing. Gatekeeper's 
 
 `.github/workflows/reproducibility.yml` builds each release tarball twice on a fresh macOS-14 runner from divergent workspace paths and compares SHA256 across legs. The release workflow pins `SOURCE_DATE_EPOCH=1714464000`, sets `RUSTFLAGS=--remap-path-prefix=$workspace=/build -C link-args=-Wl,-no_uuid`, and locks the toolchain to `1.95.0` via `rust-toolchain.toml`.
 
-The lane runs in **advisory mode** at v1.0.0. The four inputs above are not yet sufficient to make cargo-dist tarballs bit-identical on `macos-14`; tracking down the residual non-determinism is a v1.0.x → v1.1 follow-up. Both legs' artifacts upload on every run so an investigator can pull them down and run `diffoscope leg-a/scrybe leg-b/scrybe` to localise the divergence.
+The lane runs in **advisory mode** at v1.0.0 — see `CHANGELOG.md` "Known limitations" and `MAINTENANCE.md` §5 for the rationale. The four inputs above are not yet sufficient to make cargo-dist tarballs bit-identical on `macos-14`; tracking down the residual non-determinism is a v1.0.x → v1.1 follow-up. Both legs' artifacts upload on every run so an investigator can pull them down and run `diffoscope leg-a/scrybe leg-b/scrybe` to localise the divergence.
 
 Local reproduction recipe (matches the CI inputs):
 

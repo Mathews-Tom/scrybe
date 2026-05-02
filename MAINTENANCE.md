@@ -100,7 +100,7 @@ Contributions land via pull request with the conventional-commit format document
 - Every PR must keep the workspace CI green: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test --workspace`, `cargo audit`, `cargo deny check`, the coverage gate, the LoC-budget gate, and the egress-audit gate.
 - New code carries unit tests at the 90% line-coverage threshold for `scrybe-core` and 80% for the workspace. Critical paths (capture, atomic writes, retry policy, consent attestation, config validation) target 95%.
 - Tier-1 changes are non-starters during the v1.0 series — see §1 and §2. A PR that touches a Tier-1 type closes with a pointer to this document.
-- Contributors retain copyright on their contributions. The DCO sign-off on every commit (`Signed-off-by: Name <email>`) is the licensing record. There is no CLA.
+- Contributors retain copyright on their contributions. There is no CLA. A `CONTRIBUTING.md` documenting the licensing record (whether DCO sign-off, an explicit Apache-2.0 §5 contribution clause, or another mechanism) is a v1.0.x deliverable; until it lands, contributions are accepted under the repository's existing Apache-2.0 license per Apache-2.0 §5 ("each Contributor hereby grants ... a perpetual, worldwide, non-exclusive ... license").
 
 ---
 
