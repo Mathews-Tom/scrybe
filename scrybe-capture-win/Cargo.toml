@@ -1,6 +1,6 @@
 [package]
 name = "scrybe-capture-win"
-version = "1.0.2"
+version = "1.0.3"
 description = "Windows audio capture adapter for scrybe. Implements scrybe-core's AudioCapture trait via WASAPI loopback (Vista+, system-wide) with a per-process loopback variant on Windows 10 build 20348+ that routes through AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS."
 publish = false
 authors.workspace = true
@@ -28,7 +28,7 @@ wasapi-loopback = []
 [dependencies]
 async-trait.workspace = true
 futures.workspace = true
-scrybe-core = { path = "../scrybe-core", version = "1.0.2" }
+scrybe-core = { path = "../scrybe-core", version = "1.0.3" }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 tracing.workspace = true
