@@ -28,6 +28,7 @@ pub mod pipeline;
 pub mod providers;
 pub mod session;
 pub mod storage;
+pub mod testing;
 pub mod types;
 
 pub use diarize::{
