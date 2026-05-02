@@ -268,13 +268,12 @@ fn find_cluster(chunk: &TranscriptChunk, clusters: &[SpeakerCluster]) -> Option<
 }
 
 fn name_for_cluster(cluster_idx: u32, ctx: &MeetingContext) -> SpeakerLabel {
-    let attendee = usize::try_from(cluster_idx)
+    let name = usize::try_from(cluster_idx)
         .ok()
-        .and_then(|i| ctx.attendees.get(i));
-    attendee.map_or_else(
-        || SpeakerLabel::Named(format!("Speaker {}", cluster_idx + 1)),
-        |name| SpeakerLabel::Named(name.clone()),
-    )
+        .and_then(|i| ctx.attendees.get(i))
+        .cloned()
+        .unwrap_or_else(|| format!("Speaker {}", cluster_idx + 1));
+    SpeakerLabel::Named(name)
 }
 
 #[cfg(test)]
