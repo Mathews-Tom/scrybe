@@ -2,6 +2,58 @@
 
 All notable changes to scrybe are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) within the stability tiers documented in `docs/system-design.md` §12.
 
+## [0.9.0-rc1] — 2026-05-02
+
+Reproducible builds, supply-chain attestation, and cross-platform packaging templates land in the v0.9.0 release-candidate stream per `.docs/development-plan.md` §13. The functional surface is unchanged from v0.6.0; this is the distribution-readiness release. Three new capabilities ship together: bit-equality verification of the cargo-dist tarballs across runner instances, cosign keyless OIDC signing of the release SHA256 manifest and CycloneDX SBOM, and in-tree templates for the five downstream package managers (Homebrew, Scoop, AUR, Flatpak, F-Droid) named in §13.1. The cargo-vet wiring lands as an advisory CI lane; promotion to a blocking gate is a v1.0 deliverable.
+
+The publish posture from v0.5.0 carries forward unchanged: only `scrybe` (the placeholder) publishes to crates.io. Workspace crates bump from `0.5.0` to `0.9.0-rc1`, skipping the unrealised `0.6.0`/`0.7.0`/`0.8.0` Cargo versions; the v0.6.0 git tag was a docs+infrastructure tag with no Cargo manifest bump. The `0.9.x-rc` series concludes when §13 exit criteria are uniformly green; the `0.9.0` final cut and `1.0.0` immediately follow.
+
+### Added
+
+- `.github/workflows/reproducibility.yml` — runs each release tarball target through two independent `dist build` invocations from divergent workspace paths (`scrybe/` and `scrybe-rebuild/`) on the same `macos-14` runner and asserts SHA256 equality across legs. Triggers on `workflow_dispatch`, on PRs touching `release.yml` / `Cargo.toml` / `Cargo.lock` / `rust-toolchain.toml`, and on a weekly Sunday 06:00 UTC schedule. Path divergence catches `--remap-path-prefix` regressions; the `SOURCE_DATE_EPOCH=1714464000` and pinned-toolchain inputs match `release.yml`. On mismatch, both legs' artifacts upload as workflow artifacts for triage.
+- CycloneDX SBOM generation in `release.yml` via `cargo-cyclonedx 0.5.7`. Emitted at release time as `scrybe-cli-sbom.cdx.json`, included in `SHA256SUMS.txt`, and signed alongside the manifest.
+- Cosign keyless OIDC signing in `release.yml` via `cosign 2.4.1`. The `id-token: write` permission lets the release job mint a short-lived OIDC token bound to the workflow run; cosign exchanges it with Fulcio for a signing certificate whose SAN records `https://github.com/Mathews-Tom/scrybe/.github/workflows/release.yml@<ref>`. `SHA256SUMS.txt` and the SBOM are signed with `cosign sign-blob`, emitting `<asset>.sig` (signature) and `<asset>.pem` (certificate) alongside each. Verifying the manifest's signature transitively covers every asset whose hash appears in the file. Recipe in `INSTALL.md` "Verify a release with cosign".
+- `supply-chain/{config.toml, audits.toml}` — initial cargo-vet wiring per `.docs/development-plan.md` §13.1. `config.toml` declares the policy and imports six upstream audit feeds (Bytecode Alliance, Embark, Google, ISRG, Mozilla, Zcash); `audits.toml` is empty pending the maintainer's direct-dep audit pass. The `vet` job in `ci.yml` runs `cargo vet check --locked` in advisory mode (`continue-on-error: true`) so a missing audit does not block PRs while the audit work is incremental. Promotion to a blocking gate is a v1.0 deliverable.
+- `packaging/` — in-tree templates for the five downstream package managers per `.docs/development-plan.md` §13.1: `homebrew/scrybe.rb`, `scoop/scrybe.json`, `aur/PKGBUILD`, `flatpak/dev.scrybe.scrybe.yaml`, `fdroid/dev.scrybe.scrybe.yml`. Each template uses `{{ ... }}` placeholders rendered against a published release tag's SHA256 manifest. Submission to each downstream registry is a maintainer-bound action (Homebrew tap, Scoop bucket, AUR account, Flathub PR, F-Droid PR) per the stop-condition policy; templates land in-tree so the rendering work is reproducible without ad-hoc copy-pasting at release time. `packaging/README.md` documents the render workflow.
+- `INSTALL.md` "Verify a release with cosign" section — full `cosign verify-blob` recipe pinned to the release workflow's identity (`--certificate-identity-regexp` against the workflow path at the release tag, `--certificate-oidc-issuer` against `token.actions.githubusercontent.com`).
+- `INSTALL.md` "Verify reproducibility" section — local-reproduction recipe matching the CI job's three inputs (`SOURCE_DATE_EPOCH=1714464000`, `RUSTFLAGS=--remap-path-prefix`, `rust-toolchain.toml` 1.95.0).
+- `INSTALL.md` "Linux" and "Windows" sections — `cargo install --git ... --tag` audit-friendly install paths for hosts where the cargo-dist matrix does not yet emit native artifacts. Both sections name the v0.9.x packaging-template stream as the upcoming distribution surface.
+
+### Changed
+
+- All workspace crates bump from `0.5.0` to `0.9.0-rc1`. Path-dep version pins follow. `scrybe::tests::test_version_constant_matches_cargo_metadata` updated to lock against the `0.9.x` line.
+- `release.yml` `build` matrix env block: comment refreshed to reference the new `reproducibility.yml` lane as the verification companion to the in-place `SOURCE_DATE_EPOCH` + `RUSTFLAGS` settings.
+- `release.yml` cargo-dist install step: now installs `cargo-cyclonedx@0.5.7` and `cosign@2.4.1` alongside `cargo-dist@0.25.1` so the release job has SBOM and signing tooling available without separate `apt`/`brew install` dance.
+- `INSTALL.md` "manual install (audit-friendly)" intro: replaced the "cosign-based provenance verification will land in a future release" deferral with a forward-pointer to the new "Verify a release with cosign" section.
+
+### Deprecated / Removed
+
+- Nothing.
+
+### Security
+
+- `cargo audit` and `cargo deny` policies are unchanged from v0.5.0 (same advisory ignores, same license clarifies).
+- `cosign verify-blob` over `SHA256SUMS.txt` is the cryptographic anchor for distribution trust through v1.0. Native Apple Developer ID notarization and Windows code-signing certificates remain explicitly out of scope per `.docs/development-plan.md` §13.1; cosign keyless signing provides artifact-level CI provenance (proves "this asset came from the GHA workflow on this commit") without paying the $99/yr Apple tax or coupling the project to a vendor-signed certificate authority.
+- The `vet` job is advisory at v0.9.0-rc1. v1.0 promotes it to blocking after the maintainer commits direct-dep audit entries to `supply-chain/audits.toml`.
+
+### Known limitations
+
+- **Reproducibility lane is macOS-only at v0.9.0-rc1.** The cargo-dist matrix only targets Apple Silicon and Intel macOS through this release per `Cargo.toml` `[workspace.metadata.dist] targets`. Linux + Windows reproducibility lanes land alongside the `cargo deb` / `cargo wix` packaging work in the v0.9.x stream.
+- **Direct-dep cargo-vet audits not yet committed.** The wiring is in place; the audit work is a v0.9.x follow-up. The expected first batch covers crates that the imported feeds do not vouch for — `objc2-core-audio*` (Apple bindings, no upstream feed reviews them) and `whisper-rs` (vendored Codeberg primary) are the leading candidates per `docs/dependency-decisions.md`.
+- **Package-manager templates not yet submitted.** Submission to Homebrew tap / Scoop bucket / AUR / Flathub / F-Droid is a maintainer action per the stop-condition policy. Templates land in-tree at v0.9.0-rc1; the first round of submissions is a v0.9.x follow-up.
+- **MSI (`cargo-wix`) and `.deb` (`cargo-deb`) artifacts not yet emitted.** The Scoop and AUR templates point at tarball paths that the cargo-dist matrix produces today on macOS only; Linux / Windows native artifacts land alongside the cargo-dist target expansion in the v0.9.x stream.
+
+### Workspace
+
+- 7 crates (unchanged from v0.5.0): `scrybe`, `scrybe-core`, `scrybe-capture-mac`, `scrybe-capture-linux`, `scrybe-capture-win`, `scrybe-android`, `scrybe-cli`.
+- Publish posture unchanged: only `scrybe` publishes to crates.io.
+
+### Contributors
+
+- Maintainer: Mathews Tom.
+
+[0.9.0-rc1]: https://github.com/Mathews-Tom/scrybe/releases/tag/v0.9.0-rc1
+
 ## [0.5.0] — 2026-05-02
 
 Android capture trait surface and the neural diarizer fallback. v0.5.0 delivers two architectural seams per `.docs/development-plan.md` §11: the new `scrybe-android` crate (cdylib + rlib) implementing `scrybe-core`'s `AudioCapture` trait via the `MediaProjection` primary path with a `MicOnly` fallback, and the `PyannoteOnnxDiarizer` neural-diarizer fallback in `scrybe-core` for multi-party / in-room calls that the binary-channel heuristic cannot resolve. Both follow the macOS-first / Linux-first / Windows-first scaffold pattern: trait surface, runtime detection, and config wiring ship in this release; the live `MediaProjection` JNI binding (and the uniffi-generated Kotlin facade for the Compose UI shell) plus the live ONNX runtime binding are tracked as v0.5.x follow-ups.
