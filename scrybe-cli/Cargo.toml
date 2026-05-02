@@ -1,6 +1,6 @@
 [package]
 name = "scrybe-cli"
-version = "1.0.3"
+version = "1.0.4"
 description = "Command-line driver for scrybe: init, record, list, show, doctor."
 publish = false
 authors.workspace = true
@@ -40,6 +40,15 @@ system-capture-mac = ["scrybe-capture-mac/core-audio-tap"]
 # tags) rather than the v0.1 NullEncoder raw-PCM fallback. Off by
 # default so the workspace builds without libopus headers.
 encoder-opus = ["scrybe-core/encoder-opus"]
+# Enables `OpenAiCompatLlmProvider` so `scrybe record --llm openai-compat`
+# generates real `notes.md` summaries via any OpenAI-compat
+# `/chat/completions` endpoint — Ollama at `http://localhost:11434/v1`,
+# OpenAI, Groq, Together, vLLM, … (see `docs/system-design.md` §4.3,
+# §8.2). Forwards to `scrybe-core/openai-compat`, which pulls
+# `reqwest` with rustls-only TLS. Off by default so the air-gappable
+# default-feature graph stays network-free per the egress audit
+# (`scripts/check-egress-baseline.py`); enable on opt-in.
+llm-openai-compat = ["scrybe-core/openai-compat"]
 # Desktop shell: tray-icon + global-hotkey wired to a main-thread event
 # pump so `scrybe record --shell` toggles capture from a global hotkey
 # and a status-bar Quit menu.
@@ -67,10 +76,10 @@ directories.workspace = true
 futures.workspace = true
 global-hotkey = { version = "0.7", optional = true }
 keyboard-types = { version = "0.8", optional = true }
-scrybe = { path = "../scrybe", version = "1.0.3" }
-scrybe-capture-mac = { path = "../scrybe-capture-mac", version = "1.0.3" }
-scrybe-capture-mic = { path = "../scrybe-capture-mic", version = "1.0.3" }
-scrybe-core = { path = "../scrybe-core", version = "1.0.3" }
+scrybe = { path = "../scrybe", version = "1.0.4" }
+scrybe-capture-mac = { path = "../scrybe-capture-mac", version = "1.0.4" }
+scrybe-capture-mic = { path = "../scrybe-capture-mic", version = "1.0.4" }
+scrybe-core = { path = "../scrybe-core", version = "1.0.4" }
 serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "fs", "io-util", "sync", "time"] }

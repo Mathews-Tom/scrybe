@@ -58,6 +58,8 @@ use scrybe_core::error::{CaptureError, CoreError, LlmError, SttError};
 use scrybe_core::hooks::{Hook, LifecycleEvent};
 use scrybe_core::pipeline::chunker::ChunkerConfig;
 use scrybe_core::pipeline::vad::EnergyVad;
+#[cfg(feature = "llm-openai-compat")]
+use scrybe_core::providers::openai_compat_llm::OpenAiCompatLlmProvider;
 #[cfg(feature = "whisper-local")]
 use scrybe_core::providers::whisper_local::{WhisperLocalConfig, WhisperLocalProvider};
 use scrybe_core::providers::{LlmProvider, SttProvider};
@@ -125,6 +127,17 @@ pub struct Args {
     #[arg(long)]
     pub whisper_model: Option<PathBuf>,
 
+    /// Language-model backend for the `notes.md` summary step. `stub`
+    /// (default) returns a fixed templated body so CI smoke tests stay
+    /// hermetic. `openai-compat` constructs `OpenAiCompatLlmProvider`
+    /// from the `[llm]` config block (defaults to Ollama at
+    /// `http://localhost:11434/v1`); requires the binary to be built
+    /// with `--features llm-openai-compat`. Without that feature, an
+    /// explicit `--llm openai-compat` errors at start time rather
+    /// than silently falling back to the stub.
+    #[arg(long, value_enum, default_value_t = LlmBackendArg::Stub)]
+    pub llm: LlmBackendArg,
+
     /// Attach the desktop status-bar indicator (tray icon with a Quit
     /// menu) and register the global hotkey from `[capture] hotkey`
     /// in `config.toml`. The integrated main-thread shell driver that
@@ -153,6 +166,18 @@ pub enum CaptureSourceArg {
     /// documentation (`docs/system-overview.md` §3 channel-split path).
     #[value(name = "mic+system")]
     MicSystem,
+}
+
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq, ValueEnum)]
+pub enum LlmBackendArg {
+    #[default]
+    Stub,
+    /// `OpenAiCompatLlmProvider` against any `/chat/completions`
+    /// endpoint configured under `[llm]` — Ollama, vLLM, `OpenAI`,
+    /// Groq, Together. Surfaced to clap as the literal `openai-compat`
+    /// token to match `docs/system-design.md` §4.3.
+    #[value(name = "openai-compat")]
+    OpenAiCompat,
 }
 
 impl From<ConsentModeArg> for ConsentMode {
@@ -192,7 +217,7 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
     let prompter = TtyPrompter::new(auto_accept);
 
     let stt = build_stt_provider(args.whisper_model.as_ref())?;
-    let llm = StubLocalLlm::new();
+    let llm = build_llm_provider(args.llm, &cfg.llm)?;
     let diarizer = BinaryChannelDiarizer;
     let hooks: Vec<Box<dyn Hook>> = Vec::new();
 
@@ -490,9 +515,78 @@ impl SttProvider for StubLocalStt {
     }
 }
 
+/// CLI-local LLM dispatch over the two providers `scrybe record` can
+/// pick at runtime. Same enum-dispatch shape as `CliStt`: variants stay
+/// `Sized` so the existing `SessionInputs<L: LlmProvider>` generic
+/// does not need a `?Sized` relaxation in `scrybe-core`.
+enum CliLlm {
+    Stub(StubLocalLlm),
+    #[cfg(feature = "llm-openai-compat")]
+    OpenAiCompat(OpenAiCompatLlmProvider),
+}
+
+#[async_trait]
+impl LlmProvider for CliLlm {
+    async fn complete(&self, prompt: &str) -> Result<String, LlmError> {
+        match self {
+            Self::Stub(p) => p.complete(prompt).await,
+            #[cfg(feature = "llm-openai-compat")]
+            Self::OpenAiCompat(p) => p.complete(prompt).await,
+        }
+    }
+
+    fn name(&self) -> &str {
+        match self {
+            Self::Stub(p) => p.name(),
+            #[cfg(feature = "llm-openai-compat")]
+            Self::OpenAiCompat(p) => p.name(),
+        }
+    }
+}
+
+/// Construct the LLM provider from the `--llm` flag and the `[llm]`
+/// config block.
+///
+/// - `LlmBackendArg::Stub` → `StubLocalLlm` (CI smoke + air-gapped
+///   default).
+/// - `LlmBackendArg::OpenAiCompat` + `--features llm-openai-compat`
+///   → `OpenAiCompatLlmProvider::from_config(&cfg)` against the
+///   user's `[llm]` block (defaults to Ollama at
+///   `http://localhost:11434/v1`).
+/// - `LlmBackendArg::OpenAiCompat` + no feature → hard error so the
+///   user does not silently get the stub when they asked for real
+///   summaries (mirrors `build_stt_provider`'s behavior at v1.0.1).
+#[allow(unused_variables)]
+fn build_llm_provider(
+    backend: LlmBackendArg,
+    cfg: &scrybe_core::config::LlmConfig,
+) -> Result<CliLlm> {
+    match backend {
+        LlmBackendArg::Stub => Ok(CliLlm::Stub(StubLocalLlm::new())),
+        LlmBackendArg::OpenAiCompat => {
+            #[cfg(feature = "llm-openai-compat")]
+            {
+                let provider = OpenAiCompatLlmProvider::from_config(cfg)
+                    .context("constructing OpenAI-compat LLM provider from [llm] config")?;
+                Ok(CliLlm::OpenAiCompat(provider))
+            }
+            #[cfg(not(feature = "llm-openai-compat"))]
+            {
+                anyhow::bail!(
+                    "--llm openai-compat requires the binary to be built with \
+                     --features llm-openai-compat; rebuild with \
+                     `cargo install --features llm-openai-compat,...` or pass \
+                     --llm stub"
+                );
+            }
+        }
+    }
+}
+
 /// CLI-local stub LLM provider. Returns a fixed structured-notes body
-/// so `notes.md` is well-formed. Real LLM access is via Ollama or
-/// `openai-compat`; both ship in v0.2 (`docs/system-design.md` §4.3).
+/// so `notes.md` is well-formed. Real LLM access is via the
+/// `OpenAiCompatLlmProvider` path wired in v1.0.4 (`--llm openai-compat`
+/// + `--features llm-openai-compat`); see `build_llm_provider`.
 struct StubLocalLlm;
 
 impl StubLocalLlm {
@@ -697,6 +791,7 @@ mod tests {
             synthetic_secs: 1,
             shell: false,
             source: CaptureSourceArg::Synthetic,
+            llm: LlmBackendArg::Stub,
             whisper_model: None,
         })
         .await
@@ -766,6 +861,7 @@ mod tests {
             synthetic_secs: 1,
             shell: false,
             source: CaptureSourceArg::Synthetic,
+            llm: LlmBackendArg::Stub,
             whisper_model: None,
         })
         .await;
@@ -827,6 +923,7 @@ mod tests {
             synthetic_secs: 1,
             shell: false,
             source: CaptureSourceArg::Synthetic,
+            llm: LlmBackendArg::Stub,
             whisper_model: None,
         })
         .await
@@ -888,6 +985,7 @@ mod tests {
             synthetic_secs: 1,
             shell: false,
             source: CaptureSourceArg::MicSystem,
+            llm: LlmBackendArg::Stub,
             whisper_model: None,
         })
         .await;
@@ -944,5 +1042,56 @@ mod tests {
             msg.contains("loading whisper.cpp model"),
             "context chain must mention the loading step; got: {msg}"
         );
+    }
+
+    #[test]
+    fn test_build_llm_provider_returns_stub_when_backend_is_stub() {
+        let cfg = scrybe_core::config::LlmConfig::default();
+
+        let llm = build_llm_provider(LlmBackendArg::Stub, &cfg)
+            .expect("stub branch must succeed regardless of features");
+
+        assert_eq!(llm.name(), "stub-local-llm");
+    }
+
+    #[cfg(not(feature = "llm-openai-compat"))]
+    #[test]
+    fn test_build_llm_provider_errors_when_openai_compat_requested_without_feature() {
+        let cfg = scrybe_core::config::LlmConfig::default();
+
+        let result = build_llm_provider(LlmBackendArg::OpenAiCompat, &cfg);
+
+        let Err(err) = result else {
+            panic!("openai-compat without feature must error rather than silently stub");
+        };
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("--llm openai-compat") && msg.contains("--features llm-openai-compat"),
+            "error must name both the flag and the missing feature; got: {msg}"
+        );
+    }
+
+    #[cfg(feature = "llm-openai-compat")]
+    #[test]
+    fn test_build_llm_provider_constructs_openai_compat_when_feature_enabled() {
+        // Construction does not exercise the network (the inner reqwest
+        // Client is built but no request is dispatched). We assert the
+        // returned variant reports a `<provider>:<model>` name so the
+        // [llm] config block flowed through `from_config` correctly.
+        let cfg = scrybe_core::config::LlmConfig {
+            provider: "ollama".into(),
+            model: "llama3.1:8b".into(),
+            ..scrybe_core::config::LlmConfig::default()
+        };
+
+        let llm = build_llm_provider(LlmBackendArg::OpenAiCompat, &cfg)
+            .expect("openai-compat branch must succeed when feature is on");
+
+        assert_eq!(llm.name(), "ollama:llama3.1:8b");
+    }
+
+    #[test]
+    fn test_llm_backend_arg_default_is_stub() {
+        assert_eq!(LlmBackendArg::default(), LlmBackendArg::Stub);
     }
 }
