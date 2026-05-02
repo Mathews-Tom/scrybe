@@ -10,7 +10,7 @@ The publish posture from v0.1.0 / v0.2.0 / v0.3.0 / v0.4.0 / v0.5.0 / v0.9.0-rc1
 
 ### Added
 
-- `MAINTENANCE.md` — public commitments for the v1.0 series. Documents the six-month scope freeze and what it does and does not cover, the three-tier stability matrix in operational language, the issue-triage SLA (7 days for bugs, 72 hours for security), the 6-week minor-release cadence per `docs/system-design.md` §12.5, the unchanged Option-B publish posture and the unchanged unsigned-binary distribution-trust posture, the contributor expectations (DCO sign-off, conventional commits, 90% / 80% / 95% coverage thresholds), and the bus-factor mitigation (Apache-2.0 forkability + self-contained architecture).
+- `MAINTENANCE.md` — public commitments for the v1.0 series. Documents the six-month scope freeze and what it does and does not cover, the three-tier stability matrix in operational language, the issue-triage SLA (7 days for bugs, 72 hours for security), the 6-week minor-release cadence per `docs/system-design.md` §12.5, the unchanged Option-B publish posture and the unchanged unsigned-binary distribution-trust posture, the contributor expectations (conventional commits, 90% / 80% / 95% coverage thresholds, no CLA), and the bus-factor mitigation (Apache-2.0 forkability + self-contained architecture).
 
 ### Changed
 
@@ -42,7 +42,7 @@ The publish posture from v0.1.0 / v0.2.0 / v0.3.0 / v0.4.0 / v0.5.0 / v0.9.0-rc1
 ### Workspace
 
 - 7 crates (unchanged from v0.9.0-rc1): `scrybe`, `scrybe-core`, `scrybe-capture-mac`, `scrybe-capture-linux`, `scrybe-capture-win`, `scrybe-android`, `scrybe-cli`.
-- Publish posture unchanged: only `scrybe` publishes to crates.io. `scrybe-core`, `scrybe-cli`, and the four capture adapters keep `publish = false`. Downstream users install via the cargo-dist tarballs, the `curl | sh` installer one-liner, or `cargo install --git https://github.com/Mathews-Tom/scrybe scrybe-cli --tag v1.0.0 --features cli-shell,hook-git`. Promoting `scrybe-core` to a published crate is a v1.0.x → v1.1 consideration tracked under the §6 contributor commitments in `MAINTENANCE.md`.
+- Publish posture unchanged: only `scrybe` publishes to crates.io. `scrybe-core`, `scrybe-cli`, and the four capture adapters keep `publish = false`. Downstream users install via the cargo-dist tarballs, the `curl | sh` installer one-liner, or `cargo install --git https://github.com/Mathews-Tom/scrybe scrybe-cli --tag v1.0.0 --features cli-shell,hook-git`. Promoting `scrybe-core` to a published crate is a v1.0.x → v1.1 consideration deferred under the §1 no-scope-expansion commitment in `MAINTENANCE.md`.
 
 ### Contributors
 
