@@ -2,6 +2,54 @@
 
 All notable changes to scrybe are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) within the stability tiers documented in `docs/system-design.md` §12.
 
+## [1.0.0] — 2026-05-02
+
+First stable release. v1.0 freezes the Tier-1 surface documented in `docs/system-design.md` §12.1 and commits to a six-month no-scope-expansion window per `MAINTENANCE.md` §1. The functional surface is unchanged from v0.9.0-rc1; this is the stability cut, not a feature release. Workspace crates bump from `0.9.0-rc1` to `1.0.0` and the SemVer guard test in `scrybe::tests::test_version_constant_matches_cargo_metadata` re-locks at the `1.0.x` line.
+
+The publish posture from v0.1.0 / v0.2.0 / v0.3.0 / v0.4.0 / v0.5.0 / v0.9.0-rc1 carries forward unchanged: only `scrybe` (the placeholder) publishes to crates.io. The Tier-1 freeze on `AudioCapture`, `MeetingContext`, `LifecycleEvent`, `ConsentAttestation`, the `meta.toml` schema, and the storage-layout invariants is now active — breaking these requires a v2.0 major bump and a six-month deprecation window with a `LifecycleEvent::SchemaDeprecated` warning emitted on every load through the deprecation cycle.
+
+### Added
+
+- `MAINTENANCE.md` — public commitments for the v1.0 series. Documents the six-month scope freeze and what it does and does not cover, the three-tier stability matrix in operational language, the issue-triage SLA (7 days for bugs, 72 hours for security), the 6-week minor-release cadence per `docs/system-design.md` §12.5, the unchanged Option-B publish posture and the unchanged unsigned-binary distribution-trust posture, the contributor expectations (DCO sign-off, conventional commits, 90% / 80% / 95% coverage thresholds), and the bus-factor mitigation (Apache-2.0 forkability + self-contained architecture).
+
+### Changed
+
+- All workspace crates bump from `0.9.0-rc1` to `1.0.0`. Path-dep version pins follow. `scrybe::tests::test_version_constant_matches_cargo_metadata` updated to lock against the `1.0.x` line; the comment block on the assertion now warns "loosen when bumping to the next minor".
+- `INSTALL.md` verification recipes (cosign verify-blob, local reproducibility recipe, Linux + Windows audit-friendly `cargo install --git ... --tag`) retarget at `v1.0.0`. The reproducibility-advisory narrative shifts from "v0.9.x → v1.0 follow-up" to "v1.0.x → v1.1 follow-up".
+- `.github/workflows/reproducibility.yml` lane-status comment, advisory `::warning::` annotation, and "promotion to a blocking gate" deliverable retarget at v1.0.0 / v1.0.x → v1.1.
+- `.github/workflows/ci.yml` `vet` job comment notes the `cargo-vet` lane stays advisory through v1.0; the audit-completion deliverable retargets at v1.0.x → v1.1 with a cross-reference to `MAINTENANCE.md` §5.
+- `supply-chain/{config.toml,audits.toml}` comments retarget the `cargo-vet` lifecycle at v1.0; the historical "shipped at v0.9.0-rc1" anchors remain because they are factually correct breadcrumbs.
+
+### Deprecated / Removed
+
+- Nothing.
+
+### Security
+
+- `cargo audit` and `cargo deny` policies are unchanged from v0.9.0-rc1 (same advisory ignores, same license clarifies).
+- `cosign verify-blob` over `SHA256SUMS.txt` remains the cryptographic anchor for distribution trust through v1.0. Native Apple Developer ID notarization and Windows code-signing certificates remain explicitly out of scope per `MAINTENANCE.md` §5; the cost-benefit reads against shipping a vendor-tied trust dependency this early in the project's life.
+- Security disclosures: 72-hour first-response SLA, 7-day fix-or-mitigate target for High/Critical, 30-day for Medium. Use private GitHub security advisories (`Security` tab → `Report a vulnerability`); do not post in public issues. Documented in `MAINTENANCE.md` §3.
+
+### Known limitations
+
+- **Reproducibility lane is advisory at v1.0.0.** The `reproducibility.yml` lane reports tarball-level divergences on `macos-14` despite `SOURCE_DATE_EPOCH`, `--remap-path-prefix`, `-Wl,-no_uuid`, and a pinned `1.95.0` toolchain. The remaining non-determinism sources need diffoscope-driven investigation. Promotion to a blocking gate is a v1.0.x → v1.1 deliverable per `MAINTENANCE.md` §5; the lane uploads both legs' artifacts on every run so the comparison work is unblocked.
+- **Reproducibility lane is macOS-only.** `[workspace.metadata.dist] targets` continues to enumerate only Apple Silicon and Intel macOS through v1.0. Linux + Windows reproducibility lanes land alongside the `cargo deb` / `cargo wix` packaging work in the v1.0.x stream.
+- **Direct-dep cargo-vet audits not yet committed.** The wiring is in place; the audit work is a v1.0.x → v1.1 follow-up. The expected first batch covers crates the imported feeds do not vouch for — `objc2-core-audio*` (Apple bindings) and `whisper-rs` (vendored Codeberg primary) are the leading candidates per `docs/dependency-decisions.md`.
+- **Package-manager templates not yet submitted.** Submission to Homebrew tap / Scoop bucket / AUR / Flathub / F-Droid is a maintainer action per the stop-condition policy. Templates land in-tree at `packaging/`; the first submission round is a v1.0.x stream deliverable per `MAINTENANCE.md` §1.
+- **MSI (`cargo-wix`) and `.deb` (`cargo-deb`) artifacts not yet emitted.** The Scoop and AUR templates point at tarball paths that the cargo-dist matrix produces today on macOS only; Linux / Windows native artifacts land alongside the cargo-dist target expansion in the v1.0.x stream.
+- **Unsigned macOS / Windows binaries.** Apple Developer ID notarization and Windows Authenticode certificates remain out of scope through v1.x per `MAINTENANCE.md` §5. Users handle Gatekeeper's "Apple cannot verify" prompt and Windows SmartScreen's "Run anyway" path manually per `INSTALL.md`.
+
+### Workspace
+
+- 7 crates (unchanged from v0.9.0-rc1): `scrybe`, `scrybe-core`, `scrybe-capture-mac`, `scrybe-capture-linux`, `scrybe-capture-win`, `scrybe-android`, `scrybe-cli`.
+- Publish posture unchanged: only `scrybe` publishes to crates.io. `scrybe-core`, `scrybe-cli`, and the four capture adapters keep `publish = false`. Downstream users install via the cargo-dist tarballs, the `curl | sh` installer one-liner, or `cargo install --git https://github.com/Mathews-Tom/scrybe scrybe-cli --tag v1.0.0 --features cli-shell,hook-git`. Promoting `scrybe-core` to a published crate is a v1.0.x → v1.1 consideration tracked under the §6 contributor commitments in `MAINTENANCE.md`.
+
+### Contributors
+
+- Maintainer: Mathews Tom.
+
+[1.0.0]: https://github.com/Mathews-Tom/scrybe/releases/tag/v1.0.0
+
 ## [0.9.0-rc1] — 2026-05-02
 
 Reproducible builds, supply-chain attestation, and cross-platform packaging templates land in the v0.9.0 release-candidate stream per `.docs/development-plan.md` §13. The functional surface is unchanged from v0.6.0; this is the distribution-readiness release. Three new capabilities ship together: bit-equality verification of the cargo-dist tarballs across runner instances, cosign keyless OIDC signing of the release SHA256 manifest and CycloneDX SBOM, and in-tree templates for the five downstream package managers (Homebrew, Scoop, AUR, Flatpak, F-Droid) named in §13.1. The cargo-vet wiring lands as an advisory CI lane; promotion to a blocking gate is a v1.0 deliverable.
