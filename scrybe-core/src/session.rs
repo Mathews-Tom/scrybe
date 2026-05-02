@@ -32,7 +32,7 @@ use crate::error::{CoreError, PipelineError};
 use crate::hooks::{dispatch_hooks, Hook, LifecycleEvent};
 use crate::notes;
 use crate::pipeline::chunker::{ChunkBoundary, Chunker, ChunkerConfig, EmittedChunk};
-use crate::pipeline::encoder::{Encoder, NullEncoder};
+use crate::pipeline::encoder::{default_session_encoder, EncoderConfig};
 use crate::pipeline::resample::resample_linear;
 use crate::pipeline::vad::Vad;
 use crate::providers::{LlmProvider, SttProvider};
@@ -246,7 +246,14 @@ where
     let mut mic_chunker = Chunker::new(chunker_config, mic_vad, FrameSource::Mic);
     let mut system_chunker =
         system_vad.map(|v| Chunker::new(chunker_config, v, FrameSource::System));
-    let mut audio_encoder = NullEncoder::new(crate::pipeline::encoder::EncoderConfig::default());
+    // Pick the audio encoder via the pipeline's compile-time feature
+    // gate. With `encoder-opus` on, this returns `OggOpusEncoder` and
+    // `audio.opus` is a real Ogg-Opus file decodable by ffmpeg, vlc,
+    // etc. Without the feature, the deterministic `NullEncoder` writes
+    // raw f32 PCM (sized for tests; mismatched with the `.opus`
+    // filename but documented under §7.6.4 E-6 as a v0.1 carryover).
+    let mut audio_encoder =
+        default_session_encoder(EncoderConfig::default()).map_err(CoreError::Pipeline)?;
 
     let mut mic_text_chunks: Vec<crate::types::TranscriptChunk> = Vec::new();
     let mut sys_text_chunks: Vec<crate::types::TranscriptChunk> = Vec::new();

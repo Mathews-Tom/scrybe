@@ -50,6 +50,15 @@ hook-tantivy = ["dep:tantivy"]
 # live binding lands as a v0.5.x follow-up tracked in
 # `.docs/development-plan.md` §11.2.
 diarize-pyannote = []
+# Enables the live `OggOpusEncoder` behind the existing `Encoder`
+# trait in `scrybe-core::pipeline::encoder`. Anticipated since v0.5
+# (see encoder.rs module docstring); landed at v1.0.2 to close the
+# v0.1 carryover where `NullEncoder` wrote raw PCM under an `.opus`
+# filename. Off by default so the workspace builds without libopus;
+# scrybe-cli enables it in release builds. With the feature off, the
+# pipeline falls back to `NullEncoder` (the test-only deterministic
+# implementation).
+encoder-opus = ["dep:opus", "dep:ogg"]
 
 [dependencies]
 async-trait.workspace = true
@@ -73,6 +82,14 @@ tracing.workspace = true
 ulid.workspace = true
 url = { workspace = true, optional = true }
 whisper-rs = { version = "0.13", optional = true, default-features = false }
+# Opus + Ogg deps for the `encoder-opus` feature. Both are local-only
+# (no network surface), so they do not perturb the `egress-audit` CI
+# lane; only pulled in when the consumer enables `encoder-opus`. The
+# `opus` crate links libopus (vendored on macOS via opus-sys, system
+# package elsewhere). `ogg` is pure Rust and writes the Ogg container
+# framing required by RFC 7845 OpusHead / OpusTags.
+opus = { version = "0.3", optional = true }
+ogg = { version = "0.9", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

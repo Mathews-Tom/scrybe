@@ -27,6 +27,11 @@ whisper-local = ["scrybe-core/whisper-local"]
 # documented in `INSTALL.md`. Without this feature, `--mic` returns
 # `CaptureError::PermissionDenied("live-mic feature disabled ...")`.
 mic-capture = ["scrybe-capture-mic/live-mic"]
+# Enables the live `OggOpusEncoder` in `scrybe-core` so `audio.opus`
+# is a real Ogg-Opus file (decodable by ffmpeg / vlc / browser audio
+# tags) rather than the v0.1 NullEncoder raw-PCM fallback. Off by
+# default so the workspace builds without libopus headers.
+encoder-opus = ["scrybe-core/encoder-opus"]
 # Desktop shell: tray-icon + global-hotkey wired to a main-thread event
 # pump so `scrybe record --shell` toggles capture from a global hotkey
 # and a status-bar Quit menu.
@@ -87,7 +92,9 @@ workspace = true
 # into the tray + global-hotkey shell with the git auto-commit hook compiled
 # in. `whisper-local` is intentionally NOT enabled here; building whisper-rs
 # in the release workflow needs a verified C++ toolchain on the macos-14
-# runner and is gated to a follow-up release.
+# runner and is gated to a follow-up release. `encoder-opus` is similarly
+# gated to local-build invocations until the release runner has libopus
+# headers available; the dist tarball uses NullEncoder until then.
 [package.metadata.dist]
 dist = true
 features = ["cli-shell", "hook-git"]
