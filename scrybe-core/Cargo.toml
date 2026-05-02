@@ -1,6 +1,6 @@
 [package]
 name = "scrybe-core"
-version = "0.9.0-rc1"
+version = "1.0.0"
 description = "Core domain types, error hierarchy, extension traits, atomic-write storage primitives, and configuration loader for the scrybe local-first meeting transcription system."
 publish = false
 authors.workspace = true

@@ -1,6 +1,6 @@
 [package]
 name = "scrybe"
-version = "0.9.0-rc1"
+version = "1.0.0"
 description = "Open-source local-first meeting transcription and notes. Pre-release placeholder; see https://github.com/Mathews-Tom/scrybe for the architecture and roadmap."
 readme = "README.md"
 keywords = ["meeting", "transcription", "whisper", "local-first", "privacy"]
