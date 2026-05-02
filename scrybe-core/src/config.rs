@@ -68,6 +68,17 @@ pub struct Config {
     /// only consumer.
     #[serde(default)]
     pub windows: WindowsConfig,
+    /// Android-specific capture overrides. Present in the schema on
+    /// every platform so a config file authored on Android still parses
+    /// cleanly on desktop hosts; the `scrybe-android` adapter is the
+    /// only consumer.
+    #[serde(default)]
+    pub android: AndroidConfig,
+    /// Diarizer selection. `kind` is empty by default ("auto"); the
+    /// pipeline routes via `scrybe_core::diarize::select_kind` against
+    /// the live `Capabilities` and `MeetingContext`.
+    #[serde(default)]
+    pub diarizer: DiarizerConfig,
 }
 
 const fn default_schema_version() -> u32 {
@@ -87,6 +98,8 @@ impl Default for Config {
             consent: ConsentConfig::default(),
             linux: LinuxConfig::default(),
             windows: WindowsConfig::default(),
+            android: AndroidConfig::default(),
+            diarizer: DiarizerConfig::default(),
         }
     }
 }
@@ -419,6 +432,118 @@ impl WindowsConfig {
             }
             _ => None,
         }
+    }
+}
+
+/// `[android]` block. Android capture-adapter overrides; ignored on
+/// other platforms.
+///
+/// `audio_backend` corresponds to the `scrybe-android` `Backend` enum
+/// and accepts `"auto"`, `"media-projection"`, or `"mic-only"`. Default
+/// is `"auto"`, which the runtime resolves against the host's
+/// `MediaProjection` availability (API 29+) at session start.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AndroidConfig {
+    #[serde(default = "default_android_audio_backend")]
+    pub audio_backend: String,
+}
+
+fn default_android_audio_backend() -> String {
+    "auto".to_string()
+}
+
+impl Default for AndroidConfig {
+    fn default() -> Self {
+        Self {
+            audio_backend: default_android_audio_backend(),
+        }
+    }
+}
+
+/// Backend names accepted by `AndroidConfig::audio_backend`.
+///
+/// Kept as string constants (rather than importing the `scrybe-android`
+/// `Backend` enum) so `scrybe-core` does not depend on a platform
+/// adapter crate. Tested for parity with
+/// `scrybe_android::backend::Backend::from_config_str`.
+pub const ANDROID_AUDIO_BACKEND_AUTO: &str = "auto";
+pub const ANDROID_AUDIO_BACKEND_MEDIA_PROJECTION: &str = "media-projection";
+pub const ANDROID_AUDIO_BACKEND_MIC_ONLY: &str = "mic-only";
+
+impl AndroidConfig {
+    /// Validated view of the configured backend. Returns the canonical
+    /// string when the field is recognised, or `None` for any other
+    /// value so the caller can surface a useful error rather than
+    /// silently accepting a typo.
+    #[must_use]
+    pub fn validated_backend(&self) -> Option<&'static str> {
+        match self.audio_backend.as_str() {
+            ANDROID_AUDIO_BACKEND_AUTO => Some(ANDROID_AUDIO_BACKEND_AUTO),
+            ANDROID_AUDIO_BACKEND_MEDIA_PROJECTION => Some(ANDROID_AUDIO_BACKEND_MEDIA_PROJECTION),
+            ANDROID_AUDIO_BACKEND_MIC_ONLY => Some(ANDROID_AUDIO_BACKEND_MIC_ONLY),
+            _ => None,
+        }
+    }
+}
+
+/// `[diarizer]` block. Diarizer selection.
+///
+/// Defaults to `auto`, which the pipeline resolves via
+/// `scrybe_core::diarize::select_kind` against the live `Capabilities`
+/// and `MeetingContext`. Set explicitly to `"binary-channel"` or
+/// `"pyannote-onnx"` to override the auto-rule.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DiarizerConfig {
+    #[serde(default = "default_diarizer_kind")]
+    pub kind: String,
+}
+
+fn default_diarizer_kind() -> String {
+    DIARIZER_KIND_AUTO.to_string()
+}
+
+impl Default for DiarizerConfig {
+    fn default() -> Self {
+        Self {
+            kind: default_diarizer_kind(),
+        }
+    }
+}
+
+/// Sentinel meaning "let the pipeline decide". Resolved against
+/// `Capabilities` + `MeetingContext` per `system-design.md` §4.4.
+pub const DIARIZER_KIND_AUTO: &str = "auto";
+/// Mirrors `crate::diarize::kind::DIARIZER_KIND_BINARY_CHANNEL`.
+///
+/// Held as a config-side constant so `scrybe-cli` and the round-trip
+/// tests can reference the canonical string without importing the
+/// diarizer module.
+pub const DIARIZER_KIND_BINARY_CHANNEL: &str = "binary-channel";
+/// Mirrors `crate::diarize::kind::DIARIZER_KIND_PYANNOTE_ONNX`.
+pub const DIARIZER_KIND_PYANNOTE_ONNX: &str = "pyannote-onnx";
+
+impl DiarizerConfig {
+    /// Validated view of the configured kind. Returns one of the three
+    /// canonical strings (`"auto"`, `"binary-channel"`, `"pyannote-onnx"`)
+    /// when the field is recognised, or `None` for any other value so
+    /// the caller can surface a useful error rather than silently
+    /// accepting a typo.
+    #[must_use]
+    pub fn validated_kind(&self) -> Option<&'static str> {
+        match self.kind.as_str() {
+            DIARIZER_KIND_AUTO => Some(DIARIZER_KIND_AUTO),
+            DIARIZER_KIND_BINARY_CHANNEL => Some(DIARIZER_KIND_BINARY_CHANNEL),
+            DIARIZER_KIND_PYANNOTE_ONNX => Some(DIARIZER_KIND_PYANNOTE_ONNX),
+            _ => None,
+        }
+    }
+
+    /// True when the configured kind is the auto-routing sentinel.
+    #[must_use]
+    pub fn is_auto(&self) -> bool {
+        self.kind == DIARIZER_KIND_AUTO
     }
 }
 
@@ -1021,6 +1146,232 @@ unknown_extra = true
         };
 
         assert!(cfg.validated_backend().is_none());
+    }
+
+    #[test]
+    fn test_android_config_default_audio_backend_is_auto() {
+        let c = AndroidConfig::default();
+
+        assert_eq!(c.audio_backend, "auto");
+    }
+
+    #[test]
+    fn test_config_default_includes_android_block_with_auto_backend() {
+        let c = Config::default();
+
+        assert_eq!(c.android.audio_backend, "auto");
+    }
+
+    #[test]
+    fn test_config_parses_explicit_android_audio_backend_media_projection() {
+        let toml = r#"
+[android]
+audio_backend = "media-projection"
+"#;
+
+        let c = Config::from_toml_str(toml, &fake_path()).unwrap();
+
+        assert_eq!(c.android.audio_backend, "media-projection");
+    }
+
+    #[test]
+    fn test_config_parses_explicit_android_audio_backend_mic_only() {
+        let toml = r#"
+[android]
+audio_backend = "mic-only"
+"#;
+
+        let c = Config::from_toml_str(toml, &fake_path()).unwrap();
+
+        assert_eq!(c.android.audio_backend, "mic-only");
+    }
+
+    #[test]
+    fn test_config_rejects_unknown_field_inside_android_block() {
+        let toml = r#"
+[android]
+audio_backend = "auto"
+unknown_extra = true
+"#;
+
+        let err = Config::from_toml_str(toml, &fake_path()).unwrap_err();
+
+        match err {
+            ConfigError::UnknownKey { key, .. } => assert_eq!(key, "unknown_extra"),
+            ConfigError::Parse { message, .. } => assert!(
+                message.contains("unknown_extra"),
+                "parse fallback should name the key: {message}"
+            ),
+            other => panic!("expected UnknownKey or Parse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_config_round_trip_preserves_android_audio_backend_override() {
+        let mut original = Config::default();
+        original.android.audio_backend = "media-projection".to_string();
+
+        let encoded = toml::to_string(&original).unwrap();
+        let decoded = Config::from_toml_str(&encoded, &fake_path()).unwrap();
+
+        assert_eq!(decoded.android.audio_backend, "media-projection");
+    }
+
+    #[test]
+    fn test_android_config_validated_backend_accepts_canonical_values() {
+        for value in ["auto", "media-projection", "mic-only"] {
+            let cfg = AndroidConfig {
+                audio_backend: value.to_string(),
+            };
+
+            assert_eq!(cfg.validated_backend(), Some(value));
+        }
+    }
+
+    #[test]
+    fn test_android_config_validated_backend_returns_none_for_unknown_value() {
+        let cfg = AndroidConfig {
+            audio_backend: "system".to_string(),
+        };
+
+        assert!(cfg.validated_backend().is_none());
+    }
+
+    #[test]
+    fn test_android_config_validated_backend_returns_none_for_empty_string() {
+        let cfg = AndroidConfig {
+            audio_backend: String::new(),
+        };
+
+        assert!(cfg.validated_backend().is_none());
+    }
+
+    #[test]
+    fn test_android_config_validated_backend_is_case_sensitive() {
+        let cfg = AndroidConfig {
+            audio_backend: "Media-Projection".to_string(),
+        };
+
+        assert!(cfg.validated_backend().is_none());
+    }
+
+    #[test]
+    fn test_diarizer_config_default_kind_is_auto() {
+        let c = DiarizerConfig::default();
+
+        assert_eq!(c.kind, "auto");
+        assert!(c.is_auto());
+    }
+
+    #[test]
+    fn test_config_default_includes_diarizer_block_with_auto_kind() {
+        let c = Config::default();
+
+        assert_eq!(c.diarizer.kind, "auto");
+    }
+
+    #[test]
+    fn test_config_parses_explicit_diarizer_kind_binary_channel() {
+        let toml = r#"
+[diarizer]
+kind = "binary-channel"
+"#;
+
+        let c = Config::from_toml_str(toml, &fake_path()).unwrap();
+
+        assert_eq!(c.diarizer.kind, "binary-channel");
+        assert!(!c.diarizer.is_auto());
+    }
+
+    #[test]
+    fn test_config_parses_explicit_diarizer_kind_pyannote_onnx() {
+        let toml = r#"
+[diarizer]
+kind = "pyannote-onnx"
+"#;
+
+        let c = Config::from_toml_str(toml, &fake_path()).unwrap();
+
+        assert_eq!(c.diarizer.kind, "pyannote-onnx");
+    }
+
+    #[test]
+    fn test_config_rejects_unknown_field_inside_diarizer_block() {
+        let toml = r#"
+[diarizer]
+kind = "auto"
+unknown_extra = true
+"#;
+
+        let err = Config::from_toml_str(toml, &fake_path()).unwrap_err();
+
+        match err {
+            ConfigError::UnknownKey { key, .. } => assert_eq!(key, "unknown_extra"),
+            ConfigError::Parse { message, .. } => assert!(
+                message.contains("unknown_extra"),
+                "parse fallback should name the key: {message}"
+            ),
+            other => panic!("expected UnknownKey or Parse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_config_round_trip_preserves_diarizer_kind_override() {
+        let mut original = Config::default();
+        original.diarizer.kind = "pyannote-onnx".to_string();
+
+        let encoded = toml::to_string(&original).unwrap();
+        let decoded = Config::from_toml_str(&encoded, &fake_path()).unwrap();
+
+        assert_eq!(decoded.diarizer.kind, "pyannote-onnx");
+    }
+
+    #[test]
+    fn test_diarizer_config_validated_kind_accepts_canonical_values() {
+        for value in ["auto", "binary-channel", "pyannote-onnx"] {
+            let cfg = DiarizerConfig {
+                kind: value.to_string(),
+            };
+
+            assert_eq!(cfg.validated_kind(), Some(value));
+        }
+    }
+
+    #[test]
+    fn test_diarizer_config_validated_kind_returns_none_for_unknown_value() {
+        let cfg = DiarizerConfig {
+            kind: "neural".to_string(),
+        };
+
+        assert!(cfg.validated_kind().is_none());
+    }
+
+    #[test]
+    fn test_diarizer_config_validated_kind_returns_none_for_empty_string() {
+        let cfg = DiarizerConfig {
+            kind: String::new(),
+        };
+
+        assert!(cfg.validated_kind().is_none());
+    }
+
+    #[test]
+    fn test_diarizer_config_validated_kind_is_case_sensitive() {
+        let cfg = DiarizerConfig {
+            kind: "Pyannote-Onnx".to_string(),
+        };
+
+        assert!(cfg.validated_kind().is_none());
+    }
+
+    #[test]
+    fn test_diarizer_config_kind_constants_match_diarize_module_constants() {
+        use crate::diarize::kind::{
+            DIARIZER_KIND_BINARY_CHANNEL as KIND_BC, DIARIZER_KIND_PYANNOTE_ONNX as KIND_PY,
+        };
+
+        assert_eq!(DIARIZER_KIND_BINARY_CHANNEL, KIND_BC);
+        assert_eq!(DIARIZER_KIND_PYANNOTE_ONNX, KIND_PY);
     }
 
     #[test]
