@@ -27,6 +27,14 @@ whisper-local = ["scrybe-core/whisper-local"]
 # documented in `INSTALL.md`. Without this feature, `--mic` returns
 # `CaptureError::PermissionDenied("live-mic feature disabled ...")`.
 mic-capture = ["scrybe-capture-mic/live-mic"]
+# Enables the live `MacCapture` Core Audio Taps binding so
+# `scrybe record --source mic+system` captures the system audio
+# stream (the other end of a Zoom/Teams/Meet call) alongside mic
+# input. Forwards to `scrybe-capture-mac/core-audio-tap`. Requires
+# macOS 14.4+ at runtime and the Audio Capture TCC permission
+# grant. Off by default so the objc2 transitive dependency tree
+# stays out of cross-platform default builds.
+system-capture-mac = ["scrybe-capture-mac/core-audio-tap"]
 # Enables the live `OggOpusEncoder` in `scrybe-core` so `audio.opus`
 # is a real Ogg-Opus file (decodable by ffmpeg / vlc / browser audio
 # tags) rather than the v0.1 NullEncoder raw-PCM fallback. Off by
