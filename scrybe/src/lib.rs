@@ -38,11 +38,11 @@ mod tests {
     #[test]
     fn test_version_constant_matches_cargo_metadata() {
         assert_eq!(VERSION, env!("CARGO_PKG_VERSION"));
-        // Lock to the v0.9.x line. Loosen when bumping to the next
-        // minor. The assertion guards against accidental 0.x-to-1.0
+        // Lock to the v1.0.x line. Loosen when bumping to the next
+        // minor. The assertion guards against accidental 1.x-to-2.0
         // jumps that would silently break the SemVer contract
         // documented in `docs/system-design.md` §12.
-        assert!(VERSION.starts_with("0.9."));
+        assert!(VERSION.starts_with("1.0."));
     }
 
     #[test]
