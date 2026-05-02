@@ -97,13 +97,12 @@ jobs:
     # Advisory until v1.0. `cargo-vet` is wired up at v0.9.0-rc1 with
     # standard upstream import feeds (Mozilla / Embark / Google /
     # Bytecode Alliance / ISRG / Zcash). Direct-dep audit entries land
-    # incrementally through the v0.9.x stream; the `continue-on-error`
-    # keeps the lane informational so a missing audit does not block
-    # PRs while the maintainer works through the dependency graph.
-    # Promotion to a blocking gate is the v1.0 deliverable per
+    # incrementally through the v0.9.x stream; the lane stays
+    # informational so a missing audit does not block PRs while the
+    # maintainer works through the dependency graph. Promotion to a
+    # blocking gate is the v1.0 deliverable per
     # `.docs/development-plan.md` §13.1 ("cargo-vet audits committed
     # for every direct dep").
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -113,8 +112,24 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-vet@0.10.0
-      - name: cargo vet check --locked
-        run: cargo vet check --locked
+      # The runner exit-codes vet outputs and converts a non-zero
+      # result into a `::warning::` annotation rather than a job
+      # failure. Job-level `continue-on-error` makes the *workflow*
+      # pass but leaves the *PR check* red, which reads as "broken"
+      # in the GitHub UI; wrapping in a script keeps the surface
+      # green while preserving the advisory signal in the workflow
+      # log. Remove the wrapper at v1.0 when the lane flips to
+      # blocking.
+      - name: cargo vet check --locked (advisory)
+        run: |
+          set +e
+          cargo vet check --locked
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            echo "::warning title=cargo-vet advisory::cargo vet check exited $rc; see supply-chain/audits.toml for the v0.9.x audit-pass plan"
+          fi
+          exit 0
 
   loc-budget:
     name: loc-budget (per-crate ceilings)
