@@ -1,0 +1,51 @@
+# F-Droid `metadata/dev.scrybe.scrybe.yml` template.
+#
+# Render against a published Android tag (separate from desktop tags;
+# Android shipping is gated on the live `MediaProjection` JNI binding
+# per `system-design.md` §4.1 — currently a v0.5.x follow-up). Submit
+# the rendered file via a pull request against `fdroiddata`. F-Droid's
+# build farm rebuilds the APK from source; the maintainer's signing
+# key is held only by F-Droid itself.
+#
+# Placeholders:
+#   {{ android_version }}    — Android-stream release version
+#                              (e.g. `0.5.1`); separate from the
+#                              desktop tag stream.
+#   {{ android_version_code }} — monotonically-increasing integer
+#                              consumed by Android's package manager.
+#   {{ android_tag }}        — git tag the F-Droid build farm checks
+#                              out (e.g. `android-v0.5.1`).
+
+Categories:
+  - Internet
+  - Multimedia
+License: Apache-2.0
+SourceCode: https://github.com/Mathews-Tom/scrybe
+IssueTracker: https://github.com/Mathews-Tom/scrybe/issues
+AutoName: scrybe
+Description: |
+  Local-first meeting transcription. Capture audio on your Android
+  device via MediaProjection, transcribe locally with whisper.cpp,
+  produce structured markdown notes. No bot joins the call. Nothing
+  uploads to a vendor cloud by default. There is no account.
+
+  Cross-platform sibling apps run on macOS, Windows, and Linux from
+  the same Apache-2.0 source.
+
+RepoType: git
+Repo: https://github.com/Mathews-Tom/scrybe.git
+
+Builds:
+  - versionName: "{{ android_version }}"
+    versionCode: {{ android_version_code }}
+    commit: "{{ android_tag }}"
+    subdir: scrybe-android
+    gradle:
+      - yes
+    rm:
+      - "**/*.aar"
+
+AutoUpdateMode: None
+UpdateCheckMode: Tags
+CurrentVersion: "{{ android_version }}"
+CurrentVersionCode: {{ android_version_code }}

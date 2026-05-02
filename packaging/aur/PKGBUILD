@@ -1,0 +1,40 @@
+# Maintainer: Mathews Tom <tommathews2007@gmail.com>
+#
+# AUR PKGBUILD template for the prebuilt-binary package `scrybe-bin`.
+# Render against a published GitHub Release tag and `git push` to the
+# AUR. Source-build counterpart (`scrybe`) lands in a follow-up
+# release once Linux distro packaging stabilizes.
+#
+# Placeholders:
+#   {{ pkgver }}             — release version without the leading `v`,
+#                              with `-` to `.` for pacman (e.g. `0.9.0.rc1`).
+#   {{ sha256_x86_64_linux }}  — SHA256 of `scrybe-cli-x86_64-unknown-linux-gnu.tar.xz`.
+#   {{ sha256_aarch64_linux }} — SHA256 of `scrybe-cli-aarch64-unknown-linux-gnu.tar.xz`.
+
+pkgname=scrybe-bin
+pkgver={{ pkgver }}
+pkgrel=1
+pkgdesc="Local-first meeting transcription — capture, transcribe, summarize on device"
+arch=('x86_64' 'aarch64')
+url="https://github.com/Mathews-Tom/scrybe"
+license=('Apache-2.0')
+depends=('glibc')
+provides=('scrybe')
+conflicts=('scrybe')
+
+source_x86_64=("https://github.com/Mathews-Tom/scrybe/releases/download/v${pkgver}/scrybe-cli-x86_64-unknown-linux-gnu.tar.xz")
+source_aarch64=("https://github.com/Mathews-Tom/scrybe/releases/download/v${pkgver}/scrybe-cli-aarch64-unknown-linux-gnu.tar.xz")
+
+sha256sums_x86_64=('{{ sha256_x86_64_linux }}')
+sha256sums_aarch64=('{{ sha256_aarch64_linux }}')
+
+package() {
+  install -Dm755 "scrybe-cli-${CARCH}-unknown-linux-gnu/scrybe" \
+    "${pkgdir}/usr/bin/scrybe"
+  install -Dm644 "scrybe-cli-${CARCH}-unknown-linux-gnu/LICENSE" \
+    "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+  install -Dm644 "scrybe-cli-${CARCH}-unknown-linux-gnu/README.md" \
+    "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+  install -Dm644 "scrybe-cli-${CARCH}-unknown-linux-gnu/INSTALL.md" \
+    "${pkgdir}/usr/share/doc/${pkgname}/INSTALL.md"
+}

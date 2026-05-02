@@ -1,0 +1,27 @@
+{
+  "$comment": "Scoop manifest template. Render and commit to Mathews-Tom/scoop-scrybe so users can `scoop install Mathews-Tom/scrybe/scrybe`. Windows MSI installer ships in the v0.4.x stream once cargo-wix lands; until then, the manifest points at the (unsigned) zip artifact and documents the SmartScreen flow per INSTALL.md. Placeholders: {{ version }}, {{ sha256_x86_64_windows }} from the release SHA256SUMS.txt.",
+  "version": "{{ version }}",
+  "description": "Local-first meeting transcription — capture, transcribe, summarize on device",
+  "homepage": "https://github.com/Mathews-Tom/scrybe",
+  "license": "Apache-2.0",
+  "architecture": {
+    "64bit": {
+      "url": "https://github.com/Mathews-Tom/scrybe/releases/download/v{{ version }}/scrybe-cli-x86_64-pc-windows-msvc.zip",
+      "hash": "{{ sha256_x86_64_windows }}"
+    }
+  },
+  "bin": "scrybe.exe",
+  "checkver": {
+    "github": "https://github.com/Mathews-Tom/scrybe"
+  },
+  "autoupdate": {
+    "architecture": {
+      "64bit": {
+        "url": "https://github.com/Mathews-Tom/scrybe/releases/download/v$version/scrybe-cli-x86_64-pc-windows-msvc.zip"
+      }
+    },
+    "hash": {
+      "url": "https://github.com/Mathews-Tom/scrybe/releases/download/v$version/SHA256SUMS.txt"
+    }
+  }
+}
