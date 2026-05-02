@@ -1,0 +1,64 @@
+# cargo-vet configuration for the scrybe workspace per
+# `.docs/development-plan.md` §13.1.
+#
+# The CI lane (`vet` job in `.github/workflows/ci.yml`) currently runs
+# `cargo vet check` in advisory mode (`continue-on-error: true`). The
+# gate flips to blocking at v1.0, after the maintainer has performed
+# the direct-dep audit pass and replaced the placeholder exemptions
+# below with real audit entries in `audits.toml`. The infrastructure
+# shipping at v0.9.0-rc1 is the wiring; the audit work is a v0.9.x
+# follow-up tracked in CHANGELOG.
+#
+# Imports pull pre-vetted audit entries from the upstream feeds that
+# already cover most of the Rust ecosystem. With these in place, the
+# locally-written audits below need only cover crates the upstream
+# auditors have not yet reached.
+
+[cargo-vet]
+version = "0.10"
+
+[imports.bytecode-alliance]
+url = "https://raw.githubusercontent.com/bytecodealliance/wasmtime/main/supply-chain/audits.toml"
+
+[imports.embark-studios]
+url = "https://raw.githubusercontent.com/EmbarkStudios/rust-ecosystem/main/audits.toml"
+
+[imports.google]
+url = "https://raw.githubusercontent.com/google/supply-chain/main/audits.toml"
+
+[imports.isrg]
+url = "https://raw.githubusercontent.com/divviup/libprio-rs/main/supply-chain/audits.toml"
+
+[imports.mozilla]
+url = "https://raw.githubusercontent.com/mozilla/supply-chain/main/audits.toml"
+
+[imports.zcash]
+url = "https://raw.githubusercontent.com/zcash/zcash/main/qa/supply-chain/audits.toml"
+
+# Workspace policy. Default is `safe-to-deploy` for the binary path
+# (`scrybe-cli`) and `safe-to-run` for libraries that consumers may
+# use as deps once the publish-posture lift in `system-design.md` §12
+# kicks in. Every workspace crate is its own first-party producer; the
+# `audit-as-crates-io = false` lines stop cargo-vet from demanding
+# audits on path-deps the workspace owns.
+
+[policy.scrybe]
+audit-as-crates-io = false
+
+[policy.scrybe-core]
+audit-as-crates-io = false
+
+[policy.scrybe-cli]
+audit-as-crates-io = false
+
+[policy.scrybe-capture-mac]
+audit-as-crates-io = false
+
+[policy.scrybe-capture-linux]
+audit-as-crates-io = false
+
+[policy.scrybe-capture-win]
+audit-as-crates-io = false
+
+[policy.scrybe-android]
+audit-as-crates-io = false
