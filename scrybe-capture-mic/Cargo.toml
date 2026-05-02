@@ -1,6 +1,6 @@
 [package]
 name = "scrybe-capture-mic"
-version = "1.0.3"
+version = "1.0.4"
 description = "Cross-platform microphone capture adapter for scrybe. Implements scrybe-core's AudioCapture trait via cpal against the host's default input device. Closes the v0.1 mic-only path documented in `.docs/development-plan.md` §7.2 that shipped under stub providers through v1.0."
 publish = false
 authors.workspace = true
@@ -24,7 +24,7 @@ live-mic = ["dep:cpal"]
 async-trait.workspace = true
 cpal = { version = "0.15", optional = true }
 futures.workspace = true
-scrybe-core = { path = "../scrybe-core", version = "1.0.3" }
+scrybe-core = { path = "../scrybe-core", version = "1.0.4" }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 tracing.workspace = true
