@@ -6,21 +6,29 @@
 
 //! `scrybe record` — start a session.
 //!
-//! v1.0.1 closes the v0.1 mic-only path (`.docs/development-plan.md`
-//! §7.2). Two opt-in flags surface real audio capture and real
+//! v1.0.1+ closes the v0.1 mic-only path (`.docs/development-plan.md`
+//! §7.2). Three opt-in flags surface real audio capture and real
 //! Whisper transcription:
 //!
 //! - `--source mic` consumes frames from the default input device via
 //!   `scrybe-capture-mic` (cpal). Requires the binary to be built
 //!   with `--features mic-capture`; absent that feature the call
 //!   returns `CaptureError::PermissionDenied`.
+//! - `--source mic+system` (v1.0.3+) layers `scrybe-capture-mac`
+//!   Core Audio Taps on top of the mic adapter so the meeting
+//!   counterparty's audio also flows through the pipeline. Frames
+//!   from each source carry their own `FrameSource` tag, so the
+//!   `BinaryChannelDiarizer` can attribute them to `Me:` (mic) and
+//!   `Them:` (system) in `transcript.md`. Requires the binary to be
+//!   built with `--features mic-capture,system-capture-mac` and
+//!   macOS 14.4+ with the Audio Capture TCC permission granted.
 //! - `--whisper-model <PATH>` swaps the stub STT provider for
 //!   `WhisperLocalProvider` against the supplied `.bin` / `.gguf`
 //!   weights. Requires the binary to be built with
 //!   `--features whisper-local`; absent that feature the flag errors
 //!   at start time rather than silently falling back to the stub.
 //!
-//! Without either flag the recorder runs the deterministic synthetic
+//! Without any flag the recorder runs the deterministic synthetic
 //! pipeline (440 Hz sine + canned transcripts) so CI smoke tests stay
 //! hermetic.
 
@@ -34,8 +42,14 @@ use async_trait::async_trait;
 use chrono::Utc;
 use clap::{Args as ClapArgs, ValueEnum};
 use futures::stream::{self, Stream, StreamExt};
+#[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
+use scrybe_capture_mac::MacCapture;
 #[cfg(feature = "mic-capture")]
 use scrybe_capture_mic::MicCapture;
+// AudioCapture is consumed when either MicCapture is started (`mic`
+// source needs `mic-capture`) or both MicCapture and MacCapture are
+// started (`mic+system` source needs both). A `system-capture-mac`-only
+// build has no live `start()` call site.
 #[cfg(feature = "mic-capture")]
 use scrybe_core::capture::AudioCapture;
 use scrybe_core::context::MeetingContext;
@@ -92,8 +106,12 @@ pub struct Args {
     /// 440 Hz sine through the pipeline so CI smoke tests stay
     /// hermetic. `mic` opens the host's default input device via
     /// cpal — requires the binary to be built with
-    /// `--features mic-capture`; absent the feature the call returns
-    /// `CaptureError::PermissionDenied` at start time.
+    /// `--features mic-capture`. `mic+system` additionally captures
+    /// system audio (the meeting counterparty) on macOS via Core
+    /// Audio Taps — requires both `mic-capture` and
+    /// `system-capture-mac` features and the Audio Capture TCC
+    /// permission grant. Absent the relevant feature, the call
+    /// returns `CaptureError::PermissionDenied` at start time.
     #[arg(long, value_enum, default_value_t = CaptureSourceArg::Synthetic)]
     pub source: CaptureSourceArg,
 
@@ -130,6 +148,11 @@ pub enum CaptureSourceArg {
     #[default]
     Synthetic,
     Mic,
+    /// Mic + macOS system audio. Surfaced to clap as the literal
+    /// `mic+system` token so the CLI matches the user-facing
+    /// documentation (`docs/system-overview.md` §3 channel-split path).
+    #[value(name = "mic+system")]
+    MicSystem,
 }
 
 impl From<ConsentModeArg> for ConsentMode {
@@ -154,6 +177,7 @@ pub async fn run(args: Args) -> Result<()> {
 /// shell driver in `scrybe-cli::shell` calls this directly, feeding
 /// stop into `stop_rx` from tray and hotkey events; the public
 /// `run` entry point above wraps it with a SIGINT-only stop signal.
+#[allow(clippy::too_many_lines)]
 pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result<()> {
     let cfg = load_or_default_config()?;
     let root = match &args.root {
@@ -176,13 +200,27 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
     let user = std::env::var("USER").unwrap_or_else(|_| "scrybe-user".into());
     let started_at = Utc::now();
 
-    // `mic_keepalive` owns the live `MicCapture` so the dedicated cpal
-    // capture thread keeps running for the lifetime of `run_session`.
-    // Dropping `MicCapture` tears down the cpal stream via the
-    // `SharedState::stop_tx` channel; we keep it bound here to defer
-    // that drop until after the session writes its outputs.
+    // `mic_keepalive` and `mac_keepalive` own the live capture
+    // adapters so the dedicated cpal + Core Audio Taps threads keep
+    // running for the lifetime of `run_session`. Dropping each adapter
+    // tears down its underlying stream via its `SharedState::stop_tx`
+    // channel; we keep them bound here to defer that drop until after
+    // the session writes its outputs.
     #[cfg(feature = "mic-capture")]
-    let mut mic_keepalive: Option<MicCapture> = None;
+    let mut mic_capture_keepalive: Option<MicCapture> = None;
+    // Only the dual-source path constructs MacCapture; gating on the
+    // intersection of features keeps the binding warning-free in
+    // single-feature builds.
+    #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
+    let mut system_capture_keepalive: Option<MacCapture> = None;
+
+    // System frames need their own VAD/chunker for the binary-channel
+    // diarizer to attribute them as `Them:`. Set to `Some(...)` only
+    // when the source carries system frames.
+    let system_vad: Option<EnergyVad> = match args.source {
+        CaptureSourceArg::MicSystem => Some(EnergyVad::default()),
+        CaptureSourceArg::Synthetic | CaptureSourceArg::Mic => None,
+    };
 
     let stop_future = Box::pin(wait_for_stop(stop_rx));
     let stream: Pin<Box<dyn Stream<Item = Result<AudioFrame, CaptureError>> + Send>> =
@@ -200,7 +238,7 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
                     )?;
                     let s: Pin<Box<dyn Stream<Item = _> + Send>> =
                         Box::pin(mic.frames().take_until(stop_future));
-                    mic_keepalive = Some(mic);
+                    mic_capture_keepalive = Some(mic);
                     s
                 }
                 #[cfg(not(feature = "mic-capture"))]
@@ -209,6 +247,44 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
                     "--source mic requires the binary to be built with --features mic-capture; \
                      this binary was built without it"
                 );
+                }
+            }
+            CaptureSourceArg::MicSystem => {
+                #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
+                {
+                    use futures::stream;
+                    let mut mic = MicCapture::new();
+                    mic.start().context(
+                        "opening default input device (grant Microphone permission \
+                         in System Settings → Privacy & Security if prompted)",
+                    )?;
+                    let mut mac = MacCapture::new();
+                    mac.start().context(
+                        "creating Core Audio Tap (grant Audio Capture permission in \
+                         System Settings → Privacy & Security if prompted; macOS 14.4+ \
+                         is required)",
+                    )?;
+                    // Merge mic + system frames by arrival order. Each
+                    // frame carries its own `FrameSource`, so the
+                    // orchestrator's per-source dispatch routes mic
+                    // frames to `mic_chunker` and system frames to
+                    // `system_chunker`. The diarizer then attributes
+                    // them as `Me:` / `Them:` per
+                    // `system-design.md` §4.4.
+                    let merged = stream::select(mic.frames(), mac.frames());
+                    let s: Pin<Box<dyn Stream<Item = _> + Send>> =
+                        Box::pin(merged.take_until(stop_future));
+                    mic_capture_keepalive = Some(mic);
+                    system_capture_keepalive = Some(mac);
+                    s
+                }
+                #[cfg(not(all(feature = "mic-capture", feature = "system-capture-mac")))]
+                {
+                    anyhow::bail!(
+                        "--source mic+system requires the binary to be built with both \
+                         --features mic-capture and --features system-capture-mac; \
+                         this binary was built without one or both"
+                    );
                 }
             }
         };
@@ -226,7 +302,7 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
                 ..MeetingContext::default()
             },
             mic_vad: EnergyVad::default(),
-            system_vad: None,
+            system_vad,
             stt: &stt,
             llm: &llm,
             diarizer: &diarizer,
@@ -244,7 +320,9 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
     .context("running session")?;
 
     #[cfg(feature = "mic-capture")]
-    drop(mic_keepalive);
+    drop(mic_capture_keepalive);
+    #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
+    drop(system_capture_keepalive);
 
     println!(
         "scrybe record: session {} written to {}",
@@ -766,6 +844,63 @@ mod tests {
     #[test]
     fn test_capture_source_arg_default_is_synthetic() {
         assert_eq!(CaptureSourceArg::default(), CaptureSourceArg::Synthetic);
+    }
+
+    #[test]
+    fn test_capture_source_arg_parses_mic_plus_system_token() {
+        // Clap's `ValueEnum::from_str` is the surface users hit when
+        // they type `--source mic+system`. The literal `+` is preserved
+        // through the `#[value(name = "mic+system")]` attribute on the
+        // enum variant. Asserts the parser accepts the documented
+        // token and produces the expected variant.
+        use clap::ValueEnum;
+        let arg = CaptureSourceArg::from_str("mic+system", false)
+            .expect("`mic+system` must parse to MicSystem");
+        assert_eq!(arg, CaptureSourceArg::MicSystem);
+    }
+
+    #[test]
+    fn test_capture_source_arg_rejects_typo_variants() {
+        use clap::ValueEnum;
+        // Common typos that should NOT silently parse to a variant.
+        for bad in ["mic-system", "mic_system", "system", "system+mic"] {
+            let r = CaptureSourceArg::from_str(bad, false);
+            assert!(r.is_err(), "{bad} must not parse to any variant; got {r:?}");
+        }
+    }
+
+    #[cfg(not(all(feature = "mic-capture", feature = "system-capture-mac")))]
+    #[tokio::test]
+    async fn test_run_with_mic_system_source_errors_without_both_features() {
+        // The MicSystem arm of the source match must hard-error when
+        // either of the two underlying features is missing. Surfaces
+        // as an `anyhow::Error` rooted in the bail! string so the user
+        // sees the named features they need to rebuild with.
+        std::env::set_var("SCRYBE_CONSENT_AUTO_ACCEPT", "1");
+        let dir = tempfile::tempdir().unwrap();
+        let cfg_dir = tempfile::tempdir().unwrap();
+        std::env::set_var("SCRYBE_CONFIG", cfg_dir.path().join("absent.toml"));
+        let result = run(Args {
+            title: Some("ms-feature-gate".into()),
+            root: Some(dir.path().to_path_buf()),
+            yes: true,
+            consent: ConsentModeArg::Quick,
+            synthetic_secs: 1,
+            shell: false,
+            source: CaptureSourceArg::MicSystem,
+            whisper_model: None,
+        })
+        .await;
+        let Err(err) = result else {
+            panic!("MicSystem without both features must error");
+        };
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("--source mic+system")
+                && msg.contains("mic-capture")
+                && msg.contains("system-capture-mac"),
+            "error must name the source flag and both required features; got: {msg}"
+        );
     }
 
     #[test]
