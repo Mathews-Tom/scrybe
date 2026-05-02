@@ -2314,6 +2314,19 @@ name = "scrybe"
 version = "0.5.0"
 
 [[package]]
+name = "scrybe-android"
+version = "0.5.0"
+dependencies = [
+ "async-trait",
+ "futures",
+ "pretty_assertions",
+ "scrybe-core",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "scrybe-capture-linux"
 version = "0.5.0"
 dependencies = [
