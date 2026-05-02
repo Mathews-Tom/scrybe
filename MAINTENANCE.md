@@ -18,13 +18,13 @@ What that means in practice:
 - No new platform adapters. The four `AudioCapture` implementations (`scrybe-capture-{mac,linux,win,android}`) are the v1.0 set; iOS, BSD, ChromeOS, embedded targets are out of scope for the freeze window.
 - No new extension seams. The five traits (`AudioCapture`, `ContextProvider`, `SttProvider`, `LlmProvider`, `Hook`, `Diarizer`) are the v1.0 set; a sixth seam needs a tracked issue with two real downstream call sites and a minor-version cycle to land.
 - No new top-level CLI subcommands. The Tier-2 set in `system-design.md` §12.2 (`init`, `record`, `list`, `show`, `doctor`, `bench`) is what v1.0 maintains.
-- No new optional feature flags on `scrybe-core`. The set committed at v1.0 (`hook-git`, `whisper-local`, `parakeet-local`, `openai-compat`, `context-ics`, `hook-webhook`, `hook-tantivy`, `diarize-pyannote`) is what v1.0 supports.
+- No new optional feature flags on `scrybe-core`. The set committed at v1.0 (`hook-git`, `whisper-local`, `parakeet-local`, `openai-compat`, `context-ics`, `hook-webhook`, `hook-tantivy`, `diarize-pyannote`, `encoder-opus`) is what v1.0 supports. (`encoder-opus` was anticipated in `scrybe-core/src/pipeline/encoder.rs` since v0.5 and landed at v1.0.2 to close the v0.1 carryover where `audio.opus` was raw PCM under an `.opus` filename; it was always part of the v1.0 surface in intent.)
 
 What is **in** scope during the freeze:
 
 - Bug fixes. Every bug report is triaged; severe bugs cut a patch release.
 - Security advisories. CVE-bearing dependencies get patched out under the SLA in §3 below.
-- Live-binding work behind already-shipped feature flags. The `core-audio-tap`, `media-projection`, `wasapi-loopback`, `parakeet-local`, and `diarize-pyannote` features all carry follow-up work to land their real native bindings; that work continues without re-opening the scope question.
+- Live-binding work behind already-shipped feature flags. The `core-audio-tap`, `media-projection`, `wasapi-loopback`, `parakeet-local`, `diarize-pyannote`, and `encoder-opus` features all carry follow-up work to land their real native bindings; that work continues without re-opening the scope question. (`encoder-opus` shipped its live `OggOpusEncoder` at v1.0.2.)
 - Documentation, examples, README polish.
 - Reproducibility hardening (`reproducibility.yml`) and supply-chain hardening (`cargo-vet`) — both shipped advisory at v0.9.0-rc1 and remain advisory at v1.0.0; promoting either to a blocking gate is a v1.0.x → v1.1 deliverable.
 - Downstream package-manager submissions (Homebrew tap, Scoop bucket, AUR, Flathub, F-Droid). The in-tree templates at `packaging/` are ready; the submissions themselves are maintainer actions and may land at any v1.0.x patch release.
