@@ -37,12 +37,14 @@ from pathlib import Path
 LOC_CEILINGS: dict[str, int] = {
     "scrybe": 100,
     "scrybe-core": 8500,
-    # 2000 was the v0.5 ceiling. Raised to 2300 to absorb the
-    # `scrybe bench` subcommand (criterion-snapshot harvester per
-    # `docs/system-design.md` §11 / `.docs/development-plan.md` §12.1).
-    # The subcommand lands as ~445 LoC including tests; further growth
-    # in scrybe-cli should still trip this gate.
-    "scrybe-cli": 2300,
+    # 2000 was the v0.5 ceiling. Raised to 2300 at v0.6 to absorb the
+    # `scrybe bench` subcommand. Raised to 2500 at v1.0.1 to absorb
+    # the `--source mic` and `--whisper-model` wiring on `scrybe record`
+    # (the v0.1 mic-only path that shipped under stub providers
+    # through v1.0; see CHANGELOG `[1.0.1]`). New code lands as
+    # ~140 LoC including the three new tests; further growth in
+    # scrybe-cli should still trip this gate.
+    "scrybe-cli": 2500,
     "scrybe-capture-mac": 2500,
     "scrybe-capture-linux": 2500,
     "scrybe-capture-win": 2500,
