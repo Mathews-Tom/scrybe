@@ -91,6 +91,31 @@ jobs:
           command: check advisories licenses bans sources
           arguments: --all-features
 
+  vet:
+    name: vet (cargo-vet supply-chain — advisory)
+    runs-on: ubuntu-latest
+    # Advisory until v1.0. `cargo-vet` is wired up at v0.9.0-rc1 with
+    # standard upstream import feeds (Mozilla / Embark / Google /
+    # Bytecode Alliance / ISRG / Zcash). Direct-dep audit entries land
+    # incrementally through the v0.9.x stream; the `continue-on-error`
+    # keeps the lane informational so a missing audit does not block
+    # PRs while the maintainer works through the dependency graph.
+    # Promotion to a blocking gate is the v1.0 deliverable per
+    # `.docs/development-plan.md` §13.1 ("cargo-vet audits committed
+    # for every direct dep").
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95.0
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-vet@0.10.0
+      - name: cargo vet check --locked
+        run: cargo vet check --locked
+
   loc-budget:
     name: loc-budget (per-crate ceilings)
     runs-on: ubuntu-latest
