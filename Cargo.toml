@@ -66,6 +66,11 @@ url = { version = "=2.5.0", default-features = false }
 # default-feature graph free of test scaffolding (the `egress-audit`
 # CI lane verifies production builds carry no network crates).
 wiremock = "0.6"
+# Local full-text index for `Hook::Indexer` (`scrybe-core` feature
+# `hook-tantivy`, `docs/system-design.md` §12.1). Local-only — no
+# network surface — so it does not perturb the `egress-audit` CI lane;
+# only pulled in when the consumer enables `hook-tantivy`.
+tantivy = { version = "0.22", default-features = false, features = ["mmap", "stopwords"] }
 
 [workspace.dependencies.libc]
 version = "0.2"
