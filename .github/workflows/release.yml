@@ -2,8 +2,9 @@
 #
 # Trigger:
 # - Push of a tag matching `v[0-9]+.[0-9]+.[0-9]+*` (e.g. v0.1.0, v0.1.0-rc1).
-# - `workflow_dispatch` for dry-run validation; the dispatch path runs `plan`
-#   and `build` but does NOT create a GitHub Release.
+# - `workflow_dispatch` for dry-run validation; the dispatch path runs `plan`,
+#   `build`, artifact staging, SBOM generation, checksum creation, and cosign
+#   signing, but does NOT create a GitHub Release.
 #
 # Outputs (per `[workspace.metadata.dist]` in `Cargo.toml`):
 # - `scrybe-cli-aarch64-apple-darwin.tar.xz`
@@ -127,7 +128,6 @@ jobs:
   release:
     name: release
     needs: [plan, build]
-    if: needs.plan.outputs.is-release == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -151,7 +151,10 @@ jobs:
           toolchain: 1.95.0
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-dist@${{ env.CARGO_DIST_VERSION }},cargo-cyclonedx@0.5.7,cosign@2.4.1
+          tool: cargo-dist@${{ env.CARGO_DIST_VERSION }},cargo-cyclonedx@0.5.7
+      - uses: sigstore/cosign-installer@v3.8.2
+        with:
+          cosign-release: v2.4.1
       - name: dist build (global artifacts)
         run: dist build --artifacts=global
       - name: stage global artifacts alongside tarballs
@@ -168,15 +171,25 @@ jobs:
       #
       # `cargo cyclonedx` defaults to one SBOM per workspace member
       # written into each crate's directory. The release artifact is
-      # the `scrybe-cli` binary, so scope to that package via
-      # `-p scrybe-cli` and read the resulting file from the
-      # `scrybe-cli/` working directory. Running without `-p` would
-      # emit seven SBOMs (one per workspace crate) and the subsequent
-      # `mv` would race against whichever crate sorted last.
+      # the `scrybe-cli` binary, so scope to that package via its
+      # manifest path and move the single expected output into staging.
+      # Running at the workspace root would emit one SBOM per crate.
       - name: generate CycloneDX SBOM
         run: |
-          cargo cyclonedx -p scrybe-cli --format json --override-filename scrybe-cli-sbom
-          mv scrybe-cli/scrybe-cli-sbom.cdx.json dist-staging/scrybe-cli-sbom.cdx.json
+          set -euo pipefail
+          cargo cyclonedx --manifest-path scrybe-cli/Cargo.toml --format json --override-filename scrybe-cli-sbom
+          sbom_path="$(find . -type f \( \
+            -name scrybe-cli-sbom \
+            -o -name scrybe-cli-sbom.json \
+            -o -name scrybe-cli-sbom.cdx.json \
+            -o -name bom.json \
+          \) -print -quit)"
+          if [ -z "$sbom_path" ]; then
+            echo "::error::cargo cyclonedx did not emit a recognized JSON SBOM"
+            find . -type f \( -name '*sbom*' -o -name 'bom.*' -o -name '*.cdx.json' \) -print
+            exit 1
+          fi
+          mv "$sbom_path" dist-staging/scrybe-cli-sbom.cdx.json
           ls -la dist-staging/scrybe-cli-sbom.cdx.json
       - name: write SHA256 manifest
         working-directory: dist-staging
@@ -212,6 +225,7 @@ jobs:
           done
           ls -la *.sig *.pem
       - name: gh release create
+        if: needs.plan.outputs.is-release == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Route the resolved tag through env so bash dereferences a variable
