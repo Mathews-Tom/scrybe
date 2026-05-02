@@ -9,17 +9,18 @@
 //! The pipeline writes audio to disk through this trait so the storage
 //! layer never touches a codec directly. Two implementations:
 //!
-//! - [`NullEncoder`] — deterministic test-only impl that emits
+//! - `NullEncoder` — deterministic test-only impl that emits
 //!   little-endian f32 PCM bytes shaped by `page_interval`. Used in
 //!   tests and as the fallback when `encoder-opus` is not built.
-//! - [`OggOpusEncoder`] — production impl behind the `encoder-opus`
-//!   feature flag. Encodes f32 PCM with libopus into 20-ms Opus
-//!   packets, packages them in an Ogg container per RFC 7845, and
-//!   emits Ogg pages on a 1-second cadence so the storage layer's
-//!   `append_durable` writes a recoverable file. Anticipated since
-//!   v0.5 (see `.docs/development-plan.md` §7.2 audio-encoding scope);
-//!   landed at v1.0.2 to close the v0.1 carryover where the pipeline
-//!   wrote raw PCM under an `.opus` filename.
+//! - `OggOpusEncoder` — production impl behind the `encoder-opus`
+//!   feature flag (only present in feature-on builds). Encodes f32
+//!   PCM with libopus into 20-ms Opus packets, packages them in an
+//!   Ogg container per RFC 7845, and emits Ogg pages on a 1-second
+//!   cadence so the storage layer's `append_durable` writes a
+//!   recoverable file. Anticipated since v0.5 (see
+//!   `.docs/development-plan.md` §7.2 audio-encoding scope); landed
+//!   at v1.0.2 to close the v0.1 carryover where the pipeline wrote
+//!   raw PCM under an `.opus` filename.
 //!
 //! Page flushing is the contract: the implementation MUST commit a
 //! recoverable boundary every `EncoderConfig::page_interval`. The
@@ -420,8 +421,7 @@ impl Encoder for OggOpusEncoder {
             .samples_per_opus_frame
             .saturating_sub(self.pcm_pending.len());
         if pad > 0 {
-            self.pcm_pending
-                .extend(std::iter::repeat_n(0.0_f32, pad));
+            self.pcm_pending.extend(std::iter::repeat_n(0.0_f32, pad));
         }
         self.encode_one_frame(true)?;
         self.finished = true;
