@@ -6,14 +6,26 @@
 
 //! `scrybe record` — start a session.
 //!
-//! v0.1 wires the macOS adapter (`scrybe-capture-mac`) and a
-//! synthetic-frame source for environments where Core Audio Taps is
-//! not built in. STT and LLM providers default to local Whisper and
-//! local Ollama respectively (`docs/system-design.md` §6); when those
-//! features are not built into `scrybe-cli`, transcription returns
-//! `SttError::ModelNotLoaded` and the user gets an actionable error.
+//! v1.0.1 closes the v0.1 mic-only path (`.docs/development-plan.md`
+//! §7.2). Two opt-in flags surface real audio capture and real
+//! Whisper transcription:
+//!
+//! - `--source mic` consumes frames from the default input device via
+//!   `scrybe-capture-mic` (cpal). Requires the binary to be built
+//!   with `--features mic-capture`; absent that feature the call
+//!   returns `CaptureError::PermissionDenied`.
+//! - `--whisper-model <PATH>` swaps the stub STT provider for
+//!   `WhisperLocalProvider` against the supplied `.bin` / `.gguf`
+//!   weights. Requires the binary to be built with
+//!   `--features whisper-local`; absent that feature the flag errors
+//!   at start time rather than silently falling back to the stub.
+//!
+//! Without either flag the recorder runs the deterministic synthetic
+//! pipeline (440 Hz sine + canned transcripts) so CI smoke tests stay
+//! hermetic.
 
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -22,12 +34,18 @@ use async_trait::async_trait;
 use chrono::Utc;
 use clap::{Args as ClapArgs, ValueEnum};
 use futures::stream::{self, Stream, StreamExt};
+#[cfg(feature = "mic-capture")]
+use scrybe_capture_mic::MicCapture;
+#[cfg(feature = "mic-capture")]
+use scrybe_core::capture::AudioCapture;
 use scrybe_core::context::MeetingContext;
 use scrybe_core::diarize::Diarizer;
-use scrybe_core::error::{CoreError, LlmError, SttError};
+use scrybe_core::error::{CaptureError, CoreError, LlmError, SttError};
 use scrybe_core::hooks::{Hook, LifecycleEvent};
 use scrybe_core::pipeline::chunker::ChunkerConfig;
 use scrybe_core::pipeline::vad::EnergyVad;
+#[cfg(feature = "whisper-local")]
+use scrybe_core::providers::whisper_local::{WhisperLocalConfig, WhisperLocalProvider};
 use scrybe_core::providers::{LlmProvider, SttProvider};
 use scrybe_core::session::{run as run_session, SessionInputs};
 use scrybe_core::types::{
@@ -63,13 +81,31 @@ pub struct Args {
     #[arg(long, value_enum, default_value_t = ConsentModeArg::Quick)]
     pub consent: ConsentModeArg,
 
-    /// Synthetic-source duration in seconds. v0.1 records from a
-    /// deterministic in-process generator (sine sweep) so the full
-    /// pipeline is exercisable without macOS hardware. Real Core Audio
-    /// Taps capture lands behind a hardware-validation pass —
-    /// `system-design.md` §11 Tier 3.
+    /// Synthetic-source duration in seconds. The default `--source
+    /// synthetic` records from a deterministic in-process generator
+    /// (440 Hz sine sweep) so the full pipeline is exercisable
+    /// without microphone hardware. Ignored when `--source mic`.
     #[arg(long, default_value_t = 5)]
     pub synthetic_secs: u64,
+
+    /// Capture source. `synthetic` (default) plays a deterministic
+    /// 440 Hz sine through the pipeline so CI smoke tests stay
+    /// hermetic. `mic` opens the host's default input device via
+    /// cpal — requires the binary to be built with
+    /// `--features mic-capture`; absent the feature the call returns
+    /// `CaptureError::PermissionDenied` at start time.
+    #[arg(long, value_enum, default_value_t = CaptureSourceArg::Synthetic)]
+    pub source: CaptureSourceArg,
+
+    /// Path to a whisper.cpp model (`.bin` or `.gguf`). When set AND
+    /// the binary is built with `--features whisper-local`, the STT
+    /// provider becomes `WhisperLocalProvider` against these weights.
+    /// Without the feature, an explicit path errors at start time
+    /// rather than silently falling back to the stub. `*.partial`
+    /// paths are rejected per the existing
+    /// `WhisperLocalProvider::new` contract.
+    #[arg(long)]
+    pub whisper_model: Option<PathBuf>,
 
     /// Attach the desktop status-bar indicator (tray icon with a Quit
     /// menu) and register the global hotkey from `[capture] hotkey`
@@ -87,6 +123,13 @@ pub enum ConsentModeArg {
     Quick,
     Notify,
     Announce,
+}
+
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq, ValueEnum)]
+pub enum CaptureSourceArg {
+    #[default]
+    Synthetic,
+    Mic,
 }
 
 impl From<ConsentModeArg> for ConsentMode {
@@ -124,7 +167,7 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
     let auto_accept = args.yes || std::env::var("SCRYBE_CONSENT_AUTO_ACCEPT").as_deref() == Ok("1");
     let prompter = TtyPrompter::new(auto_accept);
 
-    let stt = StubLocalStt::new();
+    let stt = build_stt_provider(args.whisper_model.as_ref())?;
     let llm = StubLocalLlm::new();
     let diarizer = BinaryChannelDiarizer;
     let hooks: Vec<Box<dyn Hook>> = Vec::new();
@@ -133,8 +176,42 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
     let user = std::env::var("USER").unwrap_or_else(|_| "scrybe-user".into());
     let started_at = Utc::now();
 
-    let stream =
-        synthetic_capture_stream(args.synthetic_secs).take_until(Box::pin(wait_for_stop(stop_rx)));
+    // `mic_keepalive` owns the live `MicCapture` so the dedicated cpal
+    // capture thread keeps running for the lifetime of `run_session`.
+    // Dropping `MicCapture` tears down the cpal stream via the
+    // `SharedState::stop_tx` channel; we keep it bound here to defer
+    // that drop until after the session writes its outputs.
+    #[cfg(feature = "mic-capture")]
+    let mut mic_keepalive: Option<MicCapture> = None;
+
+    let stop_future = Box::pin(wait_for_stop(stop_rx));
+    let stream: Pin<Box<dyn Stream<Item = Result<AudioFrame, CaptureError>> + Send>> =
+        match args.source {
+            CaptureSourceArg::Synthetic => {
+                Box::pin(synthetic_capture_stream(args.synthetic_secs).take_until(stop_future))
+            }
+            CaptureSourceArg::Mic => {
+                #[cfg(feature = "mic-capture")]
+                {
+                    let mut mic = MicCapture::new();
+                    mic.start().context(
+                        "opening default input device (grant Microphone permission \
+                     in System Settings → Privacy & Security if prompted)",
+                    )?;
+                    let s: Pin<Box<dyn Stream<Item = _> + Send>> =
+                        Box::pin(mic.frames().take_until(stop_future));
+                    mic_keepalive = Some(mic);
+                    s
+                }
+                #[cfg(not(feature = "mic-capture"))]
+                {
+                    anyhow::bail!(
+                    "--source mic requires the binary to be built with --features mic-capture; \
+                     this binary was built without it"
+                );
+                }
+            }
+        };
 
     let outputs = run_session(
         SessionInputs {
@@ -165,6 +242,9 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
     )
     .await
     .context("running session")?;
+
+    #[cfg(feature = "mic-capture")]
+    drop(mic_keepalive);
 
     println!(
         "scrybe record: session {} written to {}",
@@ -234,11 +314,73 @@ fn synthetic_capture_stream(
     }))
 }
 
+/// CLI-local STT dispatch over the two providers `scrybe record` can
+/// pick at runtime. Enum variants stay `Sized` so the existing
+/// `SessionInputs<S: SttProvider>` generic does not need a `?Sized`
+/// relaxation in `scrybe-core` for this v1.0.x patch.
+enum CliStt {
+    Stub(StubLocalStt),
+    #[cfg(feature = "whisper-local")]
+    Whisper(WhisperLocalProvider),
+}
+
+#[async_trait]
+impl SttProvider for CliStt {
+    async fn transcribe(&self, chunk: AudioChunk) -> Result<TranscriptChunk, SttError> {
+        match self {
+            Self::Stub(s) => s.transcribe(chunk).await,
+            #[cfg(feature = "whisper-local")]
+            Self::Whisper(s) => s.transcribe(chunk).await,
+        }
+    }
+
+    fn name(&self) -> &str {
+        match self {
+            Self::Stub(s) => s.name(),
+            #[cfg(feature = "whisper-local")]
+            Self::Whisper(s) => s.name(),
+        }
+    }
+}
+
+/// Construct the STT provider from the `--whisper-model` flag.
+///
+/// - `Some(path)` + `--features whisper-local` → real
+///   `WhisperLocalProvider` against the supplied weights.
+/// - `Some(path)` + no `whisper-local` feature → hard error so the
+///   user does not silently get the stub when they asked for real
+///   transcription.
+/// - `None` → `StubLocalStt` so the synthetic-source CI smoke path
+///   stays hermetic.
+#[allow(unused_variables)]
+fn build_stt_provider(whisper_model: Option<&PathBuf>) -> Result<CliStt> {
+    match whisper_model {
+        None => Ok(CliStt::Stub(StubLocalStt::new())),
+        Some(path) => {
+            #[cfg(feature = "whisper-local")]
+            {
+                let cfg = WhisperLocalConfig::new(path.clone());
+                let provider = WhisperLocalProvider::new(cfg)
+                    .with_context(|| format!("loading whisper.cpp model at {}", path.display()))?;
+                Ok(CliStt::Whisper(provider))
+            }
+            #[cfg(not(feature = "whisper-local"))]
+            {
+                anyhow::bail!(
+                    "--whisper-model {} provided but binary built without --features whisper-local; \
+                     rebuild with `cargo install --features whisper-local,...` or remove the flag",
+                    path.display()
+                );
+            }
+        }
+    }
+}
+
 /// CLI-local stub STT provider. Emits a deterministic line so the
 /// rest of the pipeline (transcript append, LLM prompt rendering,
 /// notes write) is exercisable without a real Whisper model. Using a
-/// real model is wired via `--features whisper-local` and the
-/// `WhisperLocalProvider` in `scrybe-core::providers::whisper_local`.
+/// real model is wired via `--features whisper-local` plus the
+/// `--whisper-model <PATH>` flag — see `build_stt_provider` above.
 struct StubLocalStt;
 
 impl StubLocalStt {
@@ -476,6 +618,8 @@ mod tests {
             consent: ConsentModeArg::Quick,
             synthetic_secs: 1,
             shell: false,
+            source: CaptureSourceArg::Synthetic,
+            whisper_model: None,
         })
         .await
         .unwrap();
@@ -543,6 +687,8 @@ mod tests {
             consent: ConsentModeArg::Quick,
             synthetic_secs: 1,
             shell: false,
+            source: CaptureSourceArg::Synthetic,
+            whisper_model: None,
         })
         .await;
 
@@ -602,6 +748,8 @@ mod tests {
             consent: ConsentModeArg::Quick,
             synthetic_secs: 1,
             shell: false,
+            source: CaptureSourceArg::Synthetic,
+            whisper_model: None,
         })
         .await
         .unwrap();
@@ -612,6 +760,54 @@ mod tests {
             "cold-start exceeded {COLD_START_BUDGET:?}: actual {elapsed:?} \
              — the stub-provider path should complete sub-second; investigate \
              before bumping this budget"
+        );
+    }
+
+    #[test]
+    fn test_capture_source_arg_default_is_synthetic() {
+        assert_eq!(CaptureSourceArg::default(), CaptureSourceArg::Synthetic);
+    }
+
+    #[test]
+    fn test_build_stt_provider_returns_stub_when_no_model_path_supplied() {
+        let stt = build_stt_provider(None).expect("stub branch must succeed");
+        assert_eq!(stt.name(), "stub-local-stt");
+    }
+
+    #[cfg(not(feature = "whisper-local"))]
+    #[test]
+    fn test_build_stt_provider_errors_when_model_supplied_without_feature() {
+        let path = std::path::PathBuf::from("/tmp/no-such-model.bin");
+        let result = build_stt_provider(Some(&path));
+        let Err(err) = result else {
+            panic!("flag without feature must error rather than silently stub");
+        };
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("--whisper-model") && msg.contains("--features whisper-local"),
+            "error must name both the flag and the missing feature; got: {msg}"
+        );
+    }
+
+    #[cfg(feature = "whisper-local")]
+    #[test]
+    fn test_build_stt_provider_rejects_partial_model_path() {
+        // `WhisperLocalProvider::new` rejects `*.partial` paths up-front
+        // (see scrybe-core::providers::whisper_local). The CLI surfaces
+        // this as a `loading whisper.cpp model at <path>` context-chained
+        // error so the user sees both the offending path and the
+        // underlying contract violation.
+        let dir = tempfile::tempdir().unwrap();
+        let partial = dir.path().join("ggml-tiny.bin.partial");
+        std::fs::write(&partial, b"unfinished download").unwrap();
+        let result = build_stt_provider(Some(&partial));
+        let Err(err) = result else {
+            panic!("partial paths must be rejected at construction");
+        };
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("loading whisper.cpp model"),
+            "context chain must mention the loading step; got: {msg}"
         );
     }
 }

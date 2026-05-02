@@ -19,6 +19,14 @@ doc = false
 default = []
 hook-git = ["scrybe-core/hook-git"]
 whisper-local = ["scrybe-core/whisper-local"]
+# Enables the live cpal binding in `scrybe-capture-mic` so
+# `scrybe record --mic` opens the default input device. Off by default
+# so the cpal transitive dependency tree (CoreAudio / ALSA / WASAPI
+# bindings) stays out of CI builds; users opt in via
+# `cargo install --features mic-capture` per the v1.0.x mic-only path
+# documented in `INSTALL.md`. Without this feature, `--mic` returns
+# `CaptureError::PermissionDenied("live-mic feature disabled ...")`.
+mic-capture = ["scrybe-capture-mic/live-mic"]
 # Desktop shell: tray-icon + global-hotkey wired to a main-thread event
 # pump so `scrybe record --shell` toggles capture from a global hotkey
 # and a status-bar Quit menu.
@@ -48,6 +56,7 @@ global-hotkey = { version = "0.7", optional = true }
 keyboard-types = { version = "0.8", optional = true }
 scrybe = { path = "../scrybe", version = "1.0.0" }
 scrybe-capture-mac = { path = "../scrybe-capture-mac", version = "1.0.0" }
+scrybe-capture-mic = { path = "../scrybe-capture-mic", version = "1.0.0" }
 scrybe-core = { path = "../scrybe-core", version = "1.0.0" }
 serde.workspace = true
 serde_json.workspace = true

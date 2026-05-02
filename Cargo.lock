@@ -2905,6 +2905,7 @@ dependencies = [
  "pretty_assertions",
  "scrybe",
  "scrybe-capture-mac",
+ "scrybe-capture-mic",
  "scrybe-core",
  "serde",
  "serde_json",
