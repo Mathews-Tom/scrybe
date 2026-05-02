@@ -24,7 +24,7 @@ The installer detects your CPU architecture, downloads the matching tarball, ver
 
 ## macOS — manual install (audit-friendly)
 
-Use this path if you want to inspect every file before it lands on disk, verify each archive's SHA256 by hand, or operate in an environment where piping `curl` into `sh` is forbidden. cosign-based provenance verification will land in a future release per `.docs/development-plan.md` §13.1.
+Use this path if you want to inspect every file before it lands on disk, verify each archive's SHA256 by hand, or operate in an environment where piping `curl` into `sh` is forbidden. Provenance verification via `cosign verify-blob` is documented at the end of this file.
 
 ### 1. Pick the right tarball
 
@@ -125,3 +125,79 @@ macOS notarization requires an Apple Developer ID enrollment ($99/year) and ties
 | Build from source (`cargo install`) | Local builds are never quarantined |
 
 This posture is reviewed post-v1.0 if first-run friction is shown to materially block adoption.
+
+---
+
+## Verify a release with cosign
+
+Each GitHub Release ships a cosign-signed `SHA256SUMS.txt` covering every artifact and a separately-signed `scrybe-cli-sbom.cdx.json` (CycloneDX SBOM). Verifying the manifest's signature transitively covers every asset whose hash appears in the file — there is no need to verify each tarball individually.
+
+Install cosign once (any 2.x release works):
+
+```sh
+brew install cosign            # macOS
+# or download from https://github.com/sigstore/cosign/releases
+```
+
+Download the manifest, its signature, and its certificate from the release page:
+
+```sh
+TAG=v0.9.0-rc1   # the release you are verifying
+BASE="https://github.com/Mathews-Tom/scrybe/releases/download/${TAG}"
+curl -LO "${BASE}/SHA256SUMS.txt"
+curl -LO "${BASE}/SHA256SUMS.txt.sig"
+curl -LO "${BASE}/SHA256SUMS.txt.pem"
+```
+
+Verify keylessly. The `--certificate-identity` and `--certificate-oidc-issuer` flags pin the trust chain to the GitHub Actions release workflow on the upstream repository:
+
+```sh
+cosign verify-blob \
+  --certificate SHA256SUMS.txt.pem \
+  --signature SHA256SUMS.txt.sig \
+  --certificate-identity-regexp "^https://github.com/Mathews-Tom/scrybe/.github/workflows/release.yml@refs/tags/${TAG}$" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  SHA256SUMS.txt
+```
+
+`Verified OK` on stdout means the manifest was produced by the release workflow at this exact tag. Any other output means abort. With the manifest verified, the per-tarball checksum check from §2 of the manual-install path covers the binary you are about to run.
+
+The same recipe works for the SBOM:
+
+```sh
+cosign verify-blob \
+  --certificate scrybe-cli-sbom.cdx.json.pem \
+  --signature scrybe-cli-sbom.cdx.json.sig \
+  --certificate-identity-regexp "^https://github.com/Mathews-Tom/scrybe/.github/workflows/release.yml@refs/tags/${TAG}$" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  scrybe-cli-sbom.cdx.json
+```
+
+cosign is artifact-level CI provenance, not OS-level code signing. Gatekeeper's "Apple cannot verify" prompt and Windows SmartScreen are unaffected by a cosign-verified tarball — the install paths above remain the way to handle each.
+
+---
+
+## Verify reproducibility
+
+`.github/workflows/reproducibility.yml` builds each release tarball twice on a fresh macOS-14 runner from divergent workspace paths, then asserts SHA256 equality across legs. The contract holds because the release workflow pins `SOURCE_DATE_EPOCH=1714464000`, sets `RUSTFLAGS=--remap-path-prefix=$workspace=/build`, and locks the toolchain to `1.95.0` via `rust-toolchain.toml`. Reproducing locally takes those same three inputs:
+
+```sh
+git clone --branch v0.9.0-rc1 https://github.com/Mathews-Tom/scrybe.git scrybe
+cd scrybe
+SOURCE_DATE_EPOCH=1714464000 \
+  RUSTFLAGS="--remap-path-prefix=$(pwd)=/build" \
+  cargo dist build --artifacts=local --target=aarch64-apple-darwin
+shasum -a 256 target/distrib/scrybe-cli-aarch64-apple-darwin.tar.xz
+```
+
+The emitted hash matches the one in the release's `SHA256SUMS.txt` exactly. Discrepancies on macOS today most often trace to `/usr/lib/libSystem.B.dylib` version differences across host SDK versions; if you hit one, file an issue with `xcodebuild -showsdks` output and your `rustc -vV` to help calibrate the next build pin.
+
+---
+
+## Linux
+
+Linux distribution surfaces — `cargo deb`, AUR `scrybe-bin`, Flathub — land in the v0.9.x stream as templates in `packaging/` are submitted to each downstream registry. The audit-friendly path on Linux today is `cargo install --git https://github.com/Mathews-Tom/scrybe scrybe-cli --tag v0.9.0-rc1 --features cli-shell,hook-git`, which builds locally against the pinned toolchain and never crosses a vendor's trust path.
+
+## Windows
+
+Windows distribution surfaces — `cargo wix` MSI, Scoop bucket — land in the v0.9.x stream alongside the `windows-latest` cargo-dist target. The current path is `cargo install --git https://github.com/Mathews-Tom/scrybe scrybe-cli --tag v0.9.0-rc1 --features cli-shell,hook-git`. Direct-download tarballs (when available) trigger SmartScreen's "Windows protected your PC" dialog because the binary is unsigned per `.docs/development-plan.md` §13.1. Click `More info → Run anyway` once; subsequent launches do not prompt.
