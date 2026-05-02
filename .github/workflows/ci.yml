@@ -94,15 +94,15 @@ jobs:
   vet:
     name: vet (cargo-vet supply-chain — advisory)
     runs-on: ubuntu-latest
-    # Advisory until v1.0. `cargo-vet` is wired up at v0.9.0-rc1 with
-    # standard upstream import feeds (Mozilla / Embark / Google /
+    # Advisory through v1.0. `cargo-vet` was wired up at v0.9.0-rc1
+    # with standard upstream import feeds (Mozilla / Embark / Google /
     # Bytecode Alliance / ISRG / Zcash). Direct-dep audit entries land
-    # incrementally through the v0.9.x stream; the lane stays
+    # incrementally through the v1.0.x stream; the lane stays
     # informational so a missing audit does not block PRs while the
     # maintainer works through the dependency graph. Promotion to a
-    # blocking gate is the v1.0 deliverable per
+    # blocking gate is the v1.0.x → v1.1 deliverable per
     # `.docs/development-plan.md` §13.1 ("cargo-vet audits committed
-    # for every direct dep").
+    # for every direct dep") and `MAINTENANCE.md` §5.
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

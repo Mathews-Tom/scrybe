@@ -19,7 +19,7 @@
 #   that runs first cannot pick up a newer rustup auto-update.
 # - cargo-dist version pinned to 0.25.1 — same lockstep guarantee.
 #
-# Lane status at v0.9.0-rc1: advisory. Empirically the four inputs
+# Lane status at v1.0.0: advisory. Empirically the four inputs
 # above are not yet sufficient to make cargo-dist tarballs bit-
 # identical on `macos-14`; remaining non-determinism sources need
 # deeper investigation (candidate suspects: rustc embedded build-host
@@ -27,7 +27,7 @@
 # verification step emits a `::warning::` annotation on mismatch
 # rather than failing the job so the lane stays informational while
 # the maintainer works through the residual divergences. Promotion
-# to a blocking gate is a v0.9.x → v1.0 deliverable.
+# to a blocking gate is a v1.0.x → v1.1 deliverable.
 #
 # Triggers:
 # - workflow_dispatch: manual rerun for a maintainer verifying a tag.
@@ -109,12 +109,12 @@ jobs:
         env:
           RUSTFLAGS: "--remap-path-prefix=${{ github.workspace }}/scrybe-rebuild=/build -C link-args=-Wl,-no_uuid"
         run: dist build --artifacts=local --target=${{ matrix.target }}
-      # Advisory at v0.9.0-rc1. Mismatches surface as `::warning::`
+      # Advisory at v1.0.0. Mismatches surface as `::warning::`
       # annotations rather than job failures while the residual macOS
       # non-determinism sources are tracked down. The script still
       # emits the per-asset SHA256 pair on mismatch so a future
       # investigator can grep the workflow log for the divergence
-      # pattern. Promotion to a hard fail is the v0.9.x → v1.0
+      # pattern. Promotion to a hard fail is the v1.0.x → v1.1
       # deliverable; remove the always-zero exit and re-add the
       # `if mismatched` block at that time.
       - name: compare SHA256 across legs (advisory)
@@ -141,7 +141,7 @@ jobs:
             fi
           done
           if [ "$mismatched" -ne 0 ]; then
-            echo "::warning title=reproducibility advisory::verification reported divergences; see annotations above. Lane is advisory at v0.9.0-rc1."
+            echo "::warning title=reproducibility advisory::verification reported divergences; see annotations above. Lane is advisory at v1.0.0."
           fi
           exit 0
       # Always upload both legs' artifacts so a maintainer can pull

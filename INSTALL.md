@@ -142,7 +142,7 @@ brew install cosign            # macOS
 Download the manifest, its signature, and its certificate from the release page:
 
 ```sh
-TAG=v0.9.0-rc1   # the release you are verifying
+TAG=v1.0.0   # the release you are verifying
 BASE="https://github.com/Mathews-Tom/scrybe/releases/download/${TAG}"
 curl -LO "${BASE}/SHA256SUMS.txt"
 curl -LO "${BASE}/SHA256SUMS.txt.sig"
@@ -181,12 +181,12 @@ cosign is artifact-level CI provenance, not OS-level code signing. Gatekeeper's 
 
 `.github/workflows/reproducibility.yml` builds each release tarball twice on a fresh macOS-14 runner from divergent workspace paths and compares SHA256 across legs. The release workflow pins `SOURCE_DATE_EPOCH=1714464000`, sets `RUSTFLAGS=--remap-path-prefix=$workspace=/build -C link-args=-Wl,-no_uuid`, and locks the toolchain to `1.95.0` via `rust-toolchain.toml`.
 
-The lane runs in **advisory mode** at v0.9.0-rc1. The four inputs above are not yet sufficient to make cargo-dist tarballs bit-identical on `macos-14`; tracking down the residual non-determinism is a v0.9.x → v1.0 follow-up. Both legs' artifacts upload on every run so an investigator can pull them down and run `diffoscope leg-a/scrybe leg-b/scrybe` to localise the divergence.
+The lane runs in **advisory mode** at v1.0.0. The four inputs above are not yet sufficient to make cargo-dist tarballs bit-identical on `macos-14`; tracking down the residual non-determinism is a v1.0.x → v1.1 follow-up. Both legs' artifacts upload on every run so an investigator can pull them down and run `diffoscope leg-a/scrybe leg-b/scrybe` to localise the divergence.
 
 Local reproduction recipe (matches the CI inputs):
 
 ```sh
-git clone --branch v0.9.0-rc1 https://github.com/Mathews-Tom/scrybe.git scrybe
+git clone --branch v1.0.0 https://github.com/Mathews-Tom/scrybe.git scrybe
 cd scrybe
 SOURCE_DATE_EPOCH=1714464000 \
   RUSTFLAGS="--remap-path-prefix=$(pwd)=/build -C link-args=-Wl,-no_uuid" \
@@ -194,14 +194,14 @@ SOURCE_DATE_EPOCH=1714464000 \
 shasum -a 256 target/distrib/scrybe-cli-aarch64-apple-darwin.tar.xz
 ```
 
-Comparison against a published release tag's `SHA256SUMS.txt` is informative but not yet authoritative — until the v0.9.x reproducibility-hardening lands, divergences here are expected. File an issue with `xcodebuild -showsdks` and `rustc -vV` if you investigate; the diffoscope output is the load-bearing artifact.
+Comparison against a published release tag's `SHA256SUMS.txt` is informative but not yet authoritative — until the v1.0.x reproducibility-hardening lands, divergences here are expected. File an issue with `xcodebuild -showsdks` and `rustc -vV` if you investigate; the diffoscope output is the load-bearing artifact.
 
 ---
 
 ## Linux
 
-Linux distribution surfaces — `cargo deb`, AUR `scrybe-bin`, Flathub — land in the v0.9.x stream as templates in `packaging/` are submitted to each downstream registry. The audit-friendly path on Linux today is `cargo install --git https://github.com/Mathews-Tom/scrybe scrybe-cli --tag v0.9.0-rc1 --features cli-shell,hook-git`, which builds locally against the pinned toolchain and never crosses a vendor's trust path.
+Linux distribution surfaces — `cargo deb`, AUR `scrybe-bin`, Flathub — land in the v1.0.x stream as templates in `packaging/` are submitted to each downstream registry. The audit-friendly path on Linux today is `cargo install --git https://github.com/Mathews-Tom/scrybe scrybe-cli --tag v1.0.0 --features cli-shell,hook-git`, which builds locally against the pinned toolchain and never crosses a vendor's trust path.
 
 ## Windows
 
-Windows distribution surfaces — `cargo wix` MSI, Scoop bucket — land in the v0.9.x stream alongside the `windows-latest` cargo-dist target. The current path is `cargo install --git https://github.com/Mathews-Tom/scrybe scrybe-cli --tag v0.9.0-rc1 --features cli-shell,hook-git`. Direct-download tarballs (when available) trigger SmartScreen's "Windows protected your PC" dialog because the binary is unsigned per `.docs/development-plan.md` §13.1. Click `More info → Run anyway` once; subsequent launches do not prompt.
+Windows distribution surfaces — `cargo wix` MSI, Scoop bucket — land in the v1.0.x stream alongside the `windows-latest` cargo-dist target. The current path is `cargo install --git https://github.com/Mathews-Tom/scrybe scrybe-cli --tag v1.0.0 --features cli-shell,hook-git`. Direct-download tarballs (when available) trigger SmartScreen's "Windows protected your PC" dialog because the binary is unsigned per `.docs/development-plan.md` §13.1. Click `More info → Run anyway` once; subsequent launches do not prompt.

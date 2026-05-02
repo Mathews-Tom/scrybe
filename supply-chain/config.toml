@@ -3,11 +3,11 @@
 #
 # The CI lane (`vet` job in `.github/workflows/ci.yml`) currently runs
 # `cargo vet check` in advisory mode (`continue-on-error: true`). The
-# gate flips to blocking at v1.0, after the maintainer has performed
-# the direct-dep audit pass and replaced the placeholder exemptions
-# below with real audit entries in `audits.toml`. The infrastructure
-# shipping at v0.9.0-rc1 is the wiring; the audit work is a v0.9.x
-# follow-up tracked in CHANGELOG.
+# gate flips to blocking once the maintainer has performed the direct-
+# dep audit pass and committed real audit entries in `audits.toml`.
+# The infrastructure shipped at v0.9.0-rc1 and remains wired through
+# v1.0; the audit work is a v1.0.x → v1.1 follow-up tracked in
+# `CHANGELOG.md` and `MAINTENANCE.md` §5.
 #
 # Imports pull pre-vetted audit entries from the upstream feeds that
 # already cover most of the Rust ecosystem. With these in place, the
