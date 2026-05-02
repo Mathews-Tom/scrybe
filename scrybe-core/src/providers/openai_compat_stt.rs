@@ -65,7 +65,7 @@ impl Default for OpenAiCompatSttConfig {
             language: "auto".to_string(),
             display_name: "openai-compat".to_string(),
             retry: RetryPolicy::default(),
-            timeout: Duration::from_secs(60),
+            timeout: Duration::from_mins(1),
         }
     }
 }
