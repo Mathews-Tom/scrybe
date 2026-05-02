@@ -119,21 +119,31 @@ The egress audit walks `scrybe-cli`'s default-feature dependency graph and asser
 The default `scrybe record` runs a synthetic 440 Hz sine through the pipeline so CI smoke tests stay hermetic. To record from your actual mic and transcribe with whisper.cpp, build with the `mic-capture` and `whisper-local` features and supply a model path at runtime:
 
 ```sh
-# Build with all opt-in features (mic + Whisper + real Opus encoding)
+# Build with all opt-in features (mic + system audio + Whisper + Opus)
 cargo install --path scrybe-cli \
-  --features cli-shell,hook-git,mic-capture,whisper-local,encoder-opus
+  --features cli-shell,hook-git,mic-capture,system-capture-mac,whisper-local,encoder-opus
 
 # Download a whisper.cpp model (one-time; pick a size that fits your RAM)
 mkdir -p ~/Library/Application\ Support/scrybe/models
 curl -L -o ~/Library/Application\ Support/scrybe/models/ggml-base.en.bin \
   https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin
 
-# Record from the default input device, transcribe with the model
+# Mic only — captures your voice
 scrybe record \
   --title "standup" \
   --source mic \
   --whisper-model ~/Library/Application\ Support/scrybe/models/ggml-base.en.bin
+
+# Mic + system audio — captures your voice AND the meeting
+# counterparty's audio (the other end of a Zoom/Teams/Meet call).
+# transcript.md attributes utterances as `Me:` (mic) and `Them:`
+# (system) via the binary-channel diarizer.
+scrybe record \
+  --title "client-call" \
+  --source mic+system \
+  --whisper-model ~/Library/Application\ Support/scrybe/models/ggml-base.en.bin
 # Press Ctrl-C to stop.
+
 scrybe list                       # shows the new session
 scrybe show <session-id>          # renders transcript + notes
 
@@ -142,6 +152,22 @@ scrybe show <session-id>          # renders transcript + notes
 # (the v0.1 NullEncoder fallback) and ffmpeg/vlc reject it.
 ffprobe ~/scrybe/<session>/audio.opus
 ```
+
+The first run of `--source mic+system` triggers two macOS permission
+prompts:
+
+- **Microphone** — for the cpal default-input adapter.
+- **Audio Capture** — for the Core Audio Taps adapter that captures
+  system playback. Requires macOS 14.4+; older macOS versions return
+  `CaptureError::PermissionDenied` even after grant because the
+  underlying API is unavailable.
+
+Grant both via System Settings → Privacy & Security and re-run.
+
+`--source mic+system` writes a single mono `audio.opus` interleaving
+mic and system frames by arrival time. Stereo encoding (mic on L,
+system on R) is a v1.0.x → v1.1 deliverable; the transcript channel-
+split via `FrameSource` is unaffected.
 
 What runs:
 

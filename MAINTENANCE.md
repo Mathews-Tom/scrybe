@@ -24,7 +24,7 @@ What is **in** scope during the freeze:
 
 - Bug fixes. Every bug report is triaged; severe bugs cut a patch release.
 - Security advisories. CVE-bearing dependencies get patched out under the SLA in §3 below.
-- Live-binding work behind already-shipped feature flags. The `core-audio-tap`, `media-projection`, `wasapi-loopback`, `parakeet-local`, `diarize-pyannote`, and `encoder-opus` features all carry follow-up work to land their real native bindings; that work continues without re-opening the scope question. (`encoder-opus` shipped its live `OggOpusEncoder` at v1.0.2.)
+- Live-binding work behind already-shipped feature flags. The `core-audio-tap`, `media-projection`, `wasapi-loopback`, `parakeet-local`, `diarize-pyannote`, `encoder-opus`, and `system-capture-mac` features all carry follow-up work to land their real native bindings or wire them into the CLI; that work continues without re-opening the scope question. (`encoder-opus` shipped its live `OggOpusEncoder` at v1.0.2; `system-capture-mac` shipped at v1.0.3 and now wires `MacCapture` into `scrybe record --source mic+system`.)
 - Documentation, examples, README polish.
 - Reproducibility hardening (`reproducibility.yml`) and supply-chain hardening (`cargo-vet`) — both shipped advisory at v0.9.0-rc1 and remain advisory at v1.0.0; promoting either to a blocking gate is a v1.0.x → v1.1 deliverable.
 - Downstream package-manager submissions (Homebrew tap, Scoop bucket, AUR, Flathub, F-Droid). The in-tree templates at `packaging/` are ready; the submissions themselves are maintainer actions and may land at any v1.0.x patch release.

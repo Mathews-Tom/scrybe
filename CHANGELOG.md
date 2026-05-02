@@ -2,6 +2,59 @@
 
 All notable changes to scrybe are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) within the stability tiers documented in `docs/system-design.md` §12.
 
+## [1.0.3] — 2026-05-02
+
+Closes the v1.0.2 → v1.1 follow-up enumerated in `MAINTENANCE.md` §1: `scrybe-capture-mac::MacCapture` (Core Audio Taps) was hardware-validated at v0.1 (PR #20) but not consumed by `scrybe record`. v1.0.3 wires it in, so `--source mic+system` records both the user's microphone (cpal) and the meeting counterparty's audio (Core Audio Taps), each with its own `FrameSource`. The `BinaryChannelDiarizer` then attributes utterances as `Me:` / `Them:` in `transcript.md` per `system-design.md` §4.4.
+
+The publish posture from v1.0 carries forward unchanged: only `scrybe` (the placeholder) publishes to crates.io. No Tier-1 surface changes — the orchestrator's `S: SttProvider`-style generic stays sized; the addition is on the CLI side (a new feature flag, a new `CaptureSourceArg` variant, and dual-stream construction in `run_with_stop`).
+
+### Added
+
+- `scrybe-cli` `system-capture-mac` cargo feature forwarding to `scrybe-capture-mac/core-audio-tap`. Off by default so the objc2 transitive dependency tree (`objc2`, `objc2-core-audio`, `block2`, `dispatch2`, …) stays out of cross-platform default builds; the macOS local-build path opts in. Without the feature, `--source mic+system` errors at start time with a message naming both required features (`mic-capture` and `system-capture-mac`) so the user knows what to rebuild with.
+- `scrybe record --source mic+system` flag value. New `CaptureSourceArg::MicSystem` variant surfaced to clap as the literal `mic+system` token via `#[value(name = "mic+system")]`. When selected, `run_with_stop` constructs both `MicCapture` (cpal mic) and `MacCapture` (Core Audio Taps), starts each, and merges their `frames()` streams via `futures::stream::select`. Each adapter sets its own `FrameSource` on emitted frames, so the orchestrator's per-source dispatch in `drive_session` routes mic frames to the mic chunker and system frames to the system chunker. `system_vad` is now `Some(EnergyVad::default())` for this source so the system chunker is active.
+- Two keepalive bindings (`mic_capture_keepalive`, `system_capture_keepalive`) own the live adapters for the lifetime of `run_session`. Dropping each adapter tears down its underlying stream via its `SharedState::stop_tx` channel; deferring the drop until after `run_session` returns ensures the dedicated cpal + Core Audio Taps threads keep producing frames through the final chunker tail flush.
+- Three new unit tests on `scrybe-cli`: `test_capture_source_arg_parses_mic_plus_system_token` covers the literal-`+` token surviving the clap derive; `test_capture_source_arg_rejects_typo_variants` guards against silent fallback on common typos (`mic-system`, `mic_system`, `system`, `system+mic`); `test_run_with_mic_system_source_errors_without_both_features` (cfg-gated to no-feature builds) asserts the bail string names both features so the user knows what to rebuild with.
+- `INSTALL.md` "Record from a real microphone with local Whisper transcription" section updated: build invocation includes `system-capture-mac`; a second `scrybe record --source mic+system` example with the `Me:` / `Them:` attribution paragraph; explicit note about the two macOS permission prompts (Microphone for cpal, Audio Capture for Core Audio Taps) and the macOS 14.4+ requirement for the Taps API.
+
+### Changed
+
+- All workspace crates bump from `1.0.2` to `1.0.3`. Path-dep version pins follow.
+- `scrybe-cli/src/commands/record.rs` module docstring rewritten to describe all three opt-in flags (`--source mic`, `--source mic+system`, `--whisper-model`) explicitly with their feature-flag requirements.
+- `MAINTENANCE.md` §1: the system-audio-capture follow-up moves from open to landed.
+- `run_with_stop` in `record.rs` annotated `#[allow(clippy::too_many_lines)]` (131 vs 100 ceiling). Splitting into a helper would push the keepalive bindings into a returned struct which complicates the lifetime story; the inline form is clearer at this complexity.
+- `scrybe-cli` LoC ceiling stays at 2500; current code-only LoC is 2386 with the new dual-stream wiring + tests.
+
+### Deprecated / Removed
+
+- Nothing.
+
+### Security
+
+- `cargo audit` and `cargo deny` policies are unchanged from v1.0.2. The `system-capture-mac` feature pulls in the same `objc2-core-audio` / `block2` / `dispatch2` deps that `scrybe-capture-mac` already declared at v1.0; no new transitive crates entered the graph.
+- `--source mic+system` triggers the Audio Capture TCC permission prompt on macOS the first time it runs, in addition to the Microphone prompt for cpal. Both grants live in System Settings → Privacy & Security and are per-binary; rebuilding the binary requires re-granting.
+- Egress audit clean: `system-capture-mac` is gated, so the default-feature graph is unchanged from v1.0.2.
+
+### Known limitations
+
+- **`audio.opus` interleaves mic + system frames by arrival time.** Stereo encoding (mic on L, system on R) is a v1.0.x → v1.1 deliverable; for v1.0.3 the encoder still produces a single mono channel, with both sources mixed by chronological arrival. The transcript channel-split via `FrameSource` is unaffected — `Me:` / `Them:` attribution is correct regardless of how the audio file is laid out.
+- **System audio capture is macOS-only.** Linux PipeWire and Windows WASAPI loopback adapters exist (`scrybe-capture-linux`, `scrybe-capture-win`) but are not yet wired into `scrybe record`. The `--source mic+system` flag errors on non-macOS hosts because the `system-capture-mac` feature only declares the macOS adapter. Linux + Windows variants are v1.0.x → v1.1 deliverables.
+- **Real LLM in `scrybe record`.** Notes step still uses the stub (unchanged from v1.0.1).
+- **Tray icon and global hotkey.** `--shell` still prints an advisory and runs the headless path (unchanged from v1.0.1).
+- **`PermissionModel::Microphone` not added.** Tier-1 enum frozen at v1.0; v2.0 candidate (unchanged from v1.0.1).
+- **Reproducibility and `cargo-vet` lanes unchanged from v1.0** — both remain advisory; promotion to blocking remains a v1.0.x → v1.1 deliverable.
+
+### Workspace
+
+- 8 crates (unchanged from v1.0.2).
+- Publish posture unchanged.
+- Test counts: 505 default / 503 with `--features mic-capture,system-capture-mac` (the feature-off-only test gates out, so the count drops by the expected single test). 507 default + 5 encoder-opus tests = 512 with the encoder-opus feature on top.
+
+### Contributors
+
+- Maintainer: Mathews Tom.
+
+[1.0.3]: https://github.com/Mathews-Tom/scrybe/releases/tag/v1.0.3
+
 ## [1.0.2] — 2026-05-02
 
 Two v1.0.1 bugs fixed; both surfaced from the manual mic-capture smoke test in PR #36. No new functional surface; this is a bug-fix patch within the v1.0.x stream per `MAINTENANCE.md` §1.
