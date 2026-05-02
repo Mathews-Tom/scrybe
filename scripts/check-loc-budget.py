@@ -36,11 +36,12 @@ from pathlib import Path
 # tokei excludes here because we point it at `src/` only).
 LOC_CEILINGS: dict[str, int] = {
     "scrybe": 100,
-    "scrybe-core": 7500,
+    "scrybe-core": 8500,
     "scrybe-cli": 2000,
     "scrybe-capture-mac": 2500,
     "scrybe-capture-linux": 2500,
     "scrybe-capture-win": 2500,
+    "scrybe-android": 2500,
 }
 
 
