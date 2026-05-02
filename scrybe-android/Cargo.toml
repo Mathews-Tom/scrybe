@@ -1,6 +1,6 @@
 [package]
 name = "scrybe-android"
-version = "1.0.0"
+version = "1.0.1"
 description = "Android audio capture adapter for scrybe. Implements scrybe-core's AudioCapture trait via MediaProjection (API 29+, system audio) with a microphone-only fallback for hosts that decline MediaProjection consent. The live JNI binding (and the uniffi-generated Kotlin facade) is tracked as a v0.5.x follow-up."
 publish = false
 authors.workspace = true
@@ -31,7 +31,7 @@ media-projection = []
 [dependencies]
 async-trait.workspace = true
 futures.workspace = true
-scrybe-core = { path = "../scrybe-core", version = "1.0.0" }
+scrybe-core = { path = "../scrybe-core", version = "1.0.1" }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 tracing.workspace = true

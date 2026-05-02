@@ -2811,11 +2811,11 @@ dependencies = [
 
 [[package]]
 name = "scrybe"
-version = "1.0.0"
+version = "1.0.1"
 
 [[package]]
 name = "scrybe-android"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "async-trait",
  "futures",
@@ -2828,7 +2828,7 @@ dependencies = [
 
 [[package]]
 name = "scrybe-capture-linux"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "async-trait",
  "futures",
@@ -2842,7 +2842,7 @@ dependencies = [
 
 [[package]]
 name = "scrybe-capture-mac"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "async-trait",
  "block2",
@@ -2862,7 +2862,7 @@ dependencies = [
 
 [[package]]
 name = "scrybe-capture-mic"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "async-trait",
  "cpal",
@@ -2876,7 +2876,7 @@ dependencies = [
 
 [[package]]
 name = "scrybe-capture-win"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "async-trait",
  "futures",
@@ -2889,7 +2889,7 @@ dependencies = [
 
 [[package]]
 name = "scrybe-cli"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2919,7 +2919,7 @@ dependencies = [
 
 [[package]]
 name = "scrybe-core"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "async-trait",
  "chrono",

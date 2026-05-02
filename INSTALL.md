@@ -114,6 +114,51 @@ The egress audit walks `scrybe-cli`'s default-feature dependency graph and asser
 
 ---
 
+## Record from a real microphone with local Whisper transcription
+
+The default `scrybe record` runs a synthetic 440 Hz sine through the pipeline so CI smoke tests stay hermetic. To record from your actual mic and transcribe with whisper.cpp, build with the `mic-capture` and `whisper-local` features and supply a model path at runtime:
+
+```sh
+# Build with both opt-in features
+cargo install --path scrybe-cli --features cli-shell,hook-git,mic-capture,whisper-local
+
+# Download a whisper.cpp model (one-time; pick a size that fits your RAM)
+mkdir -p ~/Library/Application\ Support/scrybe/models
+curl -L -o ~/Library/Application\ Support/scrybe/models/ggml-base.en.bin \
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin
+
+# Record from the default input device, transcribe with the model
+scrybe record \
+  --title "standup" \
+  --source mic \
+  --whisper-model ~/Library/Application\ Support/scrybe/models/ggml-base.en.bin
+# Press Ctrl-C to stop.
+scrybe list                       # shows the new session
+scrybe show <session-id>          # renders transcript + notes
+```
+
+What runs:
+
+- `scrybe-capture-mic::MicCapture` opens the host's default input device via cpal on a dedicated capture thread. The first run prompts for Microphone permission via macOS System Settings → Privacy & Security → Microphone; grant it and re-run.
+- The pipeline chunks the audio at the existing 30 s / 5 s-silence-after-5 s-speech boundaries (`docs/system-design.md` §5).
+- Each chunk is resampled to 16 kHz and handed to `WhisperLocalProvider`, which transcribes via whisper.cpp against your model file.
+- The notes step still uses the stub LLM — wiring real Ollama / OpenAI-compat into `scrybe record` is a separate v1.x deliverable.
+
+Whisper model sizes (English-only, `.en` suffix; multilingual variants are larger):
+
+| Model | File size | RAM use | Speed on M1 Pro | Use when |
+|---|---|---|---|---|
+| `ggml-tiny.en.bin` | ~75 MB | ~390 MB | ~30× realtime | Quick smoke test only |
+| `ggml-base.en.bin` | ~150 MB | ~500 MB | ~16× realtime | Reasonable default |
+| `ggml-small.en.bin` | ~470 MB | ~1.0 GB | ~6× realtime | Better accuracy |
+| `ggml-large-v3-turbo.bin` | ~1.5 GB | ~3.0 GB | ~2× realtime | Production quality |
+
+The `--whisper-model` flag rejects `*.partial` paths so an interrupted download cannot silently produce a corrupt transcript.
+
+System audio capture (the other end of a Zoom/Teams/Meet call) on macOS goes through `scrybe-capture-mac` (Core Audio Taps); wiring it into `scrybe record` alongside the mic adapter is a v1.x deliverable.
+
+---
+
 ## Why no notarization?
 
 macOS notarization requires an Apple Developer ID enrollment ($99/year) and ties the project's release pipeline to a vendor account. `.docs/development-plan.md` §13.1 documents the trade: until scrybe has demonstrated longevity, vendor-tied trust dependencies stay deferred. Three documented install paths sidestep Gatekeeper entirely:
