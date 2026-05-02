@@ -57,7 +57,7 @@ impl Default for OpenAiCompatLlmConfig {
             display_name: "openai-compat".to_string(),
             temperature: 0.2,
             retry: RetryPolicy::default(),
-            timeout: Duration::from_secs(120),
+            timeout: Duration::from_mins(2),
         }
     }
 }
