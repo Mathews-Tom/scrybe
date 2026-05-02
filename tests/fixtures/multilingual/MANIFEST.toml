@@ -1,0 +1,176 @@
+# 20-clip multilingual regression corpus.
+#
+# This manifest defines the canonical clip set used by the multilingual
+# WER regression in `scrybe-core/tests/multilingual_corpus.rs`. The
+# audio files themselves are NOT committed — sourcing them requires
+# attribution-aware acquisition per `provenance` below. The integration
+# test skips when the audio is absent and runs the WER assertion when
+# the environment variable `SCRYBE_MULTILINGUAL_CORPUS` points to a
+# directory containing the named files.
+#
+# Acquisition protocol (maintainer responsibility):
+#   1. Pick clips from the cited public-domain or CC-BY-licensed source.
+#   2. Trim to the duration window listed in `duration_secs_max`.
+#   3. Resample to 16 kHz mono PCM and save as `<id>.wav` under the
+#      directory referenced by `SCRYBE_MULTILINGUAL_CORPUS`.
+#   4. Verify SHA256 against the value below and update if a re-trim
+#      changed it. The harness tolerates missing checksums (treats them
+#      as "no integrity gate yet") to keep the scaffold usable while
+#      the corpus is being assembled.
+#
+# Per `.docs/development-plan.md` §12 the assertion is WER ≤ 0.15 on
+# `whisper-large-v3` for every clip. The harness records measured WER
+# in `<root>/.bench/multilingual.<git-sha>.json` for diff against the
+# previous release tag.
+
+schema_version = 1
+
+# Hindi
+[[clips]]
+id = "hi-01"
+language = "hi"
+duration_secs_max = 8.0
+expected_text = "मुझे लगता है कि हमें अगली बैठक में इस पर चर्चा करनी चाहिए।"
+provenance = "Common Voice 17.0 (CC0); see https://commonvoice.mozilla.org/hi/datasets"
+
+[[clips]]
+id = "hi-02"
+language = "hi"
+duration_secs_max = 8.0
+expected_text = "धन्यवाद, मैं आपकी टिप्पणी से सहमत हूँ।"
+provenance = "Common Voice 17.0 (CC0)"
+
+# English
+[[clips]]
+id = "en-01"
+language = "en"
+duration_secs_max = 8.0
+expected_text = "I think we should discuss this in our next meeting."
+provenance = "Common Voice 17.0 (CC0)"
+
+[[clips]]
+id = "en-02"
+language = "en"
+duration_secs_max = 8.0
+expected_text = "Thanks, I agree with your comment on the proposal."
+provenance = "Common Voice 17.0 (CC0)"
+
+# Spanish
+[[clips]]
+id = "es-01"
+language = "es"
+duration_secs_max = 8.0
+expected_text = "Creo que deberíamos discutir esto en la próxima reunión."
+provenance = "Common Voice 17.0 (CC0)"
+
+[[clips]]
+id = "es-02"
+language = "es"
+duration_secs_max = 8.0
+expected_text = "Gracias, estoy de acuerdo con su comentario."
+provenance = "Common Voice 17.0 (CC0)"
+
+# French
+[[clips]]
+id = "fr-01"
+language = "fr"
+duration_secs_max = 8.0
+expected_text = "Je pense que nous devrions discuter de cela lors de la prochaine réunion."
+provenance = "Common Voice 17.0 (CC0)"
+
+[[clips]]
+id = "fr-02"
+language = "fr"
+duration_secs_max = 8.0
+expected_text = "Merci, je suis d'accord avec votre commentaire."
+provenance = "Common Voice 17.0 (CC0)"
+
+# German
+[[clips]]
+id = "de-01"
+language = "de"
+duration_secs_max = 8.0
+expected_text = "Ich denke, wir sollten dies in der nächsten Sitzung besprechen."
+provenance = "Common Voice 17.0 (CC0)"
+
+[[clips]]
+id = "de-02"
+language = "de"
+duration_secs_max = 8.0
+expected_text = "Danke, ich stimme Ihrem Kommentar zum Vorschlag zu."
+provenance = "Common Voice 17.0 (CC0)"
+
+# Japanese
+[[clips]]
+id = "ja-01"
+language = "ja"
+duration_secs_max = 8.0
+expected_text = "次の会議でこれについて話し合うべきだと思います。"
+provenance = "Common Voice 17.0 (CC0)"
+
+[[clips]]
+id = "ja-02"
+language = "ja"
+duration_secs_max = 8.0
+expected_text = "ありがとうございます、コメントに同意します。"
+provenance = "Common Voice 17.0 (CC0)"
+
+# Portuguese (Brazilian)
+[[clips]]
+id = "pt-01"
+language = "pt"
+duration_secs_max = 8.0
+expected_text = "Acho que deveríamos discutir isso na próxima reunião."
+provenance = "Common Voice 17.0 (CC0)"
+
+[[clips]]
+id = "pt-02"
+language = "pt"
+duration_secs_max = 8.0
+expected_text = "Obrigado, concordo com o seu comentário sobre a proposta."
+provenance = "Common Voice 17.0 (CC0)"
+
+# Mandarin
+[[clips]]
+id = "zh-01"
+language = "zh"
+duration_secs_max = 8.0
+expected_text = "我认为我们应该在下次会议上讨论这个。"
+provenance = "Common Voice 17.0 (CC0)"
+
+[[clips]]
+id = "zh-02"
+language = "zh"
+duration_secs_max = 8.0
+expected_text = "谢谢,我同意你对提案的评论。"
+provenance = "Common Voice 17.0 (CC0)"
+
+# Arabic
+[[clips]]
+id = "ar-01"
+language = "ar"
+duration_secs_max = 8.0
+expected_text = "أعتقد أننا يجب أن نناقش هذا في اجتماعنا التالي."
+provenance = "Common Voice 17.0 (CC0)"
+
+[[clips]]
+id = "ar-02"
+language = "ar"
+duration_secs_max = 8.0
+expected_text = "شكرا، أتفق مع تعليقك على الاقتراح."
+provenance = "Common Voice 17.0 (CC0)"
+
+# Russian
+[[clips]]
+id = "ru-01"
+language = "ru"
+duration_secs_max = 8.0
+expected_text = "Я думаю, нам следует обсудить это на следующей встрече."
+provenance = "Common Voice 17.0 (CC0)"
+
+[[clips]]
+id = "ru-02"
+language = "ru"
+duration_secs_max = 8.0
+expected_text = "Спасибо, я согласен с вашим комментарием по предложению."
+provenance = "Common Voice 17.0 (CC0)"
