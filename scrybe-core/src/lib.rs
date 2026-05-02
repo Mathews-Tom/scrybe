@@ -30,7 +30,10 @@ pub mod session;
 pub mod storage;
 pub mod types;
 
-pub use diarize::{requires_neural, BinaryChannelDiarizer, Diarizer};
+pub use diarize::{
+    requires_neural, select_kind, BinaryChannelDiarizer, Diarizer, DiarizerKind, PyannoteBackend,
+    PyannoteOnnxConfig, PyannoteOnnxDiarizer, SpeakerCluster,
+};
 
 pub use error::{
     CaptureError, ConfigError, ConsentError, CoreError, HookError, LlmError, PipelineError,

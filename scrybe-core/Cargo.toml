@@ -37,6 +37,14 @@ context-ics = ["dep:ical"]
 # `WebhookHook` — async POST + HMAC-SHA256-signed payload to a
 # configured URL.
 hook-webhook = ["dep:reqwest", "dep:url", "dep:hmac", "dep:sha2", "dep:hex"]
+# Enables the live `pyannote-onnx` runtime backend behind
+# `PyannoteOnnxDiarizer`. Off by default so the workspace builds
+# without an ONNX C++ toolchain; the trait surface and the cluster-to-
+# attendee mapping are exercised by an in-tree stub backend so the
+# selection and the routing logic remain testable on every PR. The
+# live binding lands as a v0.5.x follow-up tracked in
+# `.docs/development-plan.md` §11.2.
+diarize-pyannote = []
 
 [dependencies]
 async-trait.workspace = true

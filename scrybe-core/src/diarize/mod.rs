@@ -14,9 +14,18 @@
 //! - `BinaryChannelDiarizer` (v0.1 default) — energy-on-mic ⇒ `Me`,
 //!   energy-on-system ⇒ `Them`, both ⇒ both. Correct for 1:1 remote calls.
 //! - `PyannoteOnnxDiarizer` (v0.5, behind `--features diarize-pyannote`) —
-//!   wraps `pyannote-onnx` 3.1+. Activated by config or auto-activated
-//!   when `Capabilities::supports_system_audio == false` or when
-//!   `MeetingContext.attendees.len() >= 3`.
+//!   wraps a pluggable backend so the trait surface and the selection
+//!   plumbing can be exercised without bundling the live ONNX runtime.
+//!   The live binding lands as a v0.5.x follow-up tracked in
+//!   `.docs/development-plan.md` §11.2.
+
+pub mod kind;
+pub mod pyannote_onnx;
+
+pub use kind::{select_kind, DiarizerKind};
+pub use pyannote_onnx::{
+    PyannoteBackend, PyannoteOnnxConfig, PyannoteOnnxDiarizer, SpeakerCluster,
+};
 
 use async_trait::async_trait;
 
