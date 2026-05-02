@@ -1,0 +1,131 @@
+# Reproducible-build verification per `.docs/development-plan.md` §13.1.
+#
+# Builds each release tarball target twice — once on a fresh checkout
+# rooted at `/Users/runner/work/scrybe/scrybe` (the GitHub-hosted default)
+# and once at `/Users/runner/work/scrybe-rebuild/scrybe-rebuild` — and
+# asserts the SHA256 of each emitted tarball matches across runs. Path
+# divergence catches `--remap-path-prefix` regressions; running both
+# legs on the same runner keeps the variance budget tight enough that a
+# single mismatch is signal, not noise.
+#
+# Inputs that must stay constant for bit-identical output:
+# - `SOURCE_DATE_EPOCH` (release.yml: 1714464000) freezes file mtimes
+#   embedded in tar archives.
+# - `RUSTFLAGS=--remap-path-prefix=$workspace=/build` strips runner-
+#   specific source paths from emitted DWARF and panic-message strings.
+# - `rust-toolchain.toml` pins the exact toolchain (1.95.0) so the leg
+#   that runs first cannot pick up a newer rustup auto-update.
+# - cargo-dist version pinned to 0.25.1 — same lockstep guarantee.
+#
+# Triggers:
+# - workflow_dispatch: manual rerun for a maintainer verifying a tag.
+# - pull_request: when this file or release.yml changes, so a regression
+#   in the release pipeline surfaces at PR time.
+# - schedule: weekly (Sunday 06:00 UTC) so silent toolchain rebuilds in
+#   the dependency graph cannot bit-rot the guarantee unnoticed.
+#
+# Out of scope (deliberate):
+# - Linux + Windows reproducibility lanes — the cargo-dist matrix only
+#   targets macOS through v1.0 (`Cargo.toml` `[workspace.metadata.dist]
+#   targets`). Linux/Windows lanes land when the matrix grows.
+
+name: reproducibility
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/reproducibility.yml"
+      - ".github/workflows/release.yml"
+      - "rust-toolchain.toml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+  schedule:
+    - cron: "0 6 * * 0"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+  CARGO_DIST_VERSION: "0.25.1"
+  SOURCE_DATE_EPOCH: "1714464000"
+
+jobs:
+  verify:
+    name: verify (${{ matrix.target }})
+    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - aarch64-apple-darwin
+          - x86_64-apple-darwin
+    steps:
+      - name: checkout (leg A — default workspace)
+        uses: actions/checkout@v4
+        with:
+          path: scrybe
+      - name: checkout (leg B — divergent workspace path)
+        uses: actions/checkout@v4
+        with:
+          path: scrybe-rebuild
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95.0
+          targets: ${{ matrix.target }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-dist@${{ env.CARGO_DIST_VERSION }}
+      - name: dist build (leg A)
+        working-directory: scrybe
+        env:
+          RUSTFLAGS: "--remap-path-prefix=${{ github.workspace }}/scrybe=/build"
+        run: dist build --artifacts=local --target=${{ matrix.target }}
+      - name: dist build (leg B)
+        working-directory: scrybe-rebuild
+        env:
+          RUSTFLAGS: "--remap-path-prefix=${{ github.workspace }}/scrybe-rebuild=/build"
+        run: dist build --artifacts=local --target=${{ matrix.target }}
+      - name: compare SHA256 across legs
+        run: |
+          set -euo pipefail
+          mismatched=0
+          shopt -s nullglob
+          for leg_a in scrybe/target/distrib/*.tar.* scrybe/target/distrib/*.zip; do
+            [ -e "$leg_a" ] || continue
+            name="$(basename "$leg_a")"
+            leg_b="scrybe-rebuild/target/distrib/$name"
+            if [ ! -e "$leg_b" ]; then
+              echo "::error::leg B missing artifact $name"
+              mismatched=1
+              continue
+            fi
+            sha_a="$(shasum -a 256 "$leg_a" | awk '{print $1}')"
+            sha_b="$(shasum -a 256 "$leg_b" | awk '{print $1}')"
+            if [ "$sha_a" = "$sha_b" ]; then
+              printf '  match  %s  %s\n' "$sha_a" "$name"
+            else
+              printf '::error::mismatch  %s  leg-a=%s  leg-b=%s\n' "$name" "$sha_a" "$sha_b"
+              mismatched=1
+            fi
+          done
+          if [ "$mismatched" -ne 0 ]; then
+            echo "::error::reproducibility verification failed"
+            exit 1
+          fi
+      - name: upload leg-A artifacts (debug aid on mismatch)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: leg-a-${{ matrix.target }}
+          path: scrybe/target/distrib/*
+          retention-days: 7
+      - name: upload leg-B artifacts (debug aid on mismatch)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: leg-b-${{ matrix.target }}
+          path: scrybe-rebuild/target/distrib/*
+          retention-days: 7
