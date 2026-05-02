@@ -50,6 +50,11 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: "1"
   CARGO_DIST_VERSION: "0.25.1"
+  # `SOURCE_DATE_EPOCH` MUST stay in lockstep with `release.yml` —
+  # divergence between the two silently breaks the verification
+  # contract: this lane would happily assert bit-equality of artifacts
+  # built with a different epoch than what the release pipeline emits.
+  # When bumping either value, bump both.
   SOURCE_DATE_EPOCH: "1714464000"
 
 jobs:

@@ -28,3 +28,12 @@ For any tag `vX.Y.Z`:
 ## Verification before submission
 
 Each rendered manifest should be verified against the corresponding cosign-signed `SHA256SUMS.txt` from the GitHub Release before it is pushed downstream. The `cosign verify-blob` recipe lives in `INSTALL.md`; running it once locally catches a mistyped SHA256 before downstream review.
+
+## Known template gaps (rendering checklist)
+
+Each placeholder template carries gaps that need closing at submission time, beyond `{{ ... }}` substitution:
+
+- **`fdroid/dev.scrybe.scrybe.yml`** — `subdir: scrybe-android` points at the Cargo crate of the same name; F-Droid builds a Gradle project, which (per `docs/system-design.md` §3) lives at `android/`. Update `subdir` to `android` once the Gradle project lands at v0.5.x.
+- **`scoop/scrybe.json`** — references `scrybe-cli-x86_64-pc-windows-msvc.zip`, which the cargo-dist matrix does not yet emit. Wait until the v0.9.x cargo-dist target expansion adds Windows artifacts before submitting to the Scoop bucket.
+- **`aur/PKGBUILD`** — references `scrybe-cli-{x86_64,aarch64}-unknown-linux-gnu.tar.xz`, which the cargo-dist matrix does not yet emit. Same gating as Scoop.
+- **`flatpak/dev.scrybe.scrybe.yaml`** — `--share=network` is wider than the default-feature graph requires (the egress-audit lane proves no networking crates link in). Optional users opt in to cloud STT/LLM features at install time via `flatpak override --user --share=network dev.scrybe.scrybe`; consider dropping `--share=network` from the manifest before submission.

@@ -1,5 +1,5 @@
 {
-  "$comment": "Scoop manifest template. Render and commit to Mathews-Tom/scoop-scrybe so users can `scoop install Mathews-Tom/scrybe/scrybe`. Windows MSI installer ships in the v0.4.x stream once cargo-wix lands; until then, the manifest points at the (unsigned) zip artifact and documents the SmartScreen flow per INSTALL.md. Placeholders: {{ version }}, {{ sha256_x86_64_windows }} from the release SHA256SUMS.txt.",
+  "$comment": "Scoop manifest template. Render and commit to Mathews-Tom/scoop-scrybe so users can `scoop bucket add Mathews-Tom https://github.com/Mathews-Tom/scoop-scrybe && scoop install Mathews-Tom/scrybe`. Windows MSI installer ships in the v0.4.x stream once cargo-wix lands; until then, the manifest points at the (unsigned) zip artifact and documents the SmartScreen flow per INSTALL.md. Placeholders: {{ version }}, {{ sha256_x86_64_windows }} from the release SHA256SUMS.txt.",
   "version": "{{ version }}",
   "description": "Local-first meeting transcription — capture, transcribe, summarize on device",
   "homepage": "https://github.com/Mathews-Tom/scrybe",

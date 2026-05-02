@@ -154,17 +154,25 @@ jobs:
         run: |
           ls -la target/distrib/
           cp -v target/distrib/* dist-staging/
-      # CycloneDX SBOM covering the workspace dependency graph. Emitted
+      # CycloneDX SBOM covering the binary's dependency graph. Emitted
       # at release time (not in the build matrix) because it is a
       # cross-target manifest derived from `Cargo.lock`, not from any
       # individual tarball. Shipped as `scrybe-cli-sbom.cdx.json` so
       # downstream consumers running `cargo audit` / `osv-scanner`
-      # against the SBOM can reproduce the workspace's vulnerability
+      # against the SBOM can reproduce the binary's vulnerability
       # posture without checking out source.
+      #
+      # `cargo cyclonedx` defaults to one SBOM per workspace member
+      # written into each crate's directory. The release artifact is
+      # the `scrybe-cli` binary, so scope to that package via
+      # `-p scrybe-cli` and read the resulting file from the
+      # `scrybe-cli/` working directory. Running without `-p` would
+      # emit seven SBOMs (one per workspace crate) and the subsequent
+      # `mv` would race against whichever crate sorted last.
       - name: generate CycloneDX SBOM
         run: |
-          cargo cyclonedx --format json --override-filename scrybe-cli-sbom
-          mv scrybe-cli-sbom.cdx.json dist-staging/scrybe-cli-sbom.cdx.json
+          cargo cyclonedx -p scrybe-cli --format json --override-filename scrybe-cli-sbom
+          mv scrybe-cli/scrybe-cli-sbom.cdx.json dist-staging/scrybe-cli-sbom.cdx.json
           ls -la dist-staging/scrybe-cli-sbom.cdx.json
       - name: write SHA256 manifest
         working-directory: dist-staging
