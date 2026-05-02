@@ -2,6 +2,60 @@
 
 All notable changes to scrybe are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) within the stability tiers documented in `docs/system-design.md` §12.
 
+## [1.0.2] — 2026-05-02
+
+Two v1.0.1 bugs fixed; both surfaced from the manual mic-capture smoke test in PR #36. No new functional surface; this is a bug-fix patch within the v1.0.x stream per `MAINTENANCE.md` §1.
+
+The publish posture from v1.0 carries forward unchanged: only `scrybe` (the placeholder) publishes to crates.io. No Tier-1 surface changes — the `Encoder` trait shape is unchanged; the only public addition is the `default_session_encoder` factory + the feature-gated `OggOpusEncoder` type, both Tier-2 (per `system-design.md` §12.3, `scrybe-core::pipeline::*` internals are Tier 3, and the trait + the new factory satisfy Tier-2 best-effort signatures).
+
+### Added
+
+- `scrybe-core::pipeline::encoder::OggOpusEncoder` behind the new `encoder-opus` feature on `scrybe-core`. Real Ogg-Opus encoder closing the v0.1 carryover documented in `.docs/development-plan.md` §7.6.4 E-6 where `audio.opus` was raw f32 PCM bytes under an `.opus` filename, rejected by ffmpeg / vlc / browser audio tags. Validates `EncoderConfig.sample_rate` against Opus's natively supported rates (8/12/16/24/48 kHz) at construction; rejects others with `PipelineError::OpusEncode`. Buffers f32 PCM into 20-ms frames (RFC 7845 §1 modal VoIP frame size), encodes via libopus through the `opus 0.3` Rust binding (`Application::Voip`, configurable bitrate), wraps Opus packets in an Ogg container per RFC 7845 via the `ogg 0.9` pure-Rust crate. Writes the OpusHead + OpusTags header pages on the first `push_pcm` call; subsequent packets ride `EndPage` boundaries every `packets_per_page` for storage-layer `append_durable` semantics. Owns the OGG output buffer in `Arc<Mutex<Vec<u8>>>` so the `Encoder: Send` trait bound holds across the cpal-callback / pipeline-task boundary.
+- `scrybe-core::pipeline::encoder::default_session_encoder()` — public factory that picks `OggOpusEncoder` when the `encoder-opus` feature is built and falls back to `NullEncoder` otherwise. The session orchestrator (`scrybe-core::session::drive_session`) calls this instead of constructing `NullEncoder` directly, so a release build with the feature emits a real audio file while the deterministic test path stays intact.
+- `scrybe-cli` `encoder-opus` cargo feature forwarding to `scrybe-core/encoder-opus`. Local builds with `--features cli-shell,hook-git,mic-capture,whisper-local,encoder-opus` emit a real `audio.opus` decodable by every standard tool. The cargo-dist release tarball stays on `NullEncoder` until the release runner has libopus headers verified — same rationale as the `whisper-local` deferral.
+- Six new unit tests on `scrybe-core::pipeline::encoder` (gated to `encoder-opus`): rejects-unsupported-sample-rate, rejects-six-channels, emits-ogg-magic-on-first-push, buffers-below-one-opus-frame, finish-emits-end-stream-marker, default-session-encoder-returns-ogg-opus-with-feature. One new test gated to no-feature: default-session-encoder-returns-null-encoder-without-feature.
+- Two new unit tests on `scrybe-core::providers::whisper_local` for the model-name regression: test-whisper-local-provider-name-reflects-actual-model-file (the manual-test smoke from PR #36 encoded as a regression guard) and test-derive-model-label-handles-pathological-inputs (covers multi-extension stems, absolute paths, no-extension paths, empty-path fallback).
+- `INSTALL.md` "Record from a real microphone with local Whisper transcription" section updated: build invocation now includes `encoder-opus`; an `ffprobe audio.opus` line shows the user how to verify the file is real Opus; a paragraph documents that `meta.toml` now records the actual loaded model name.
+
+### Changed
+
+- All workspace crates bump from `1.0.1` to `1.0.2`. Path-dep version pins follow.
+- `scrybe-core::providers::whisper_local::WhisperLocalConfig::new()` derives `model_label` from the model file's stem (e.g. `ggml-base.en.bin` → `ggml-base.en`) instead of returning the hardcoded `"large-v3-turbo"` string. Closes the v1.0.1 reporting bug where `meta.toml [providers].stt` recorded `whisper-local:large-v3-turbo` regardless of which model file was actually loaded — the manual-test smoke in PR #36 surfaced this discrepancy. Callers that want a different reporting label can still override the `model_label` field directly after `new()`.
+- `scrybe-core::session::drive_session` constructs the audio encoder via `default_session_encoder` instead of `NullEncoder::new` directly, so the encoder choice now flows through a single public entry point.
+- `scrybe-core` LoC ceiling raised from 8500 to 9000 in `scripts/check-loc-budget.py` to absorb `OggOpusEncoder` + tests + the new `derive_model_label` helper (~340 LoC).
+- `MAINTENANCE.md` §1 canonical feature list updated to include `encoder-opus`. Documented as anticipated since v0.5 per the `encoder.rs` module docstring; landing it at v1.0.2 is a v1.0.x bug fix closing the v0.1 carryover, not scope expansion.
+
+### Deprecated / Removed
+
+- Nothing.
+
+### Security
+
+- `cargo audit` and `cargo deny` policies are unchanged from v1.0.1. The two new transitive dependencies — `opus 0.3` and `ogg 0.9` — are local-only (no network surface) and not on the `egress-audit` denylist; `scripts/check-egress-baseline.py` reports clean.
+- `opus 0.3` links libopus via `audiopus_sys 0.2` (vendored on macOS, system package elsewhere). License is BSD-3-Clause (libopus) + MIT (`opus` Rust crate); both are on the existing `cargo deny` allowlist.
+- `ogg 0.9` is pure Rust, BSD-3-Clause licensed.
+
+### Known limitations
+
+- **`encoder-opus` requires 48 kHz mono input by default.** `EncoderConfig::default()` uses 48 kHz which matches cpal's default input rate on macOS. Hosts where the default input device runs at 44.1 kHz (some Linux setups, some Windows audio devices) will need either a per-device cpal config or a runtime resample to 48 kHz before the encoder; both are v1.0.x → v1.1 follow-ups.
+- **Real LLM in `scrybe record`.** Notes step still uses the stub. Wiring an Ollama / openai-compat LLM into `run_with_stop` is a separate v1.x deliverable (unchanged from v1.0.1).
+- **System audio capture in `scrybe record`.** `scrybe-capture-mac::MacCapture` is hardware-validated but still not consumed by the CLI (unchanged from v1.0.1).
+- **Tray icon and global hotkey.** `--shell` still prints an advisory and runs the headless path (unchanged from v1.0.1).
+- **`PermissionModel::Microphone` not added.** Tier-1 enum frozen at v1.0; v2.0 candidate (unchanged from v1.0.1).
+- **Reproducibility and `cargo-vet` lanes unchanged from v1.0** — both remain advisory; promotion to blocking remains a v1.0.x → v1.1 deliverable.
+
+### Workspace
+
+- 8 crates (unchanged from v1.0.1).
+- Publish posture unchanged.
+- Test counts: 502 default / 507 with `encoder-opus` enabled (was 499 at v1.0.1; +3 whisper-name tests, +5 encoder-opus tests, +0/–0 default tests).
+
+### Contributors
+
+- Maintainer: Mathews Tom.
+
+[1.0.2]: https://github.com/Mathews-Tom/scrybe/releases/tag/v1.0.2
+
 ## [1.0.1] — 2026-05-02
 
 Closes the v0.1 mic-only path documented in `.docs/development-plan.md` §7.2 ("scrybe record — start session; press hotkey or --title flag; mic-only capture; live append to transcript.md; run Whisper after each chunk") that shipped under the synthetic 440 Hz sine generator and stub providers through v1.0. Two opt-in flags surface real audio capture and real Whisper transcription on `scrybe record`.

@@ -119,8 +119,9 @@ The egress audit walks `scrybe-cli`'s default-feature dependency graph and asser
 The default `scrybe record` runs a synthetic 440 Hz sine through the pipeline so CI smoke tests stay hermetic. To record from your actual mic and transcribe with whisper.cpp, build with the `mic-capture` and `whisper-local` features and supply a model path at runtime:
 
 ```sh
-# Build with both opt-in features
-cargo install --path scrybe-cli --features cli-shell,hook-git,mic-capture,whisper-local
+# Build with all opt-in features (mic + Whisper + real Opus encoding)
+cargo install --path scrybe-cli \
+  --features cli-shell,hook-git,mic-capture,whisper-local,encoder-opus
 
 # Download a whisper.cpp model (one-time; pick a size that fits your RAM)
 mkdir -p ~/Library/Application\ Support/scrybe/models
@@ -135,6 +136,11 @@ scrybe record \
 # Press Ctrl-C to stop.
 scrybe list                       # shows the new session
 scrybe show <session-id>          # renders transcript + notes
+
+# audio.opus is now real Ogg/Opus — playable in any standard audio
+# tool. Without --features encoder-opus the file is raw PCM bytes
+# (the v0.1 NullEncoder fallback) and ffmpeg/vlc reject it.
+ffprobe ~/scrybe/<session>/audio.opus
 ```
 
 What runs:
@@ -154,6 +160,11 @@ Whisper model sizes (English-only, `.en` suffix; multilingual variants are large
 | `ggml-large-v3-turbo.bin` | ~1.5 GB | ~3.0 GB | ~2× realtime | Production quality |
 
 The `--whisper-model` flag rejects `*.partial` paths so an interrupted download cannot silently produce a corrupt transcript.
+
+`meta.toml` records the actual loaded model in `[providers].stt`
+(e.g. `whisper-local:ggml-base.en` for the `ggml-base.en.bin`
+example above). The `scrybe retranscribe` flow planned for v1.x
+uses this string as the canonical previous-attempt identifier.
 
 System audio capture (the other end of a Zoom/Teams/Meet call) on macOS goes through `scrybe-capture-mac` (Core Audio Taps); wiring it into `scrybe record` alongside the mic adapter is a v1.x deliverable.
 
