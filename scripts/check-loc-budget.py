@@ -42,7 +42,10 @@ LOC_CEILINGS: dict[str, int] = {
     # fix). The encoder closes the v0.1 carryover where audio.opus
     # was raw PCM under an `.opus` filename; further growth in
     # scrybe-core should still trip this gate.
-    "scrybe-core": 9000,
+    # Raised to 9050 for v1.0.5 to absorb generated-title orchestration
+    # and the `[record]` config block that lets bare `scrybe record`
+    # resolve capture/STT/LLM defaults from config.
+    "scrybe-core": 9050,
     # 2000 was the v0.5 ceiling. Raised to 2300 at v0.6 to absorb the
     # `scrybe bench` subcommand. Raised to 2500 at v1.0.1 to absorb
     # the `--source mic` and `--whisper-model` wiring on `scrybe record`
@@ -50,7 +53,9 @@ LOC_CEILINGS: dict[str, int] = {
     # through v1.0; see CHANGELOG `[1.0.1]`). New code lands as
     # ~140 LoC including the three new tests; further growth in
     # scrybe-cli should still trip this gate.
-    "scrybe-cli": 2500,
+    # Raised to 2650 for v1.0.5 to absorb `scrybe init --profile
+    # mac-local` and config-backed `scrybe record` defaults.
+    "scrybe-cli": 2650,
     "scrybe-capture-mac": 2500,
     "scrybe-capture-linux": 2500,
     "scrybe-capture-win": 2500,
