@@ -11,8 +11,10 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use clap::Args as ClapArgs;
-use scrybe_core::config::{Config, CONFIG_FILE_NAME};
+use clap::{Args as ClapArgs, ValueEnum};
+use scrybe_core::config::{
+    Config, CONFIG_FILE_NAME, RECORD_LLM_OPENAI_COMPAT, RECORD_SOURCE_MIC_SYSTEM,
+};
 use scrybe_core::storage::atomic_replace;
 
 #[derive(ClapArgs, Debug)]
@@ -24,11 +26,32 @@ pub struct Args {
     /// Optional explicit destination, overriding the platform path.
     #[arg(long)]
     pub path: Option<PathBuf>,
+
+    /// Configuration profile to write.
+    #[arg(long, value_enum, default_value_t = InitProfile::Default)]
+    pub profile: InitProfile,
+
+    /// Whisper model path for profiles that enable local transcription.
+    #[arg(long)]
+    pub whisper_model: Option<PathBuf>,
+
+    /// OpenAI-compatible model name for profiles that enable local notes.
+    #[arg(long)]
+    pub llm_model: Option<String>,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+pub enum InitProfile {
+    /// Conservative hermetic defaults: synthetic capture, stub STT/LLM.
+    Default,
+    /// macOS local capture: mic+system, local Whisper, Ollama-compatible LLM.
+    #[value(name = "mac-local")]
+    MacLocal,
 }
 
 pub async fn run(args: Args) -> Result<()> {
-    let target = match args.path {
-        Some(p) => p,
+    let target = match &args.path {
+        Some(p) => p.clone(),
         None => Config::default_path().context("resolving default config path")?,
     };
     if target.exists() && !args.force {
@@ -48,7 +71,7 @@ pub async fn run(args: Args) -> Result<()> {
         );
     }
 
-    let config = Config::default();
+    let config = build_config(&args)?;
     let body = toml::to_string_pretty(&config).context("serializing default config")?;
     atomic_replace(&target, body.as_bytes())
         .with_context(|| format!("writing {}", target.display()))?;
@@ -60,6 +83,30 @@ pub async fn run(args: Args) -> Result<()> {
     );
     println!("config file name: {CONFIG_FILE_NAME}");
     Ok(())
+}
+
+fn build_config(args: &Args) -> Result<Config> {
+    let mut config = Config::default();
+    match args.profile {
+        InitProfile::Default => {
+            if args.whisper_model.is_some() || args.llm_model.is_some() {
+                anyhow::bail!("--whisper-model and --llm-model require --profile mac-local");
+            }
+        }
+        InitProfile::MacLocal => {
+            let whisper_model = args
+                .whisper_model
+                .clone()
+                .context("--profile mac-local requires --whisper-model <PATH>")?;
+            config.record.source = RECORD_SOURCE_MIC_SYSTEM.to_string();
+            config.record.whisper_model = Some(whisper_model);
+            config.record.llm = RECORD_LLM_OPENAI_COMPAT.to_string();
+            if let Some(model) = &args.llm_model {
+                config.llm.model.clone_from(model);
+            }
+        }
+    }
+    Ok(config)
 }
 
 #[cfg(test)]
@@ -76,6 +123,9 @@ mod tests {
         run(Args {
             force: false,
             path: Some(target.clone()),
+            profile: InitProfile::Default,
+            whisper_model: None,
+            llm_model: None,
         })
         .await
         .unwrap();
@@ -95,6 +145,9 @@ mod tests {
         let err = run(Args {
             force: false,
             path: Some(target.clone()),
+            profile: InitProfile::Default,
+            whisper_model: None,
+            llm_model: None,
         })
         .await
         .unwrap_err();
@@ -111,6 +164,9 @@ mod tests {
         run(Args {
             force: true,
             path: Some(target.clone()),
+            profile: InitProfile::Default,
+            whisper_model: None,
+            llm_model: None,
         })
         .await
         .unwrap();
@@ -142,6 +198,9 @@ mod tests {
         run(Args {
             force: false,
             path: Some(target.clone()),
+            profile: InitProfile::Default,
+            whisper_model: None,
+            llm_model: None,
         })
         .await
         .unwrap();
@@ -154,5 +213,33 @@ mod tests {
             Config::default(),
             "init must write a config that round-trips back to Config::default()"
         );
+    }
+
+    #[tokio::test]
+    async fn test_init_mac_local_profile_writes_record_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("config.toml");
+        let model_path = dir.path().join("ggml-base.en.bin");
+
+        run(Args {
+            force: false,
+            path: Some(target.clone()),
+            profile: InitProfile::MacLocal,
+            whisper_model: Some(model_path.clone()),
+            llm_model: Some("gemma4:latest".to_string()),
+        })
+        .await
+        .unwrap();
+
+        let body = std::fs::read_to_string(&target).unwrap();
+        let parsed = Config::from_toml_str(&body, &target).unwrap();
+
+        assert_eq!(parsed.record.source, RECORD_SOURCE_MIC_SYSTEM);
+        assert_eq!(
+            parsed.record.whisper_model.as_deref(),
+            Some(model_path.as_path())
+        );
+        assert_eq!(parsed.record.llm, RECORD_LLM_OPENAI_COMPAT);
+        assert_eq!(parsed.llm.model, "gemma4:latest");
     }
 }

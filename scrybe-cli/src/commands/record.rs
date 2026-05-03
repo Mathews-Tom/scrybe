@@ -52,6 +52,10 @@ use scrybe_capture_mic::MicCapture;
 // build has no live `start()` call site.
 #[cfg(feature = "mic-capture")]
 use scrybe_core::capture::AudioCapture;
+use scrybe_core::config::{
+    RecordConfig, RECORD_LLM_OPENAI_COMPAT, RECORD_LLM_STUB, RECORD_SOURCE_MIC,
+    RECORD_SOURCE_MIC_SYSTEM, RECORD_SOURCE_SYNTHETIC,
+};
 use scrybe_core::context::MeetingContext;
 use scrybe_core::diarize::Diarizer;
 use scrybe_core::error::{CaptureError, CoreError, LlmError, SttError};
@@ -92,10 +96,9 @@ pub struct Args {
     #[arg(long, default_value_t = false)]
     pub yes: bool,
 
-    /// Consent mode — `quick` is the v0.1 default; `notify`/`announce`
-    /// downgrade until v0.2.
-    #[arg(long, value_enum, default_value_t = ConsentModeArg::Quick)]
-    pub consent: ConsentModeArg,
+    /// Consent mode. Omitted means use `[consent].default_mode`.
+    #[arg(long, value_enum)]
+    pub consent: Option<ConsentModeArg>,
 
     /// Synthetic-source duration in seconds. The default `--source
     /// synthetic` records from a deterministic in-process generator
@@ -114,8 +117,8 @@ pub struct Args {
     /// `system-capture-mac` features and the Audio Capture TCC
     /// permission grant. Absent the relevant feature, the call
     /// returns `CaptureError::PermissionDenied` at start time.
-    #[arg(long, value_enum, default_value_t = CaptureSourceArg::Synthetic)]
-    pub source: CaptureSourceArg,
+    #[arg(long, value_enum)]
+    pub source: Option<CaptureSourceArg>,
 
     /// Path to a whisper.cpp model (`.bin` or `.gguf`). When set AND
     /// the binary is built with `--features whisper-local`, the STT
@@ -135,8 +138,8 @@ pub struct Args {
     /// with `--features llm-openai-compat`. Without that feature, an
     /// explicit `--llm openai-compat` errors at start time rather
     /// than silently falling back to the stub.
-    #[arg(long, value_enum, default_value_t = LlmBackendArg::Stub)]
-    pub llm: LlmBackendArg,
+    #[arg(long, value_enum)]
+    pub llm: Option<LlmBackendArg>,
 
     /// Attach the desktop status-bar indicator (tray icon with a Quit
     /// menu) and register the global hotkey from `[capture] hotkey`
@@ -216,8 +219,13 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
     let auto_accept = args.yes || std::env::var("SCRYBE_CONSENT_AUTO_ACCEPT").as_deref() == Ok("1");
     let prompter = TtyPrompter::new(auto_accept);
 
-    let stt = build_stt_provider(args.whisper_model.as_ref())?;
-    let llm = build_llm_provider(args.llm, &cfg.llm)?;
+    let source = resolve_capture_source(args.source, &cfg.record)?;
+    let whisper_model = resolve_whisper_model(args.whisper_model.as_ref(), &cfg.record);
+    let llm_backend = resolve_llm_backend(args.llm, &cfg.record)?;
+    let consent_mode = args.consent.map_or(cfg.consent.default_mode, Into::into);
+
+    let stt = build_stt_provider(whisper_model.as_ref())?;
+    let llm = build_llm_provider(llm_backend, &cfg.llm)?;
     let diarizer = BinaryChannelDiarizer;
     let hooks: Vec<Box<dyn Hook>> = Vec::new();
 
@@ -242,77 +250,77 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
     // System frames need their own VAD/chunker for the binary-channel
     // diarizer to attribute them as `Them:`. Set to `Some(...)` only
     // when the source carries system frames.
-    let system_vad: Option<EnergyVad> = match args.source {
+    let system_vad: Option<EnergyVad> = match source {
         CaptureSourceArg::MicSystem => Some(EnergyVad::default()),
         CaptureSourceArg::Synthetic | CaptureSourceArg::Mic => None,
     };
 
     let stop_future = Box::pin(wait_for_stop(stop_rx));
-    let stream: Pin<Box<dyn Stream<Item = Result<AudioFrame, CaptureError>> + Send>> =
-        match args.source {
-            CaptureSourceArg::Synthetic => {
-                Box::pin(synthetic_capture_stream(args.synthetic_secs).take_until(stop_future))
-            }
-            CaptureSourceArg::Mic => {
-                #[cfg(feature = "mic-capture")]
-                {
-                    let mut mic = MicCapture::new();
-                    mic.start().context(
-                        "opening default input device (grant Microphone permission \
+    let stream: Pin<Box<dyn Stream<Item = Result<AudioFrame, CaptureError>> + Send>> = match source
+    {
+        CaptureSourceArg::Synthetic => {
+            Box::pin(synthetic_capture_stream(args.synthetic_secs).take_until(stop_future))
+        }
+        CaptureSourceArg::Mic => {
+            #[cfg(feature = "mic-capture")]
+            {
+                let mut mic = MicCapture::new();
+                mic.start().context(
+                    "opening default input device (grant Microphone permission \
                      in System Settings → Privacy & Security if prompted)",
-                    )?;
-                    let s: Pin<Box<dyn Stream<Item = _> + Send>> =
-                        Box::pin(mic.frames().take_until(stop_future));
-                    mic_capture_keepalive = Some(mic);
-                    s
-                }
-                #[cfg(not(feature = "mic-capture"))]
-                {
-                    anyhow::bail!(
+                )?;
+                let s: Pin<Box<dyn Stream<Item = _> + Send>> =
+                    Box::pin(mic.frames().take_until(stop_future));
+                mic_capture_keepalive = Some(mic);
+                s
+            }
+            #[cfg(not(feature = "mic-capture"))]
+            {
+                anyhow::bail!(
                     "--source mic requires the binary to be built with --features mic-capture; \
                      this binary was built without it"
                 );
-                }
             }
-            CaptureSourceArg::MicSystem => {
-                #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
-                {
-                    use futures::stream;
-                    let mut mic = MicCapture::new();
-                    mic.start().context(
-                        "opening default input device (grant Microphone permission \
+        }
+        CaptureSourceArg::MicSystem => {
+            #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
+            {
+                use futures::stream;
+                let mut mic = MicCapture::new();
+                mic.start().context(
+                    "opening default input device (grant Microphone permission \
                          in System Settings → Privacy & Security if prompted)",
-                    )?;
-                    let mut mac = MacCapture::new();
-                    mac.start().context(
-                        "creating Core Audio Tap (grant Audio Capture permission in \
+                )?;
+                let mut mac = MacCapture::new();
+                mac.start().context(
+                    "creating Core Audio Tap (grant Audio Capture permission in \
                          System Settings → Privacy & Security if prompted; macOS 14.4+ \
                          is required)",
-                    )?;
-                    // Merge mic + system frames by arrival order. Each
-                    // frame carries its own `FrameSource`, so the
-                    // orchestrator's per-source dispatch routes mic
-                    // frames to `mic_chunker` and system frames to
-                    // `system_chunker`. The diarizer then attributes
-                    // them as `Me:` / `Them:` per
-                    // `system-design.md` §4.4.
-                    let merged = stream::select(mic.frames(), mac.frames());
-                    let s: Pin<Box<dyn Stream<Item = _> + Send>> =
-                        Box::pin(merged.take_until(stop_future));
-                    mic_capture_keepalive = Some(mic);
-                    system_capture_keepalive = Some(mac);
-                    s
-                }
-                #[cfg(not(all(feature = "mic-capture", feature = "system-capture-mac")))]
-                {
-                    anyhow::bail!(
-                        "--source mic+system requires the binary to be built with both \
+                )?;
+                // Merge mic + system frames by arrival order. Each
+                // frame carries its own `FrameSource`, so the
+                // orchestrator's per-source dispatch routes mic
+                // frames to `mic_chunker` and system frames to
+                // `system_chunker`. The diarizer then attributes
+                // them as `Me:` / `Them:` per
+                // `system-design.md` §4.4.
+                let merged = stream::select(mic.frames(), mac.frames());
+                let s: Pin<Box<dyn Stream<Item = _> + Send>> =
+                    Box::pin(merged.take_until(stop_future));
+                mic_capture_keepalive = Some(mic);
+                system_capture_keepalive = Some(mac);
+                s
+            }
+            #[cfg(not(all(feature = "mic-capture", feature = "system-capture-mac")))]
+            {
+                anyhow::bail!(
+                    "--source mic+system requires the binary to be built with both \
                          --features mic-capture and --features system-capture-mac; \
                          this binary was built without one or both"
-                    );
-                }
+                );
             }
-        };
+        }
+    };
 
     let outputs = run_session(
         SessionInputs {
@@ -321,7 +329,7 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
             root: root.clone(),
             title: args.title.clone(),
             user,
-            consent_mode: args.consent.into(),
+            consent_mode,
             context: MeetingContext {
                 title: args.title,
                 ..MeetingContext::default()
@@ -361,6 +369,47 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
         println!("  audio:      {}", outputs.audio_path.display());
     }
     Ok(())
+}
+
+fn resolve_capture_source(
+    explicit: Option<CaptureSourceArg>,
+    cfg: &RecordConfig,
+) -> Result<CaptureSourceArg> {
+    if let Some(source) = explicit {
+        return Ok(source);
+    }
+    match cfg.validated_source() {
+        Some(RECORD_SOURCE_SYNTHETIC) => Ok(CaptureSourceArg::Synthetic),
+        Some(RECORD_SOURCE_MIC) => Ok(CaptureSourceArg::Mic),
+        Some(RECORD_SOURCE_MIC_SYSTEM) => Ok(CaptureSourceArg::MicSystem),
+        Some(_) | None => anyhow::bail!(
+            "invalid [record].source {}; expected one of: synthetic, mic, mic+system",
+            cfg.source
+        ),
+    }
+}
+
+fn resolve_llm_backend(
+    explicit: Option<LlmBackendArg>,
+    cfg: &RecordConfig,
+) -> Result<LlmBackendArg> {
+    if let Some(backend) = explicit {
+        return Ok(backend);
+    }
+    match cfg.validated_llm() {
+        Some(RECORD_LLM_STUB) => Ok(LlmBackendArg::Stub),
+        Some(RECORD_LLM_OPENAI_COMPAT) => Ok(LlmBackendArg::OpenAiCompat),
+        Some(_) | None => anyhow::bail!(
+            "invalid [record].llm {}; expected one of: stub, openai-compat",
+            cfg.llm
+        ),
+    }
+}
+
+fn resolve_whisper_model(explicit: Option<&PathBuf>, cfg: &RecordConfig) -> Option<PathBuf> {
+    explicit
+        .cloned()
+        .or_else(|| cfg.whisper_model.as_ref().map(|p| expand_root(p.as_path())))
 }
 
 /// Future that completes the first time `stop_rx` flips to `true`,
@@ -597,7 +646,10 @@ impl StubLocalLlm {
 
 #[async_trait]
 impl LlmProvider for StubLocalLlm {
-    async fn complete(&self, _prompt: &str) -> Result<String, LlmError> {
+    async fn complete(&self, prompt: &str) -> Result<String, LlmError> {
+        if prompt.starts_with("Create a short, factual title") {
+            return Ok("Synthetic Stub Session".to_string());
+        }
         Ok(
             "## TL;DR\nSynthetic stub session. Build with a configured LLM \
             provider to generate real notes.\n## Action items\n- (none)\n\
@@ -787,11 +839,11 @@ mod tests {
             title: Some("synthetic".into()),
             root: Some(dir.path().to_path_buf()),
             yes: true,
-            consent: ConsentModeArg::Quick,
+            consent: Some(ConsentModeArg::Quick),
             synthetic_secs: 1,
             shell: false,
-            source: CaptureSourceArg::Synthetic,
-            llm: LlmBackendArg::Stub,
+            source: Some(CaptureSourceArg::Synthetic),
+            llm: Some(LlmBackendArg::Stub),
             whisper_model: None,
         })
         .await
@@ -857,11 +909,11 @@ mod tests {
             title: Some("env-consent".into()),
             root: Some(dir.path().to_path_buf()),
             yes: false,
-            consent: ConsentModeArg::Quick,
+            consent: Some(ConsentModeArg::Quick),
             synthetic_secs: 1,
             shell: false,
-            source: CaptureSourceArg::Synthetic,
-            llm: LlmBackendArg::Stub,
+            source: Some(CaptureSourceArg::Synthetic),
+            llm: Some(LlmBackendArg::Stub),
             whisper_model: None,
         })
         .await;
@@ -919,11 +971,11 @@ mod tests {
             title: Some("cold-start".into()),
             root: Some(dir.path().to_path_buf()),
             yes: true,
-            consent: ConsentModeArg::Quick,
+            consent: Some(ConsentModeArg::Quick),
             synthetic_secs: 1,
             shell: false,
-            source: CaptureSourceArg::Synthetic,
-            llm: LlmBackendArg::Stub,
+            source: Some(CaptureSourceArg::Synthetic),
+            llm: Some(LlmBackendArg::Stub),
             whisper_model: None,
         })
         .await
@@ -981,11 +1033,11 @@ mod tests {
             title: Some("ms-feature-gate".into()),
             root: Some(dir.path().to_path_buf()),
             yes: true,
-            consent: ConsentModeArg::Quick,
+            consent: Some(ConsentModeArg::Quick),
             synthetic_secs: 1,
             shell: false,
-            source: CaptureSourceArg::MicSystem,
-            llm: LlmBackendArg::Stub,
+            source: Some(CaptureSourceArg::MicSystem),
+            llm: Some(LlmBackendArg::Stub),
             whisper_model: None,
         })
         .await;

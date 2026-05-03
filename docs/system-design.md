@@ -616,7 +616,7 @@ version = "0.4.0"
 
 ## 6. Configuration
 
-Single TOML file at `~/.config/scrybe/config.toml`. No GUI for v1; the CLI shows the current config with `scrybe config show`.
+Single TOML file at the platform config path (`~/Library/Application Support/dev.scrybe.scrybe/config.toml` on macOS, `$XDG_CONFIG_HOME/scrybe/config.toml` on Linux). `SCRYBE_CONFIG` overrides the path for tests and advanced installs.
 
 ```toml
 [storage]
@@ -628,6 +628,11 @@ audio_bitrate_kbps = 32
 mic_device = "default"
 system_audio = true
 hotkey = "cmd+shift+r"          # macOS; ctrl+shift+r elsewhere
+
+[record]
+source = "mic+system"           # or "synthetic", "mic"
+whisper_model = "~/Library/Application Support/scrybe/models/ggml-base.en.bin"
+llm = "openai-compat"           # or "stub"
 
 [stt]
 provider = "whisper-local"      # or "openai-compat"
@@ -685,9 +690,9 @@ sequenceDiagram
     CLI->>U: Choose LLM: local ollama, or BYO cloud key?
     U->>CLI: local ollama
     CLI->>CLI: Probe localhost:11434 for ollama
-    CLI->>U: Ollama detected. Use model llama3.1:8b? [Y/n]
-    U->>CLI: Y
-    CLI->>CLI: Write ~/.config/scrybe/config.toml
+    CLI->>U: Configure local LLM model
+    U->>CLI: gemma4:latest
+    CLI->>CLI: Write platform config.toml
     CLI->>U: Setup complete. Run `scrybe record` or press cmd+shift+r.
 ```
 
@@ -703,8 +708,8 @@ sequenceDiagram
     participant FS as Filesystem
     participant LLM as LLM provider
 
-    U->>CLI: Press hotkey (or `scrybe record --title "standup"`)
-    CLI->>FS: Create session folder<br/>~/scrybe/2026-04-29-1430-standup/
+    U->>CLI: Press hotkey (or `scrybe record`)
+    CLI->>FS: Create provisional session folder
     CLI->>Cap: start()
     Cap->>OS: Open system-audio + mic streams
     Cap-->>Pipe: Stream of AudioFrame
@@ -719,12 +724,15 @@ sequenceDiagram
     U->>CLI: Press hotkey again to stop
     CLI->>Cap: stop()
     Cap-->>Pipe: Frames receiver closes
+    Pipe->>LLM: complete(transcript → title prompt) if no title supplied
+    LLM-->>Pipe: Short factual title
     Pipe->>LLM: complete(transcript + context → notes prompt)
     LLM-->>Pipe: Notes markdown
     Pipe->>FS: Write notes.md
     Pipe->>FS: Finalize audio.opus, write meta.toml
+    Pipe->>FS: Rename folder<br/>YYYY-MM-DD-HHMM-title-ULID
     Pipe->>CLI: Fire NotesGenerated hook event
-    CLI->>U: ✓ Notes ready: ~/scrybe/2026-04-29-1430-standup/
+    CLI->>U: Notes ready: ~/scrybe/2026-04-29-1430-title-ULID/
 ```
 
 ### 7.3 Hook dispatch (e.g., git auto-commit)

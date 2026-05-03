@@ -53,7 +53,7 @@ pub struct MatchWindow {
 impl Default for MatchWindow {
     fn default() -> Self {
         Self {
-            half_window: Duration::from_secs(15 * 60),
+            half_window: Duration::from_mins(15),
         }
     }
 }

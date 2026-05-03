@@ -104,6 +104,41 @@ pub fn render_notes_prompt(transcript: &str, ctx: &MeetingContext) -> String {
     out
 }
 
+/// Render the LLM prompt that produces the folder/title slug source.
+#[must_use]
+pub fn render_title_prompt(transcript: &str) -> String {
+    let mut out = String::new();
+    out.push_str("Create a short, factual title for this transcript.\n");
+    out.push_str("Return only the title: no markdown, no quotes, no date.\n");
+    out.push_str("Use 3 to 8 words. Prefer the concrete topic over generic words.\n\n");
+    out.push_str("--- TRANSCRIPT ---\n");
+    out.push_str(transcript);
+    if !transcript.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str("--- END TRANSCRIPT ---\n");
+    out
+}
+
+/// Normalize a model-produced title before it enters metadata or paths.
+#[must_use]
+pub fn clean_generated_title(raw: &str) -> Option<String> {
+    let first = raw
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())?
+        .trim_matches(|c| matches!(c, '"' | '\'' | '`' | '#' | '*' | '-' | ':' | ' '));
+    let collapsed = first.split_whitespace().collect::<Vec<_>>().join(" ");
+    let clipped = collapsed.chars().take(80).collect::<String>();
+    let title =
+        clipped.trim_matches(|c| matches!(c, '"' | '\'' | '`' | '#' | '*' | '-' | ':' | ' '));
+    if title.chars().any(char::is_alphanumeric) {
+        Some(title.to_string())
+    } else {
+        None
+    }
+}
+
 /// Wrap the LLM's response into a final `notes.md` body. Adds a
 /// machine-friendly header (title + timestamp + provider stamp) and
 /// the LLM's structured output verbatim.
@@ -160,6 +195,18 @@ mod tests {
         let header = render_transcript_header(None, dt(2026, 4, 29, 14, 30), None);
 
         assert!(header.contains("Untitled session"));
+    }
+
+    #[test]
+    fn test_clean_generated_title_strips_markdown_and_quotes() {
+        let title = clean_generated_title("## \"Local Validation Setup\"\nextra").unwrap();
+
+        assert_eq!(title, "Local Validation Setup");
+    }
+
+    #[test]
+    fn test_clean_generated_title_rejects_empty_punctuation() {
+        assert_eq!(clean_generated_title(" --- "), None);
     }
 
     #[test]
