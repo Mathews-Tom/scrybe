@@ -52,7 +52,7 @@ curl -L -o ~/Library/Application\ Support/dev.scrybe.scrybe/models/ggml-base.en.
   https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin
 
 ollama pull gemma4:latest
-scrybe init --force
+scrybe init
 ```
 
 On macOS, bare `scrybe init` writes the local recording profile:
@@ -67,6 +67,10 @@ The macOS platform data path is
 the model path through their native data directory convention. Pass
 `--profile default` for the synthetic smoke-test profile, or override local
 model choices with `--whisper-model <PATH>` and `--llm-model <MODEL>`.
+
+If a config file already exists, `scrybe init` refuses to overwrite it; pass
+`--force` only when you intentionally want to replace the existing config with
+fresh profile defaults.
 
 Record:
 
