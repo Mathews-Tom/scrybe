@@ -12,10 +12,13 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::{Args as ClapArgs, ValueEnum};
+use directories::ProjectDirs;
 use scrybe_core::config::{
     Config, CONFIG_FILE_NAME, RECORD_LLM_OPENAI_COMPAT, RECORD_SOURCE_MIC_SYSTEM,
 };
 use scrybe_core::storage::atomic_replace;
+
+const DEFAULT_MAC_LOCAL_LLM_MODEL: &str = "gemma4:latest";
 
 #[derive(ClapArgs, Debug)]
 pub struct Args {
@@ -28,8 +31,8 @@ pub struct Args {
     pub path: Option<PathBuf>,
 
     /// Configuration profile to write.
-    #[arg(long, value_enum, default_value_t = InitProfile::Default)]
-    pub profile: InitProfile,
+    #[arg(long, value_enum)]
+    pub profile: Option<InitProfile>,
 
     /// Whisper model path for profiles that enable local transcription.
     #[arg(long)]
@@ -87,7 +90,7 @@ pub async fn run(args: Args) -> Result<()> {
 
 fn build_config(args: &Args) -> Result<Config> {
     let mut config = Config::default();
-    match args.profile {
+    match resolved_profile(args.profile) {
         InitProfile::Default => {
             if args.whisper_model.is_some() || args.llm_model.is_some() {
                 anyhow::bail!("--whisper-model and --llm-model require --profile mac-local");
@@ -97,16 +100,35 @@ fn build_config(args: &Args) -> Result<Config> {
             let whisper_model = args
                 .whisper_model
                 .clone()
-                .context("--profile mac-local requires --whisper-model <PATH>")?;
+                .map_or_else(default_mac_local_whisper_model, Ok)?;
             config.record.source = RECORD_SOURCE_MIC_SYSTEM.to_string();
             config.record.whisper_model = Some(whisper_model);
             config.record.llm = RECORD_LLM_OPENAI_COMPAT.to_string();
-            if let Some(model) = &args.llm_model {
-                config.llm.model.clone_from(model);
-            }
+            config.llm.model = args
+                .llm_model
+                .clone()
+                .unwrap_or_else(|| DEFAULT_MAC_LOCAL_LLM_MODEL.to_string());
         }
     }
     Ok(config)
+}
+
+fn resolved_profile(profile: Option<InitProfile>) -> InitProfile {
+    profile.unwrap_or_else(platform_default_profile)
+}
+
+const fn platform_default_profile() -> InitProfile {
+    if cfg!(target_os = "macos") {
+        InitProfile::MacLocal
+    } else {
+        InitProfile::Default
+    }
+}
+
+fn default_mac_local_whisper_model() -> Result<PathBuf> {
+    let dirs = ProjectDirs::from("dev", "scrybe", "scrybe")
+        .context("resolving platform data directory for default Whisper model")?;
+    Ok(dirs.data_dir().join("models/ggml-base.en.bin"))
 }
 
 #[cfg(test)]
@@ -123,7 +145,7 @@ mod tests {
         run(Args {
             force: false,
             path: Some(target.clone()),
-            profile: InitProfile::Default,
+            profile: Some(InitProfile::Default),
             whisper_model: None,
             llm_model: None,
         })
@@ -145,7 +167,7 @@ mod tests {
         let err = run(Args {
             force: false,
             path: Some(target.clone()),
-            profile: InitProfile::Default,
+            profile: Some(InitProfile::Default),
             whisper_model: None,
             llm_model: None,
         })
@@ -164,7 +186,7 @@ mod tests {
         run(Args {
             force: true,
             path: Some(target.clone()),
-            profile: InitProfile::Default,
+            profile: Some(InitProfile::Default),
             whisper_model: None,
             llm_model: None,
         })
@@ -198,7 +220,7 @@ mod tests {
         run(Args {
             force: false,
             path: Some(target.clone()),
-            profile: InitProfile::Default,
+            profile: Some(InitProfile::Default),
             whisper_model: None,
             llm_model: None,
         })
@@ -224,7 +246,7 @@ mod tests {
         run(Args {
             force: false,
             path: Some(target.clone()),
-            profile: InitProfile::MacLocal,
+            profile: Some(InitProfile::MacLocal),
             whisper_model: Some(model_path.clone()),
             llm_model: Some("gemma4:latest".to_string()),
         })
@@ -241,5 +263,29 @@ mod tests {
         );
         assert_eq!(parsed.record.llm, RECORD_LLM_OPENAI_COMPAT);
         assert_eq!(parsed.llm.model, "gemma4:latest");
+    }
+
+    #[test]
+    fn test_init_mac_local_profile_supplies_local_defaults() {
+        let config = build_config(&Args {
+            force: false,
+            path: None,
+            profile: Some(InitProfile::MacLocal),
+            whisper_model: None,
+            llm_model: None,
+        })
+        .unwrap();
+
+        assert_eq!(config.record.source, RECORD_SOURCE_MIC_SYSTEM);
+        let whisper_model = config.record.whisper_model.as_deref().unwrap();
+        assert!(whisper_model.ends_with("models/ggml-base.en.bin"));
+        assert_eq!(config.record.llm, RECORD_LLM_OPENAI_COMPAT);
+        assert_eq!(config.llm.model, DEFAULT_MAC_LOCAL_LLM_MODEL);
+    }
+
+    #[test]
+    fn test_init_uses_mac_local_as_platform_default_on_macos() {
+        let expected = platform_default_profile();
+        assert_eq!(resolved_profile(None), expected);
     }
 }

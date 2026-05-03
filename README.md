@@ -13,7 +13,8 @@ Current release: `v1.0.4`.
 
 The supported user path today is macOS:
 
-- `scrybe init` writes a local profile and validates the environment.
+- `scrybe init` writes the default local macOS profile on macOS.
+- `scrybe init --profile default` writes the hermetic synthetic profile used by CI and cross-platform smoke tests.
 - `scrybe record` creates a session folder with `audio.opus`, `transcript.md`, `notes.md`, and `meta.toml`.
 - `--source synthetic` runs the hermetic smoke path used by CI.
 - `--source mic` records the default microphone when the binary is built with `mic-capture`.
@@ -45,15 +46,27 @@ The release tarball is intentionally conservative. For the full local macOS path
 ```sh
 cargo install --path scrybe-cli \
   --features cli-shell,hook-git,mic-capture,system-capture-mac,whisper-local,encoder-opus,llm-openai-compat
+
+mkdir -p ~/Library/Application\ Support/dev.scrybe.scrybe/models
+curl -L -o ~/Library/Application\ Support/dev.scrybe.scrybe/models/ggml-base.en.bin \
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin
+
+ollama pull gemma4:latest
+scrybe init --force
 ```
 
-Initialize a local profile:
+On macOS, bare `scrybe init` writes the local recording profile:
 
-```sh
-scrybe init --profile mac-local --force \
-  --whisper-model ~/Library/Application\ Support/scrybe/models/ggml-base.en.bin \
-  --llm-model gemma4:latest
-```
+- `[record].source = "mic+system"`
+- `[record].whisper_model = "<platform-data-dir>/models/ggml-base.en.bin"`
+- `[record].llm = "openai-compat"`
+- `[llm].model = "gemma4:latest"`
+
+The macOS platform data path is
+`~/Library/Application Support/dev.scrybe.scrybe/`. Other platforms resolve
+the model path through their native data directory convention. Pass
+`--profile default` for the synthetic smoke-test profile, or override local
+model choices with `--whisper-model <PATH>` and `--llm-model <MODEL>`.
 
 Record:
 
