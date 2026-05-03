@@ -124,17 +124,16 @@ The default `scrybe record` runs a synthetic 440 Hz sine through the pipeline so
 cargo install --path scrybe-cli \
   --features cli-shell,hook-git,mic-capture,system-capture-mac,whisper-local,encoder-opus,llm-openai-compat
 
-# Download a whisper.cpp model (one-time; pick a size that fits your RAM)
-mkdir -p ~/Library/Application\ Support/scrybe/models
-curl -L -o ~/Library/Application\ Support/scrybe/models/ggml-base.en.bin \
+# Download a whisper.cpp model into scrybe's platform data directory
+# (one-time; pick a size that fits your RAM).
+mkdir -p ~/Library/Application\ Support/dev.scrybe.scrybe/models
+curl -L -o ~/Library/Application\ Support/dev.scrybe.scrybe/models/ggml-base.en.bin \
   https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin
 
 # Write the one-time local Mac profile. This lands at
 # ~/Library/Application Support/dev.scrybe.scrybe/config.toml unless
 # SCRYBE_CONFIG or --path overrides it.
-scrybe init --profile mac-local --force \
-  --whisper-model ~/Library/Application\ Support/scrybe/models/ggml-base.en.bin \
-  --llm-model gemma4:latest
+scrybe init --force
 
 # Capture your voice plus the meeting counterparty's audio. transcript.md
 # attributes utterances as `Me:` (mic) and `Them:` (system) via the
@@ -215,9 +214,7 @@ cargo install --path scrybe-cli \
 
 # With Ollama already serving your chosen model on localhost:11434
 ollama pull gemma4:latest
-scrybe init --profile mac-local --force \
-  --whisper-model ~/Library/Application\ Support/scrybe/models/ggml-base.en.bin \
-  --llm-model gemma4:latest
+scrybe init --force
 
 # Record a session with real summarization and generated title
 scrybe record
