@@ -194,6 +194,9 @@ pub enum PipelineError {
     #[error("metadata serialization failed: {0}")]
     MetaSerialize(#[source] BoxError),
 
+    #[error("generated title was empty or invalid")]
+    InvalidGeneratedTitle,
+
     #[error("empty chunk emitted; dropped without sending to stt")]
     EmptyChunk,
 

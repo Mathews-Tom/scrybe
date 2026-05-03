@@ -130,11 +130,12 @@ where
 
     let attestation = crate::consent::run(consent_mode, user, prompter).await?;
 
-    let folder_name = session_folder_name(started_at, title.as_deref().unwrap_or(""), id);
+    let initial_title = title.as_deref().unwrap_or("untitled");
+    let folder_name = session_folder_name(started_at, initial_title, id);
     let folder = root.join(folder_name);
     std::fs::create_dir_all(&folder).map_err(|e| CoreError::Storage(e.into()))?;
 
-    let lock_path = acquire_session_lock(&folder, std::process::id())?;
+    let mut lock_path = acquire_session_lock(&folder, std::process::id())?;
     write_stignore_template(&folder)?;
 
     let outcome = drive_session(
@@ -156,6 +157,10 @@ where
         capture_stream,
     )
     .await;
+
+    if let Ok(outputs) = &outcome {
+        lock_path = outputs.folder.join(crate::storage::PID_LOCK_NAME);
+    }
 
     // Surface lock-release failures via tracing so a stale lockfile
     // has a paper trail; the session result still takes precedence.
@@ -203,9 +208,9 @@ where
     let DriveInputs {
         id,
         started_at,
-        folder,
+        mut folder,
         title,
-        context,
+        mut context,
         attestation,
         mic_vad,
         system_vad,
@@ -218,10 +223,10 @@ where
 
     let context_arc = Arc::new(context.clone());
 
-    let transcript_path = folder.join("transcript.md");
-    let notes_path = folder.join("notes.md");
-    let meta_path = folder.join("meta.toml");
-    let audio_path = folder.join("audio.opus");
+    let mut transcript_path = folder.join("transcript.md");
+    let mut notes_path = folder.join("notes.md");
+    let mut meta_path = folder.join("meta.toml");
+    let mut audio_path = folder.join("audio.opus");
 
     let header = notes::render_transcript_header(title.as_deref(), started_at, None);
     append_durable(&transcript_path, header.as_bytes())?;
@@ -324,17 +329,35 @@ where
         .diarize(&mic_text_chunks, &sys_text_chunks, &context)
         .await?;
 
-    let transcript_body =
+    let mut transcript_body =
         std::fs::read_to_string(&transcript_path).map_err(|e| CoreError::Storage(e.into()))?;
+    let final_title = if let Some(existing) = title {
+        existing
+    } else {
+        let title_prompt = notes::render_title_prompt(&transcript_body);
+        let raw_title = llm.complete(&title_prompt).await?;
+        notes::clean_generated_title(&raw_title)
+            .ok_or(CoreError::Pipeline(PipelineError::InvalidGeneratedTitle))?
+    };
+    context.title = Some(final_title.clone());
+    if !transcript_body.starts_with(&format!("# {final_title}\n")) {
+        let body = transcript_body
+            .split_once("\n\n")
+            .map_or("", |(_, rest)| rest);
+        let updated = notes::render_transcript_header(Some(&final_title), started_at, None) + body;
+        atomic_replace(&transcript_path, updated.as_bytes())?;
+        transcript_body = updated;
+    }
+
     let prompt = notes::render_notes_prompt(&transcript_body, &context);
     let llm_output = llm.complete(&prompt).await?;
-    let notes_body = notes::render_notes_body(title.as_deref(), started_at, &llm_output);
+    let notes_body = notes::render_notes_body(Some(&final_title), started_at, &llm_output);
     atomic_replace(&notes_path, notes_body.as_bytes())?;
 
     let ended_at = Utc::now();
     let meta = build_meta_toml(&MetaArgs {
         id,
-        title: title.as_deref(),
+        title: Some(&final_title),
         started_at,
         ended_at,
         attestation: &attestation,
@@ -343,6 +366,19 @@ where
         diarizer_name: diarizer.name(),
     })?;
     atomic_replace(&meta_path, meta.as_bytes())?;
+
+    let final_folder = folder.parent().map_or_else(
+        || folder.clone(),
+        |parent| parent.join(session_folder_name(started_at, &final_title, id)),
+    );
+    if final_folder != folder {
+        std::fs::rename(&folder, &final_folder).map_err(|e| CoreError::Storage(e.into()))?;
+        folder = final_folder;
+        transcript_path = folder.join("transcript.md");
+        notes_path = folder.join("notes.md");
+        meta_path = folder.join("meta.toml");
+        audio_path = folder.join("audio.opus");
+    }
 
     dispatch_hooks(
         hooks,
@@ -599,7 +635,10 @@ mod tests {
     struct CannedLlm;
     #[async_trait]
     impl LlmProvider for CannedLlm {
-        async fn complete(&self, _prompt: &str) -> Result<String, LlmError> {
+        async fn complete(&self, prompt: &str) -> Result<String, LlmError> {
+            if prompt.starts_with("Create a short, factual title") {
+                return Ok("Generated Standup".to_string());
+            }
             Ok("## TL;DR\n- talked\n## Action items\n- ship\n".to_string())
         }
         fn name(&self) -> &'static str {
@@ -741,6 +780,15 @@ mod tests {
         let meta = std::fs::read_to_string(&outputs.meta_path).unwrap();
         assert!(meta.contains("[consent]"));
         assert!(meta.contains("by_user = \"tom\""));
+        assert!(meta.contains("title = \"Generated Standup\""));
+        assert!(outputs
+            .folder
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .contains("generated-standup"));
+        let transcript = std::fs::read_to_string(&outputs.transcript_path).unwrap();
+        assert!(transcript.starts_with("# Generated Standup\n"));
     }
 
     #[tokio::test]
