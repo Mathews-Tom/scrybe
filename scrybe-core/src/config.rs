@@ -47,6 +47,8 @@ pub struct Config {
     #[serde(default)]
     pub capture: CaptureConfig,
     #[serde(default)]
+    pub record: RecordConfig,
+    #[serde(default)]
     pub stt: SttConfig,
     #[serde(default)]
     pub llm: LlmConfig,
@@ -91,6 +93,7 @@ impl Default for Config {
             schema_version: CURRENT_SCHEMA_VERSION,
             storage: StorageConfig::default(),
             capture: CaptureConfig::default(),
+            record: RecordConfig::default(),
             stt: SttConfig::default(),
             llm: LlmConfig::default(),
             context: ContextConfig::default(),
@@ -162,6 +165,65 @@ impl Default for CaptureConfig {
             mic_device: default_mic_device(),
             system_audio: default_system_audio(),
             hotkey: None,
+        }
+    }
+}
+
+/// `[record]` block. These are the defaults consumed by bare
+/// `scrybe record`; CLI flags override them for one-off runs.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordConfig {
+    #[serde(default = "default_record_source")]
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub whisper_model: Option<PathBuf>,
+    #[serde(default = "default_record_llm")]
+    pub llm: String,
+}
+
+fn default_record_source() -> String {
+    RECORD_SOURCE_SYNTHETIC.to_string()
+}
+
+fn default_record_llm() -> String {
+    RECORD_LLM_STUB.to_string()
+}
+
+impl Default for RecordConfig {
+    fn default() -> Self {
+        Self {
+            source: default_record_source(),
+            whisper_model: None,
+            llm: default_record_llm(),
+        }
+    }
+}
+
+pub const RECORD_SOURCE_SYNTHETIC: &str = "synthetic";
+pub const RECORD_SOURCE_MIC: &str = "mic";
+pub const RECORD_SOURCE_MIC_SYSTEM: &str = "mic+system";
+
+pub const RECORD_LLM_STUB: &str = "stub";
+pub const RECORD_LLM_OPENAI_COMPAT: &str = "openai-compat";
+
+impl RecordConfig {
+    #[must_use]
+    pub fn validated_source(&self) -> Option<&'static str> {
+        match self.source.as_str() {
+            RECORD_SOURCE_SYNTHETIC => Some(RECORD_SOURCE_SYNTHETIC),
+            RECORD_SOURCE_MIC => Some(RECORD_SOURCE_MIC),
+            RECORD_SOURCE_MIC_SYSTEM => Some(RECORD_SOURCE_MIC_SYSTEM),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn validated_llm(&self) -> Option<&'static str> {
+        match self.llm.as_str() {
+            RECORD_LLM_STUB => Some(RECORD_LLM_STUB),
+            RECORD_LLM_OPENAI_COMPAT => Some(RECORD_LLM_OPENAI_COMPAT),
+            _ => None,
         }
     }
 }
@@ -680,6 +742,9 @@ mod tests {
         assert_eq!(c.storage.audio_format, "opus");
         assert_eq!(c.storage.audio_bitrate_kbps, 32);
         assert!(c.capture.system_audio);
+        assert_eq!(c.record.source, RECORD_SOURCE_SYNTHETIC);
+        assert_eq!(c.record.llm, RECORD_LLM_STUB);
+        assert_eq!(c.record.whisper_model, None);
     }
 
     #[test]
@@ -714,6 +779,29 @@ api_key_env = "GROQ_API_KEY"
         );
         assert_eq!(c.stt.api_key_env.as_deref(), Some("GROQ_API_KEY"));
         assert_eq!(c.llm.provider, "ollama");
+    }
+
+    #[test]
+    fn test_config_from_toml_str_with_record_overrides() {
+        let toml = r#"
+schema_version = 1
+
+[record]
+source = "mic+system"
+whisper_model = "~/Library/Application Support/scrybe/models/ggml-base.en.bin"
+llm = "openai-compat"
+"#;
+
+        let c = Config::from_toml_str(toml, &fake_path()).unwrap();
+
+        assert_eq!(c.record.validated_source(), Some(RECORD_SOURCE_MIC_SYSTEM));
+        assert_eq!(c.record.validated_llm(), Some(RECORD_LLM_OPENAI_COMPAT));
+        assert_eq!(
+            c.record.whisper_model.as_deref(),
+            Some(Path::new(
+                "~/Library/Application Support/scrybe/models/ggml-base.en.bin"
+            ))
+        );
     }
 
     #[test]
