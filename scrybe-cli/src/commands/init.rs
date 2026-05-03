@@ -113,11 +113,8 @@ fn build_config(args: &Args) -> Result<Config> {
     Ok(config)
 }
 
-const fn resolved_profile(profile: Option<InitProfile>) -> InitProfile {
-    match profile {
-        Some(profile) => profile,
-        None => platform_default_profile(),
-    }
+fn resolved_profile(profile: Option<InitProfile>) -> InitProfile {
+    profile.unwrap_or_else(platform_default_profile)
 }
 
 const fn platform_default_profile() -> InitProfile {
@@ -288,12 +285,7 @@ mod tests {
 
     #[test]
     fn test_init_uses_mac_local_as_platform_default_on_macos() {
-        let expected = if cfg!(target_os = "macos") {
-            InitProfile::MacLocal
-        } else {
-            InitProfile::Default
-        };
-
+        let expected = platform_default_profile();
         assert_eq!(resolved_profile(None), expected);
     }
 }
