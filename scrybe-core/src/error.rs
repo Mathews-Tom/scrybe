@@ -202,6 +202,9 @@ pub enum PipelineError {
 
     #[error("diarizer unavailable: {reason}")]
     DiarizerUnavailable { reason: String },
+
+    #[error("invalid audio frame: {0}")]
+    InvalidFrame(String),
 }
 
 #[cfg(test)]

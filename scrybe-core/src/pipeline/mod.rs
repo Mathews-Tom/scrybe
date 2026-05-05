@@ -14,10 +14,12 @@
 
 pub mod chunker;
 pub mod encoder;
+pub mod interleave;
 pub mod resample;
 pub mod vad;
 
 pub use chunker::{ChunkSink, Chunker, ChunkerConfig, EmittedChunk};
 pub use encoder::{Encoder, EncoderConfig, NullEncoder};
+pub use interleave::StereoInterleaver;
 pub use resample::{resample_linear, ResampleError};
 pub use vad::{EnergyVad, Vad, VadDecision};
