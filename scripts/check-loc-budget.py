@@ -45,7 +45,15 @@ LOC_CEILINGS: dict[str, int] = {
     # Raised to 9050 for v1.0.5 to absorb generated-title orchestration
     # and the `[record]` config block that lets bare `scrybe record`
     # resolve capture/STT/LLM defaults from config.
-    "scrybe-core": 9050,
+    # Raised to 9550 for v1.1.0 to absorb the `StereoInterleaver` module
+    # (`pipeline/interleave.rs` ~300 LoC including tests), the `[audio]`
+    # meta block, and the channel-split regression tests in
+    # `session.rs`. The interleaver closes the v1.0.x duration-drift
+    # bug where `--source mic+system` produced an `audio.opus` whose
+    # length was the sum of mic and system sample counts rather than
+    # the wall-clock session duration; further growth in scrybe-core
+    # should still trip this gate.
+    "scrybe-core": 9550,
     # 2000 was the v0.5 ceiling. Raised to 2300 at v0.6 to absorb the
     # `scrybe bench` subcommand. Raised to 2500 at v1.0.1 to absorb
     # the `--source mic` and `--whisper-model` wiring on `scrybe record`
