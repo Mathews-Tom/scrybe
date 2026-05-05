@@ -32,7 +32,14 @@ pub struct AudioFrame {
     /// Interleaved PCM samples in `[-1.0, 1.0]`. `Arc<[f32]>` is cheap to
     /// clone for fan-out across the channel splitter, encoder, and VAD.
     pub samples: Arc<[f32]>,
-    /// 1 (mic-only) or 2 (mic on left, system audio on right).
+    /// Native channel count of the originating capture stream. Per-
+    /// source streams are routed by `source`, not by `channels`:
+    /// a `Mic` frame at `channels = 2` is a stereo microphone, and a
+    /// `System` frame at `channels = 2` is the macOS Core Audio Tap
+    /// (which is created stereo by default). The
+    /// `StereoInterleaver` down-mixes any multi-channel per-source
+    /// frame to mono before pairing it with the other source for the
+    /// final stereo `audio.opus`.
     pub channels: u16,
     /// Native rate from the platform; the pipeline resamples to 16 kHz
     /// before STT.

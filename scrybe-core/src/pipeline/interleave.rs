@@ -57,15 +57,24 @@ impl StereoInterleaver {
         }
     }
 
-    /// Push a mono frame from either source. Routes by `frame.source`.
-    /// `FrameSource::Mixed` is rejected — the interleaver expects
-    /// per-source mono streams, not a pre-mixed feed.
+    /// Push a frame from either source. Routes by `frame.source` and
+    /// down-mixes multi-channel frames to mono before buffering — the
+    /// macOS Core Audio Tap delivers stereo natively
+    /// (`initStereoGlobalTapButExcludeProcesses`), and a stereo USB
+    /// mic on the cpal path produces 2-channel input. The interleaver
+    /// averages those channels per sample-time so each side of the
+    /// L/R output stays a single mono signal.
+    ///
+    /// `FrameSource::Mixed` is rejected — the interleaver's input
+    /// contract is the unmixed per-source split. A pre-mixed feed has
+    /// already lost the channel attribution this stage exists to
+    /// preserve.
     ///
     /// # Errors
     ///
-    /// `PipelineError::InvalidFrame` when the frame's `sample_rate` or
-    /// `channels` does not match the interleaver's contract, or when a
-    /// `Mixed` frame is received.
+    /// `PipelineError::InvalidFrame` when the frame's `sample_rate`
+    /// does not match the interleaver's contract, when `channels`
+    /// is zero, or when a `Mixed` frame is received.
     pub fn push(&mut self, frame: &AudioFrame) -> Result<(), PipelineError> {
         if frame.sample_rate != self.sample_rate {
             return Err(PipelineError::InvalidFrame(format!(
@@ -73,11 +82,10 @@ impl StereoInterleaver {
                 self.sample_rate, frame.sample_rate
             )));
         }
-        if frame.channels != 1 {
-            return Err(PipelineError::InvalidFrame(format!(
-                "interleaver expects mono per-source frames, got {} channels",
-                frame.channels
-            )));
+        if frame.channels == 0 {
+            return Err(PipelineError::InvalidFrame(
+                "interleaver received frame with zero channels".to_string(),
+            ));
         }
         let ring = match frame.source {
             FrameSource::Mic => &mut self.mic_ring,
@@ -88,7 +96,16 @@ impl StereoInterleaver {
                 ));
             }
         };
-        ring.extend(frame.samples.iter().copied());
+        if frame.channels == 1 {
+            ring.extend(frame.samples.iter().copied());
+        } else {
+            let channels = usize::from(frame.channels);
+            let inv = 1.0_f32 / f32::from(frame.channels);
+            for chunk in frame.samples.chunks_exact(channels) {
+                let mono: f32 = chunk.iter().sum::<f32>() * inv;
+                ring.push_back(mono);
+            }
+        }
         Ok(())
     }
 
@@ -278,11 +295,42 @@ mod tests {
     }
 
     #[test]
-    fn test_interleaver_rejects_non_mono_frames() {
+    fn test_interleaver_rejects_zero_channel_frames() {
         let mut iv = StereoInterleaver::new(48_000, 200);
-        let bad = AudioFrame::from_slice(&[0.0_f32; 100], 2, 48_000, 0, FrameSource::Mic);
+        let bad = AudioFrame::from_slice(&[0.0_f32; 16], 0, 48_000, 0, FrameSource::Mic);
         let err = iv.push(&bad).unwrap_err();
-        assert!(err.to_string().contains("2 channels"));
+        assert!(err.to_string().contains("zero channels"));
+    }
+
+    #[test]
+    fn test_interleaver_downmixes_stereo_per_source_frames_to_mono() {
+        let mut iv = StereoInterleaver::new(48_000, 200);
+        // Stereo mic frame: L=1.0, R=0.0 throughout. Average = 0.5.
+        // 480 stereo frames = 960 interleaved samples, downmix to 480
+        // mono samples per side.
+        let stereo_samples: Vec<f32> = (0..480).flat_map(|_| [1.0_f32, 0.0_f32]).collect();
+        let mic = AudioFrame::from_slice(&stereo_samples, 2, 48_000, 0, FrameSource::Mic);
+        // Stereo system frame: L=-0.5, R=-0.5. Average = -0.5.
+        let sys_samples: Vec<f32> = (0..480).flat_map(|_| [-0.5_f32, -0.5_f32]).collect();
+        let sys = AudioFrame::from_slice(&sys_samples, 2, 48_000, 0, FrameSource::System);
+
+        iv.push(&mic).unwrap();
+        iv.push(&sys).unwrap();
+        let out = iv.drain();
+
+        assert_eq!(out.len(), 960, "expected 480 stereo pairs after downmix");
+        for pair in out.chunks_exact(2) {
+            assert!(
+                (pair[0] - 0.5).abs() < 1e-6,
+                "L channel should carry mic downmix 0.5, got {}",
+                pair[0]
+            );
+            assert!(
+                (pair[1] + 0.5).abs() < 1e-6,
+                "R channel should carry system downmix -0.5, got {}",
+                pair[1]
+            );
+        }
     }
 
     #[test]
