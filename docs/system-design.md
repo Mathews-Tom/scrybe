@@ -593,6 +593,12 @@ stt = "whisper-local:large-v3-turbo"
 llm = "ollama:llama3.1:8b"
 diarizer = "binary-channel"
 
+[audio]
+channels = 2                        # 1 = mono (--source mic / synthetic), 2 = stereo (--source mic+system)
+layout = "stereo:mic-l,system-r"    # canonical channel-attribution descriptor
+sample_rate = 48000
+bitrate_bps = 32000
+
 [hooks]
 git = "ok"                          # outcome of each registered hook
 webhook = "failed: connection timeout"
@@ -600,6 +606,13 @@ webhook = "failed: connection timeout"
 [scrybe]
 version = "0.4.0"
 ```
+
+`[audio].layout` is the stable channel-attribution descriptor consumed by `scrybe show`, future `scrybe rerun`, and any third-party tool that needs to split the recording without re-running the diarizer. Defined values:
+
+- `mono:mic` — single-channel audio. Used by `--source mic` and `--source synthetic`. The single channel carries only the user's microphone (or the synthetic test signal).
+- `stereo:mic-l,system-r` — interleaved stereo audio. Left channel carries the user's microphone, right channel carries macOS Core Audio Tap (the meeting counterparty). Mic and system samples are paired by arrival time and zero-filled when one source lags beyond a 200 ms tolerance, so playback wall-clock matches `duration_secs`.
+
+Sessions written before v1.1 lack the `[audio]` block; readers MUST treat the absence as `mono:mic` and not infer any channel attribution.
 
 `transcript.md`:
 ```markdown

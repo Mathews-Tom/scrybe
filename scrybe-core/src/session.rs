@@ -33,6 +33,7 @@ use crate::hooks::{dispatch_hooks, Hook, LifecycleEvent};
 use crate::notes;
 use crate::pipeline::chunker::{ChunkBoundary, Chunker, ChunkerConfig, EmittedChunk};
 use crate::pipeline::encoder::{default_session_encoder, EncoderConfig};
+use crate::pipeline::interleave::StereoInterleaver;
 use crate::pipeline::resample::resample_linear;
 use crate::pipeline::vad::Vad;
 use crate::providers::{LlmProvider, SttProvider};
@@ -248,6 +249,7 @@ where
     )
     .await;
 
+    let stereo_mode = system_vad.is_some();
     let mut mic_chunker = Chunker::new(chunker_config, mic_vad, FrameSource::Mic);
     let mut system_chunker =
         system_vad.map(|v| Chunker::new(chunker_config, v, FrameSource::System));
@@ -257,8 +259,21 @@ where
     // etc. Without the feature, the deterministic `NullEncoder` writes
     // raw f32 PCM (sized for tests; mismatched with the `.opus`
     // filename but documented under §7.6.4 E-6 as a v0.1 carryover).
-    let mut audio_encoder =
-        default_session_encoder(EncoderConfig::default()).map_err(CoreError::Pipeline)?;
+    //
+    // When `stereo_mode` is set (mic+system source), the encoder is
+    // configured for two channels and the per-source mono frames are
+    // interleaved into L=mic, R=system before encoding. Without this
+    // step, mic and system frames push serially into a mono encoder
+    // and `audio.opus` ends up at roughly the sum of both source
+    // durations (the v1.0.4 bug observed where 1088 s of session time
+    // produced a 2380 s file).
+    let encoder_config = EncoderConfig {
+        channels: if stereo_mode { 2 } else { 1 },
+        ..EncoderConfig::default()
+    };
+    let mut audio_encoder = default_session_encoder(encoder_config).map_err(CoreError::Pipeline)?;
+    let mut interleaver =
+        stereo_mode.then(|| StereoInterleaver::new(encoder_config.sample_rate, 200));
 
     let mut mic_text_chunks: Vec<crate::types::TranscriptChunk> = Vec::new();
     let mut sys_text_chunks: Vec<crate::types::TranscriptChunk> = Vec::new();
@@ -277,16 +292,23 @@ where
                 mic_chunker.push(frame.clone(), &mut sink);
             }
         }
-        let pcm_for_audio = frame.samples.as_ref().to_vec();
-        let page = audio_encoder
-            .push_pcm(&pcm_for_audio)
-            .map_err(CoreError::Pipeline)?;
-        if !page.is_empty() {
-            // Per docs/system-design.md §8.3: audio is the source of
-            // truth, so each completed page is durably appended with
-            // fdatasync on Unix / FlushFileBuffers on Windows. A crash
-            // mid-session loses at most the most recent partial page.
-            append_durable(&audio_path, &page)?;
+        let pcm_for_audio: Vec<f32> = if let Some(iv) = interleaver.as_mut() {
+            iv.push(&frame).map_err(CoreError::Pipeline)?;
+            iv.drain()
+        } else {
+            frame.samples.as_ref().to_vec()
+        };
+        if !pcm_for_audio.is_empty() {
+            let page = audio_encoder
+                .push_pcm(&pcm_for_audio)
+                .map_err(CoreError::Pipeline)?;
+            if !page.is_empty() {
+                // Per docs/system-design.md §8.3: audio is the source of
+                // truth, so each completed page is durably appended with
+                // fdatasync on Unix / FlushFileBuffers on Windows. A crash
+                // mid-session loses at most the most recent partial page.
+                append_durable(&audio_path, &page)?;
+            }
         }
 
         for chunk in chunks_for_stt {
@@ -320,6 +342,17 @@ where
         }
     }
 
+    if let Some(iv) = interleaver.as_mut() {
+        let tail_pcm = iv.finish();
+        if !tail_pcm.is_empty() {
+            let page = audio_encoder
+                .push_pcm(&tail_pcm)
+                .map_err(CoreError::Pipeline)?;
+            if !page.is_empty() {
+                append_durable(&audio_path, &page)?;
+            }
+        }
+    }
     let tail_page = audio_encoder.finish().map_err(CoreError::Pipeline)?;
     if !tail_page.is_empty() {
         append_durable(&audio_path, &tail_page)?;
@@ -355,7 +388,13 @@ where
     atomic_replace(&notes_path, notes_body.as_bytes())?;
 
     let ended_at = Utc::now();
-    let meta = build_meta_toml(&MetaArgs {
+    let audio_meta = Some(AudioMeta {
+        channels: encoder_config.channels,
+        layout: audio_layout(stereo_mode, encoder_config.channels).to_string(),
+        sample_rate: encoder_config.sample_rate,
+        bitrate_bps: encoder_config.bitrate_bps,
+    });
+    let meta = build_meta_toml(MetaArgs {
         id,
         title: Some(&final_title),
         started_at,
@@ -364,6 +403,7 @@ where
         stt_name: stt.name(),
         llm_name: llm.name(),
         diarizer_name: diarizer.name(),
+        audio: audio_meta,
     })?;
     atomic_replace(&meta_path, meta.as_bytes())?;
 
@@ -533,6 +573,8 @@ struct MetaTomlV1 {
     consent: ConsentAttestation,
     providers: Providers,
     scrybe: Versioning,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    audio: Option<AudioMeta>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -547,6 +589,22 @@ struct Versioning {
     version: String,
 }
 
+/// Storage-layer description of how `audio.opus` was encoded.
+///
+/// Added in v1.1: `layout` is the canonical channel-attribution
+/// descriptor so downstream tools (`scrybe rerun`, third-party
+/// scripts, future GUI) can split mic and system audio without
+/// re-running the diarizer. Older sessions without this block are
+/// implicitly `mono:mic` or `mono:synthetic` — readers MUST treat the
+/// absence as v1.0 mono and not assume any channel attribution.
+#[derive(Serialize, Deserialize)]
+struct AudioMeta {
+    channels: u16,
+    layout: String,
+    sample_rate: u32,
+    bitrate_bps: u32,
+}
+
 struct MetaArgs<'a> {
     id: SessionId,
     title: Option<&'a str>,
@@ -556,9 +614,21 @@ struct MetaArgs<'a> {
     stt_name: &'a str,
     llm_name: &'a str,
     diarizer_name: &'a str,
+    audio: Option<AudioMeta>,
 }
 
-fn build_meta_toml(args: &MetaArgs<'_>) -> Result<String, CoreError> {
+/// Canonical channel-attribution descriptor written into
+/// `meta.audio.layout`. Stable values consumed by `scrybe show`,
+/// future `scrybe rerun`, and any third-party tool that needs to
+/// know what each channel of `audio.opus` carries.
+const fn audio_layout(stereo: bool, channels: u16) -> &'static str {
+    match (stereo, channels) {
+        (true, 2) => "stereo:mic-l,system-r",
+        _ => "mono:mic",
+    }
+}
+
+fn build_meta_toml(args: MetaArgs<'_>) -> Result<String, CoreError> {
     let MetaArgs {
         id,
         title,
@@ -568,7 +638,8 @@ fn build_meta_toml(args: &MetaArgs<'_>) -> Result<String, CoreError> {
         stt_name,
         llm_name,
         diarizer_name,
-    } = *args;
+        audio,
+    } = args;
     let duration = (ended_at - started_at)
         .to_std()
         .unwrap_or(Duration::ZERO)
@@ -588,6 +659,7 @@ fn build_meta_toml(args: &MetaArgs<'_>) -> Result<String, CoreError> {
         scrybe: Versioning {
             version: env!("CARGO_PKG_VERSION").to_string(),
         },
+        audio,
     };
     toml::to_string(&meta)
         .map_err(|e| CoreError::Pipeline(PipelineError::MetaSerialize(Box::new(e))))
@@ -861,5 +933,216 @@ mod tests {
             !lock.exists(),
             "pid.lock must be released on clean shutdown"
         );
+    }
+
+    fn stereo_speech_frame(
+        timestamp_ns: u64,
+        frame_size: usize,
+        source: FrameSource,
+    ) -> AudioFrame {
+        let samples: Vec<f32> = (0..frame_size).map(|n| (n as f32 * 0.5).sin()).collect();
+        AudioFrame {
+            samples: Arc::from(samples),
+            channels: 1,
+            sample_rate: 48_000,
+            timestamp_ns,
+            source,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_run_writes_audio_meta_block_with_mono_layout_when_no_system_vad() {
+        let tmp = tempfile::tempdir().unwrap();
+        let stt = EchoStt;
+        let llm = CannedLlm;
+        let diarizer = PassThroughDiarizer;
+        let prompter = AcceptingPrompter;
+        let hooks: Vec<Box<dyn Hook>> = Vec::new();
+
+        let frames = stream::iter((0..4).map(|i| Ok(speech_frame(i * 10_000_000, 1_600))));
+
+        let inputs = SessionInputs {
+            id: SessionId::new(),
+            started_at: dt(),
+            root: tmp.path().to_path_buf(),
+            title: Some("mono-meta".into()),
+            user: "tom".into(),
+            consent_mode: ConsentMode::Quick,
+            context: MeetingContext::default(),
+            mic_vad: EnergyVad::default(),
+            system_vad: None,
+            stt: &stt,
+            llm: &llm,
+            diarizer: &diarizer,
+            prompter: &prompter,
+            hooks: &hooks,
+            chunker_config: small_chunker_config(),
+        };
+
+        let outputs = run(inputs, frames).await.unwrap();
+        let meta = std::fs::read_to_string(&outputs.meta_path).unwrap();
+
+        assert!(
+            meta.contains("[audio]"),
+            "meta missing [audio] block: {meta}"
+        );
+        assert!(meta.contains("channels = 1"));
+        assert!(meta.contains("layout = \"mono:mic\""));
+        assert!(meta.contains("sample_rate = 48000"));
+    }
+
+    #[tokio::test]
+    async fn test_run_writes_audio_meta_block_with_stereo_layout_when_system_vad_set() {
+        let tmp = tempfile::tempdir().unwrap();
+        let stt = EchoStt;
+        let llm = CannedLlm;
+        let diarizer = PassThroughDiarizer;
+        let prompter = AcceptingPrompter;
+        let hooks: Vec<Box<dyn Hook>> = Vec::new();
+
+        // Interleave mic and system frames at 48 kHz so the interleaver
+        // can pair them. Each frame is 480 samples = 10 ms; pushing 8
+        // pairs gives 80 ms of audio — enough to clear the interleaver's
+        // MIN_DRAIN_SAMPLES threshold (480 samples).
+        let mut interleaved: Vec<Result<AudioFrame, crate::error::CaptureError>> = Vec::new();
+        for i in 0..16 {
+            let ts = i * 10_000_000;
+            let source = if i % 2 == 0 {
+                FrameSource::Mic
+            } else {
+                FrameSource::System
+            };
+            interleaved.push(Ok(stereo_speech_frame(ts, 480, source)));
+        }
+        let frames = stream::iter(interleaved);
+
+        let inputs = SessionInputs {
+            id: SessionId::new(),
+            started_at: dt(),
+            root: tmp.path().to_path_buf(),
+            title: Some("stereo-meta".into()),
+            user: "tom".into(),
+            consent_mode: ConsentMode::Quick,
+            context: MeetingContext::default(),
+            mic_vad: EnergyVad::default(),
+            system_vad: Some(EnergyVad::default()),
+            stt: &stt,
+            llm: &llm,
+            diarizer: &diarizer,
+            prompter: &prompter,
+            hooks: &hooks,
+            chunker_config: small_chunker_config(),
+        };
+
+        let outputs = run(inputs, frames).await.unwrap();
+        let meta = std::fs::read_to_string(&outputs.meta_path).unwrap();
+
+        assert!(
+            meta.contains("[audio]"),
+            "meta missing [audio] block: {meta}"
+        );
+        assert!(meta.contains("channels = 2"));
+        assert!(meta.contains("layout = \"stereo:mic-l,system-r\""));
+        assert!(meta.contains("sample_rate = 48000"));
+    }
+
+    #[tokio::test]
+    async fn test_run_stereo_audio_interleaves_mic_left_and_system_right() {
+        // Regression for the v1.0.4 bug where mic + system frames pushed
+        // serially into a mono encoder produced an `audio.opus` whose
+        // duration was the SUM of both source durations rather than the
+        // pairwise interleave. The byte count alone cannot distinguish
+        // those two cases under `NullEncoder` (it writes raw f32 bytes
+        // regardless of the encoder's channel config), so this test
+        // inspects the actual content: mic samples must land on the
+        // left channel and system samples on the right.
+        let tmp = tempfile::tempdir().unwrap();
+        let stt = EchoStt;
+        let llm = CannedLlm;
+        let diarizer = PassThroughDiarizer;
+        let prompter = AcceptingPrompter;
+        let hooks: Vec<Box<dyn Hook>> = Vec::new();
+
+        // Distinct constant samples per source so the channel split is
+        // detectable byte-for-byte. Mic = +0.5, System = -0.5.
+        let mut interleaved: Vec<Result<AudioFrame, crate::error::CaptureError>> = Vec::new();
+        for i in 0..16 {
+            let ts = i * 10_000_000;
+            let (source, value) = if i % 2 == 0 {
+                (FrameSource::Mic, 0.5_f32)
+            } else {
+                (FrameSource::System, -0.5_f32)
+            };
+            let samples: Vec<f32> = vec![value; 480];
+            interleaved.push(Ok(AudioFrame {
+                samples: Arc::from(samples),
+                channels: 1,
+                sample_rate: 48_000,
+                timestamp_ns: ts,
+                source,
+            }));
+        }
+        let frames = stream::iter(interleaved);
+
+        let inputs = SessionInputs {
+            id: SessionId::new(),
+            started_at: dt(),
+            root: tmp.path().to_path_buf(),
+            title: Some("stereo-content".into()),
+            user: "tom".into(),
+            consent_mode: ConsentMode::Quick,
+            context: MeetingContext::default(),
+            mic_vad: EnergyVad::default(),
+            system_vad: Some(EnergyVad::default()),
+            stt: &stt,
+            llm: &llm,
+            diarizer: &diarizer,
+            prompter: &prompter,
+            hooks: &hooks,
+            chunker_config: small_chunker_config(),
+        };
+
+        let outputs = run(inputs, frames).await.unwrap();
+        let audio_bytes = std::fs::read(&outputs.audio_path).unwrap();
+
+        // Decode raw f32 LE — NullEncoder writes interleaved samples
+        // verbatim. Stereo means consecutive pairs are (L, R).
+        assert_eq!(audio_bytes.len() % 8, 0, "byte count must be 8-aligned");
+        let pcm: Vec<f32> = audio_bytes
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
+        assert!(!pcm.is_empty(), "expected non-empty PCM payload");
+        assert_eq!(pcm.len() % 2, 0, "stereo PCM must have even sample count");
+
+        // Every L sample must be the mic value (+0.5), every R sample
+        // must be the system value (-0.5). Pre-fix output was a single
+        // mono stream alternating between the two sources, which would
+        // fail this assertion immediately at index 0.
+        for (i, pair) in pcm.chunks_exact(2).enumerate() {
+            assert!(
+                (pair[0] - 0.5).abs() < 1e-6,
+                "L channel at frame {i}: expected mic sample 0.5, got {}",
+                pair[0]
+            );
+            assert!(
+                (pair[1] + 0.5).abs() < 1e-6,
+                "R channel at frame {i}: expected system sample -0.5, got {}",
+                pair[1]
+            );
+        }
+    }
+
+    #[test]
+    fn test_audio_layout_returns_stereo_descriptor_for_two_channels() {
+        assert_eq!(audio_layout(true, 2), "stereo:mic-l,system-r");
+    }
+
+    #[test]
+    fn test_audio_layout_falls_back_to_mono_descriptor() {
+        assert_eq!(audio_layout(false, 1), "mono:mic");
+        // Defensive: stereo flag without 2 channels is nonsensical and
+        // the helper prefers the safe mono descriptor.
+        assert_eq!(audio_layout(true, 1), "mono:mic");
     }
 }
