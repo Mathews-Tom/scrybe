@@ -25,6 +25,17 @@ pub struct Args {
     /// Override the storage root from config.
     #[arg(long)]
     pub root: Option<PathBuf>,
+
+    /// Probe the macOS Core Audio Tap end-to-end. Plays a known-loud
+    /// system sound through `afplay`, captures from the live tap for
+    /// 1.5 s, and reports the peak amplitude. Distinguishes the three
+    /// failure shapes for the system-tap-silent-frames bug:
+    /// no frames received (`IOProc` never fired), frames received but
+    /// peak ≈ 0 (TCC denied or device misroute), or frames + non-zero
+    /// peak (tap healthy). Requires the binary to be built with
+    /// `--features system-capture-mac`.
+    #[arg(long, default_value_t = false)]
+    pub check_tap: bool,
 }
 
 #[allow(clippy::unused_async)]
@@ -53,6 +64,10 @@ pub async fn run(args: Args) -> Result<()> {
         scan_root(&root, &mut report)?;
     }
     report_egress_posture(&cfg, &mut report);
+
+    if args.check_tap {
+        check_tap(&mut report).await;
+    }
 
     for line in &report.lines {
         println!("{line}");
@@ -148,6 +163,114 @@ const fn is_pid_alive(_pid: u32) -> bool {
     // On Windows we conservatively treat every lock as live; the
     // doctor command surfaces the lock and lets the user remove it.
     true
+}
+
+/// Audio fixture played during `scrybe doctor --check-tap`. Submarine
+/// is ~2.5 s of broadband audio shipped on every macOS install since
+/// Mac OS X — long enough to fill the 1.5 s capture window with real
+/// signal, short enough that the probe finishes promptly.
+#[cfg(all(target_os = "macos", feature = "system-capture-mac"))]
+const TAP_PROBE_FIXTURE: &str = "/System/Library/Sounds/Submarine.aiff";
+
+/// Capture window during the tap probe. Long enough to outlast
+/// `CoreAudio`'s `IOProc` startup delay (~200 ms in practice), short
+/// enough that a tap silent under TCC denial fails fast.
+#[cfg(all(target_os = "macos", feature = "system-capture-mac"))]
+const TAP_PROBE_WINDOW: std::time::Duration = std::time::Duration::from_millis(1_500);
+
+/// Threshold separating "tap delivers real audio" from "tap zero-fills
+/// under TCC denial". Submarine.aiff peaks well above 0.1; a value
+/// below 0.01 is squarely in the noise floor / silence regime.
+#[cfg(all(target_os = "macos", feature = "system-capture-mac"))]
+const TAP_PROBE_NOISE_FLOOR: f32 = 0.01;
+
+#[cfg(all(target_os = "macos", feature = "system-capture-mac"))]
+async fn check_tap(report: &mut Report) {
+    use futures::StreamExt;
+    use scrybe_capture_mac::MacCapture;
+    use scrybe_core::capture::AudioCapture;
+
+    if !std::path::Path::new(TAP_PROBE_FIXTURE).exists() {
+        report.lines.push(format!(
+            "tap probe: skipped ({TAP_PROBE_FIXTURE} not present)"
+        ));
+        report.warnings += 1;
+        return;
+    }
+
+    let mut capture = MacCapture::new();
+    if let Err(e) = capture.start() {
+        report.lines.push(format!("tap probe: start failed: {e}"));
+        report.warnings += 1;
+        return;
+    }
+
+    let mut afplay = match std::process::Command::new("/usr/bin/afplay")
+        .arg(TAP_PROBE_FIXTURE)
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(e) => {
+            let _ = capture.stop();
+            report
+                .lines
+                .push(format!("tap probe: afplay spawn failed: {e}"));
+            report.warnings += 1;
+            return;
+        }
+    };
+
+    let mut frames = capture.frames();
+    let deadline = tokio::time::Instant::now() + TAP_PROBE_WINDOW;
+    let mut frame_count: u64 = 0;
+    let mut peak: f32 = 0.0;
+    loop {
+        match tokio::time::timeout_at(deadline, frames.next()).await {
+            Ok(Some(Ok(frame))) => {
+                frame_count += 1;
+                for s in frame.samples.iter() {
+                    let abs = s.abs();
+                    if abs > peak {
+                        peak = abs;
+                    }
+                }
+            }
+            Ok(Some(Err(e))) => {
+                report
+                    .lines
+                    .push(format!("tap probe: capture error mid-stream: {e}"));
+                report.warnings += 1;
+                break;
+            }
+            Ok(None) | Err(_) => break,
+        }
+    }
+
+    let _ = afplay.kill();
+    let _ = afplay.wait();
+    let _ = capture.stop();
+
+    let verdict = if frame_count == 0 {
+        report.warnings += 1;
+        "FAIL: IOProc never fired (entitlement, sandbox, or aggregate-device construction failure)"
+    } else if peak < TAP_PROBE_NOISE_FLOOR {
+        report.warnings += 1;
+        "FAIL: tap delivered silent frames (Audio Capture TCC denied for this binary, or tap routed to wrong device)"
+    } else {
+        "OK"
+    };
+    report.lines.push(format!(
+        "tap probe: frames={frame_count} peak={peak:.4} → {verdict}"
+    ));
+}
+
+#[cfg(not(all(target_os = "macos", feature = "system-capture-mac")))]
+#[allow(clippy::unused_async)]
+async fn check_tap(report: &mut Report) {
+    report.lines.push(
+        "tap probe: skipped (binary not built with --features system-capture-mac on macOS)"
+            .to_string(),
+    );
 }
 
 fn report_egress_posture(cfg: &Config, report: &mut Report) {
