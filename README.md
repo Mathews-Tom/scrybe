@@ -101,6 +101,8 @@ Every session is a directory:
 
 The filesystem is the database. `meta.toml` and `notes.md` use atomic replace. `transcript.md` and `audio.opus` are append-only. Audio is treated as the source of truth so failed or improved transcription can be regenerated later.
 
+`audio.opus` is mono Ogg-Opus for `--source mic` and `--source synthetic`, and stereo Ogg-Opus for `--source mic+system` with the user's microphone on the left channel and system audio on the right. The exact channel layout is recorded in `meta.toml` under `[audio].layout` (`mono:mic` or `stereo:mic-l,system-r`) so re-transcription, archival, and any downstream tooling can split the channels deterministically without consulting the runtime pipeline.
+
 ## Architecture
 
 scrybe is a Rust workspace with a small core and platform adapters:
