@@ -63,7 +63,12 @@ LOC_CEILINGS: dict[str, int] = {
     # scrybe-cli should still trip this gate.
     # Raised to 2650 for v1.0.5 to absorb `scrybe init --profile
     # mac-local` and config-backed `scrybe record` defaults.
-    "scrybe-cli": 2650,
+    # Raised to 2800 for v1.1.0 to absorb `scrybe doctor --check-tap`,
+    # the end-to-end Core Audio Tap diagnostic that distinguishes the
+    # three failure shapes for the system-tap-silent-frames bug. The
+    # probe is gated behind `system-capture-mac` so non-feature builds
+    # surface a "skipped" message rather than carrying the dead path.
+    "scrybe-cli": 2800,
     "scrybe-capture-mac": 2500,
     "scrybe-capture-linux": 2500,
     "scrybe-capture-win": 2500,

@@ -61,7 +61,7 @@
 
 use std::ffi::CStr;
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use block2::RcBlock;
@@ -264,6 +264,27 @@ impl TapStream {
         let block_sender = Arc::clone(&shared_sender);
         let sample_counter = Arc::new(AtomicU64::new(0));
         let block_counter = Arc::clone(&sample_counter);
+
+        // Diagnostic accumulators sampled once per second of audio so a
+        // user running `RUST_LOG=scrybe_capture_mac=debug scrybe record`
+        // can observe whether the tap is delivering real samples or
+        // zero-filled buffers. Distinguishing those two failure shapes
+        // is the v1.0.x → v1.1 follow-up for the system-tap-silent-frames
+        // bug: macOS Core Audio Taps deliver silence to a binary whose
+        // entitlement chain it cannot verify (see CHANGELOG `[Unreleased]`
+        // known limitations).
+        //
+        // Atomics rather than a Mutex because the IO block runs on
+        // CoreAudio's real-time dispatch thread and any blocking acquire
+        // would risk audio glitches on the user's actual playback. Peak
+        // amplitude is a non-negative f32 stored via `to_bits` so
+        // `AtomicU32::fetch_max` produces a numerically correct max
+        // (IEEE 754 non-negative f32 sorts identically to its bit
+        // pattern as u32).
+        let diag_window_samples = Arc::new(AtomicU64::new(0));
+        let diag_window_peak_bits = Arc::new(AtomicU32::new(0));
+        let block_diag_samples = Arc::clone(&diag_window_samples);
+        let block_diag_peak = Arc::clone(&diag_window_peak_bits);
         let io_block: RcBlock<
             dyn Fn(
                     NonNull<AudioTimeStamp>,
@@ -296,6 +317,47 @@ impl TapStream {
                     .saturating_mul(1_000_000_000)
                     .checked_div(u64::from(sample_rate.max(1)))
                     .unwrap_or(0);
+
+                // Diagnostic window. Find the loudest absolute sample in
+                // this batch and fold it into the per-second peak. When
+                // the running window crosses one second of audio, log
+                // the peak/frame-count and reset. Absent
+                // `RUST_LOG=scrybe_capture_mac=debug` this is roughly
+                // free — `tracing::debug!` short-circuits on level
+                // before formatting.
+                let local_peak = samples
+                    .iter()
+                    .copied()
+                    .map(f32::abs)
+                    .fold(0.0_f32, f32::max);
+                block_diag_peak.fetch_max(local_peak.to_bits(), Ordering::Relaxed);
+                let prior_window = block_diag_samples.fetch_add(frames_added, Ordering::Relaxed);
+                let new_window = prior_window.saturating_add(frames_added);
+                let one_second = u64::from(sample_rate.max(1));
+                if (new_window / one_second) > (prior_window / one_second) {
+                    let peak_bits = block_diag_peak.swap(0, Ordering::Relaxed);
+                    block_diag_samples.store(0, Ordering::Relaxed);
+                    let peak = f32::from_bits(peak_bits);
+                    if peak < 1e-6 {
+                        // Surface the silence case at WARN so a user
+                        // recording a meeting with audio actually
+                        // playing notices the tap is dead even without
+                        // RUST_LOG tuned. Throttled to once per second
+                        // so it does not spam the terminal.
+                        warn!(
+                            sample_rate,
+                            channels,
+                            "core-audio-tap delivered one second of silent frames \
+                             (peak={peak:.6}); likely TCC/entitlement or device-routing \
+                             issue"
+                        );
+                    } else {
+                        debug!(
+                            sample_rate,
+                            channels, peak, "core-audio-tap one-second diagnostic"
+                        );
+                    }
+                }
                 let frame = AudioFrame::from_slice(
                     &samples,
                     channels,
