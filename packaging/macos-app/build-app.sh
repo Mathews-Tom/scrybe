@@ -154,6 +154,14 @@ else
     echo "    stable code-signing identity. Re-run with --sign or --sign-self."
 fi
 
+# NOTE: TCC's Audio Capture grant is bound to the bundle launched via
+# Launch Services (`open ./scrybe.app`), NOT to the inner binary at
+# `./scrybe.app/Contents/MacOS/scrybe`. Even when both are codesigned
+# with `--identifier dev.scrybe.scrybe`, direct invocation of the inner
+# binary bypasses Launch Services and silently zero-fills the tap. The
+# bundle MUST be launched through `open` for the grant to apply. The
+# trailing instructions reflect this.
+
 echo "==> verifying bundle"
 codesign --verify --deep --strict --verbose=2 "$OUTPUT" 2>&1 | sed 's/^/    /'
 
