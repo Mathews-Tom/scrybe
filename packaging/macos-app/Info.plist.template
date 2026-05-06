@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+        Bundle identity. CFBundleIdentifier MUST match the TCC service-database
+        client identifier so a single Audio Capture grant covers every signed
+        rebuild that lives at the same `.app` path.
+    -->
+    <key>CFBundleIdentifier</key>
+    <string>dev.scrybe.scrybe</string>
+    <key>CFBundleName</key>
+    <string>scrybe</string>
+    <key>CFBundleDisplayName</key>
+    <string>scrybe</string>
+    <key>CFBundleExecutable</key>
+    <string>scrybe</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleVersion</key>
+    <string>{{VERSION}}</string>
+    <key>CFBundleShortVersionString</key>
+    <string>{{VERSION}}</string>
+
+    <!--
+        Minimum macOS version. Core Audio Taps shipped in 14.2, but scrybe's
+        capture surface declares 14.4 as the supported floor (see
+        `scrybe-capture-mac/src/coreaudio_tap.rs:7`). Keep these aligned so
+        the OS rejects launches on systems that cannot satisfy the API.
+    -->
+    <key>LSMinimumSystemVersion</key>
+    <string>14.4</string>
+
+    <!--
+        UI behaviour. scrybe is a headless CLI wrapped in a `.app` only because
+        TCC requires bundle structure for Audio Capture consent surfacing.
+        LSUIElement=true keeps the bundle out of the Dock and the Force Quit
+        list when launched.
+    -->
+    <key>LSUIElement</key>
+    <true/>
+    <key>LSBackgroundOnly</key>
+    <false/>
+
+    <!--
+        TCC consent strings. Without NSAudioCaptureUsageDescription the OS
+        refuses to surface the Audio Capture permission prompt and silently
+        zero-fills tap buffers — this was the root cause of the
+        system-tap-silent-frames bug observed in the v1.0.x cargo-install
+        path. NSMicrophoneUsageDescription is the legacy mic-capture string;
+        scrybe pairs system audio with mic input via `--source mic+system`
+        so both must be present.
+    -->
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>scrybe captures the audio output of the conversation you are recording so it can transcribe and summarise it locally on your machine. Audio never leaves the device by default.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>scrybe records your microphone alongside system audio so the transcript can attribute lines to you and the meeting counterparty separately.</string>
+
+    <!--
+        Hardened runtime opts. Setting these here lets the codesign step
+        attach the runtime flag without arguing with Gatekeeper later.
+    -->
+    <key>NSHighResolutionCapable</key>
+    <true/>
+</dict>
+</plist>

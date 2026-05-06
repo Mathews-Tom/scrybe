@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+        Audio capture entitlement. Required for Core Audio Taps when the
+        binary runs under the hardened runtime. Without this entitlement
+        the IO callback receives zero-filled buffers regardless of TCC
+        grant state.
+    -->
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+
+    <!--
+        scrybe is intentionally NOT sandboxed. The local-first design writes
+        sessions under `~/scrybe/` (or wherever `[storage].root` points) and
+        reads Whisper model files from `~/Library/Application Support/...`,
+        both of which the App Sandbox would block without explicit
+        per-path entitlements. This means the binary cannot ship through
+        the Mac App Store, which is consistent with the project's stated
+        distribution posture (GitHub Releases via cargo-dist).
+    -->
+    <key>com.apple.security.app-sandbox</key>
+    <false/>
+
+    <!--
+        Allow JIT-style memory mapping required by some whisper.cpp builds
+        (Metal kernel compilation paths, BLAS dispatch). Without this the
+        hardened runtime kills the process on first inference.
+    -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+
+    <!--
+        Disable library validation so debug-mode whisper-rs and any
+        dlopen'd CoreML/Metal kernels can load. Tighten this once the
+        release pipeline notarizes a known-good model artifact.
+    -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+</dict>
+</plist>
