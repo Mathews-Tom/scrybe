@@ -293,7 +293,34 @@ where
             }
         }
         let pcm_for_audio: Vec<f32> = if let Some(iv) = interleaver.as_mut() {
-            iv.push(&frame).map_err(CoreError::Pipeline)?;
+            // Capture adapters negotiate sample rate with the platform
+            // and may disagree: `MacCapture`'s tap delivers 48 kHz, but
+            // `MicCapture` via cpal often lands on 16 kHz on built-in
+            // Mac inputs. The interleaver requires matched per-source
+            // rates, so resample any frame whose native rate disagrees
+            // with the encoder's target before pushing. The encoder is
+            // pinned to 48 kHz today; if that ever changes,
+            // `encoder_config.sample_rate` carries the canonical value.
+            let resampled_frame: AudioFrame;
+            let frame_to_push = if frame.sample_rate == encoder_config.sample_rate {
+                &frame
+            } else {
+                let resampled_samples = resample_linear(
+                    &frame.samples,
+                    frame.sample_rate,
+                    encoder_config.sample_rate,
+                )
+                .map_err(|e| CoreError::Pipeline(e.into()))?;
+                resampled_frame = AudioFrame::from_slice(
+                    &resampled_samples,
+                    frame.channels,
+                    encoder_config.sample_rate,
+                    frame.timestamp_ns,
+                    frame.source,
+                );
+                &resampled_frame
+            };
+            iv.push(frame_to_push).map_err(CoreError::Pipeline)?;
             iv.drain()
         } else {
             frame.samples.as_ref().to_vec()
