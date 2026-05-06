@@ -8,14 +8,24 @@
 //! 16 kHz; we resample once at the chunker boundary so downstream stages
 //! are rate-agnostic.
 //!
-//! This implementation is deliberately a linear interpolator with no
-//! anti-aliasing filter. It is correct for the rates the pipeline
-//! actually sees (48 kHz from Core Audio Taps, 44.1 kHz from cpal
-//! microphones, 16 kHz pass-through) and avoids pulling `rubato` /
-//! `samplerate` into `scrybe-core`'s dependency surface. Quality is
-//! adequate for STT — Whisper itself is robust to the harmonics a
-//! linear filter introduces above 8 kHz. Adapter crates that need
-//! higher fidelity may bring their own resampler.
+//! Two-mode resampler with no external dependency:
+//!
+//! - **Upsampling / equal-rate** (`step ≤ 1`): linear interpolation.
+//!   Fine for the harmonic content STT cares about.
+//! - **Downsampling** (`step > 1`): box-averaging over the source-time
+//!   window each output sample covers. Acts as a 1st-order low-pass
+//!   that decimates anti-aliased.
+//!
+//! Box averaging matters because every real Core Audio Tap recording
+//! goes through a 3:1 downsample (48 kHz → 16 kHz). Naive linear
+//! interpolation in that direction folds 8–24 kHz energy into the
+//! 0–8 kHz audible band as aliasing artifacts — Whisper interpreted
+//! that as `*Gibberish*`, `[fast forward]`, and similar non-speech
+//! events on the Them channel during v1.1 system-audio testing. A
+//! cleaner solution is a polyphase FIR via `rubato` / `samplerate`,
+//! but those crates pull non-trivial dependency trees. Box averaging
+//! is correct enough for STT, ~30 lines, and zero-dep. Adapter crates
+//! that need broadcast-quality resampling may bring their own.
 
 use crate::error::PipelineError;
 
@@ -32,9 +42,16 @@ impl From<ResampleError> for PipelineError {
     }
 }
 
-/// Resample a mono buffer from `source_rate` to `target_rate` using
-/// linear interpolation. Returns the resampled buffer; the input is
-/// borrowed and not mutated.
+/// Resample a mono buffer from `source_rate` to `target_rate`.
+///
+/// - `target_rate >= source_rate` (upsample / equal-rate): linear
+///   interpolation between adjacent input samples.
+/// - `target_rate < source_rate` (downsample): box-averaging over the
+///   source-time window each output sample covers, which acts as an
+///   anti-aliasing low-pass filter that prevents 8–24 kHz energy from
+///   folding into the 0–8 kHz band on a 48 kHz → 16 kHz decimation.
+///
+/// The input is borrowed and not mutated.
 ///
 /// # Errors
 ///
@@ -69,20 +86,55 @@ pub fn resample_linear(
         return Ok(Vec::new());
     }
 
-    let mut out = Vec::with_capacity(out_len);
     let step = f64::from(source_rate) / f64::from(target_rate);
-    for i in 0..out_len {
-        let src_pos = (i as f64) * step;
-        let lo = src_pos.floor() as usize;
-        let hi = lo + 1;
-        let frac = src_pos - (lo as f64);
-        if hi >= src_len {
-            out.push(samples[src_len - 1]);
-        } else {
-            let a = f64::from(samples[lo]);
-            let b = f64::from(samples[hi]);
-            let mixed = (a * (1.0 - frac) + b * frac) as f32;
-            out.push(mixed);
+    let mut out = Vec::with_capacity(out_len);
+
+    if step > 1.0 {
+        // Downsampling: average all input samples whose timestamps
+        // fall inside the source-time window covered by output sample
+        // `i`. The window spans [i*step, (i+1)*step) and is treated as
+        // closed on the lower bound, open on the upper. This is the
+        // anti-aliasing path; without it, 48 kHz → 16 kHz decimation
+        // produces gibberish output for STT.
+        for i in 0..out_len {
+            let win_start_f = (i as f64) * step;
+            let win_end_f = ((i + 1) as f64) * step;
+            let win_start = (win_start_f.floor() as usize).min(src_len);
+            // `ceil` so partially-covered samples at the upper bound
+            // contribute to the average. `min(src_len)` clamps the
+            // tail at the buffer end.
+            let win_end = (win_end_f.ceil() as usize).min(src_len);
+            if win_start >= win_end {
+                // Empty window — fall back to nearest-neighbour from
+                // the buffer end so the output length still matches
+                // `out_len_f.round()`.
+                out.push(samples.last().copied().unwrap_or(0.0));
+                continue;
+            }
+            let mut sum = 0.0_f64;
+            for s in &samples[win_start..win_end] {
+                sum += f64::from(*s);
+            }
+            let avg = sum / ((win_end - win_start) as f64);
+            out.push(avg as f32);
+        }
+    } else {
+        // Upsampling or near-equal: linear interpolation between
+        // adjacent input samples is correct (no aliasing direction to
+        // guard against).
+        for i in 0..out_len {
+            let src_pos = (i as f64) * step;
+            let lo = src_pos.floor() as usize;
+            let hi = lo + 1;
+            let frac = src_pos - (lo as f64);
+            if hi >= src_len {
+                out.push(samples[src_len - 1]);
+            } else {
+                let a = f64::from(samples[lo]);
+                let b = f64::from(samples[hi]);
+                let mixed = (a * (1.0 - frac) + b * frac) as f32;
+                out.push(mixed);
+            }
         }
     }
     Ok(out)
@@ -194,6 +246,34 @@ mod tests {
         assert!(
             (ratio - 1.0).abs() < 0.05,
             "round-trip RMS ratio {ratio:.4} differs from unity by more than 5%"
+        );
+    }
+
+    #[test]
+    fn test_resample_linear_48k_to_16k_attenuates_above_nyquist_signal() {
+        // Regression for the v1.1 STT-gibberish bug: a 12 kHz tone in
+        // 48 kHz input is above the 8 kHz Nyquist of 16 kHz output.
+        // Naive linear interpolation aliases this to a 4 kHz fold-back
+        // tone with near-original RMS (~0 dB), which Whisper
+        // transcribes as gibberish. The 3-tap box-average path used
+        // for downsampling here attenuates it by `sinc(πf/fs)` —
+        // approximately -9.5 dB at 12 kHz (the theoretical max for
+        // a 3-tap box at this frequency). The threshold is set to
+        // -8 dB so the test still discriminates cleanly from the
+        // ~0 dB linear-interp regression while staying above the
+        // box-average's worst case across the 8–24 kHz aliasing band.
+        let input = sine(48_000, 12_000.0, 0.5);
+
+        let out = resample_linear(&input, 48_000, 16_000).unwrap();
+
+        let in_rms = rms(&input);
+        let out_rms = rms(&out);
+        let ratio_db = 20.0 * (out_rms / in_rms).log10();
+        assert!(
+            ratio_db < -8.0,
+            "12 kHz tone above Nyquist must be attenuated below -8 dB; \
+             observed {ratio_db:.3} dB (linear interp would be near 0 dB \
+             due to aliasing)"
         );
     }
 
