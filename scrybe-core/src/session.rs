@@ -1091,22 +1091,31 @@ mod tests {
         let hooks: Vec<Box<dyn Hook>> = Vec::new();
 
         // Distinct constant samples per source so the channel split is
-        // detectable byte-for-byte. Mic = +0.5, System = -0.5.
+        // detectable byte-for-byte. Mic = +0.5, System = -0.5. Frames
+        // arrive in arrival order Mic, System, Mic, System, … but
+        // each pair shares the same wall-clock timestamp because both
+        // adapters capture in parallel; the timestamp-aware
+        // interleaver pairs them by `timestamp_ns`, not by arrival
+        // order, so this layout is what real `MicCapture` and
+        // `MacCapture` deliver during a session.
         let mut interleaved: Vec<Result<AudioFrame, crate::error::CaptureError>> = Vec::new();
-        for i in 0..16 {
-            let ts = i * 10_000_000;
-            let (source, value) = if i % 2 == 0 {
-                (FrameSource::Mic, 0.5_f32)
-            } else {
-                (FrameSource::System, -0.5_f32)
-            };
-            let samples: Vec<f32> = vec![value; 480];
+        for window in 0..8 {
+            let ts = window * 10_000_000_u64;
+            let mic_samples: Vec<f32> = vec![0.5_f32; 480];
             interleaved.push(Ok(AudioFrame {
-                samples: Arc::from(samples),
+                samples: Arc::from(mic_samples),
                 channels: 1,
                 sample_rate: 48_000,
                 timestamp_ns: ts,
-                source,
+                source: FrameSource::Mic,
+            }));
+            let sys_samples: Vec<f32> = vec![-0.5_f32; 480];
+            interleaved.push(Ok(AudioFrame {
+                samples: Arc::from(sys_samples),
+                channels: 1,
+                sample_rate: 48_000,
+                timestamp_ns: ts,
+                source: FrameSource::System,
             }));
         }
         let frames = stream::iter(interleaved);
