@@ -69,13 +69,17 @@ use objc2::rc::Retained;
 use objc2::AllocAnyThread;
 use objc2_core_audio::{
     kAudioAggregateDeviceIsPrivateKey, kAudioAggregateDeviceIsStackedKey,
-    kAudioAggregateDeviceNameKey, kAudioAggregateDeviceTapListKey, kAudioAggregateDeviceUIDKey,
-    kAudioObjectPropertyElementMain, kAudioObjectPropertyScopeGlobal, kAudioSubTapUIDKey,
-    kAudioTapPropertyFormat, kAudioTapPropertyUID, AudioDeviceCreateIOProcIDWithBlock,
-    AudioDeviceDestroyIOProcID, AudioDeviceIOProcID, AudioDeviceStart, AudioDeviceStop,
-    AudioHardwareCreateAggregateDevice, AudioHardwareCreateProcessTap,
-    AudioHardwareDestroyAggregateDevice, AudioHardwareDestroyProcessTap,
-    AudioObjectGetPropertyData, AudioObjectID, AudioObjectPropertyAddress, CATapDescription,
+    kAudioAggregateDeviceMainSubDeviceKey, kAudioAggregateDeviceNameKey,
+    kAudioAggregateDeviceSubDeviceListKey, kAudioAggregateDeviceTapAutoStartKey,
+    kAudioAggregateDeviceTapListKey, kAudioAggregateDeviceUIDKey, kAudioDevicePropertyDeviceUID,
+    kAudioHardwarePropertyDefaultSystemOutputDevice, kAudioObjectPropertyElementMain,
+    kAudioObjectPropertyScopeGlobal, kAudioSubDeviceUIDKey, kAudioSubTapDriftCompensationKey,
+    kAudioSubTapUIDKey, kAudioTapPropertyFormat, kAudioTapPropertyUID,
+    AudioDeviceCreateIOProcIDWithBlock, AudioDeviceDestroyIOProcID, AudioDeviceIOProcID,
+    AudioDeviceStart, AudioDeviceStop, AudioHardwareCreateAggregateDevice,
+    AudioHardwareCreateProcessTap, AudioHardwareDestroyAggregateDevice,
+    AudioHardwareDestroyProcessTap, AudioObjectGetPropertyData, AudioObjectID,
+    AudioObjectPropertyAddress, CATapDescription,
 };
 use objc2_core_audio_types::{AudioBufferList, AudioStreamBasicDescription, AudioTimeStamp};
 use objc2_core_foundation::{CFDictionary, CFRetained};
@@ -92,6 +96,12 @@ use crate::error::MacCaptureError;
 /// so the IO block can detect a closed sender after `stop()` and stop
 /// pushing frames without panicking.
 type SharedSender = Arc<Mutex<Option<UnboundedSender<Result<AudioFrame, CaptureError>>>>>;
+
+/// `kAudioObjectSystemObject`. Not re-exported by `objc2-core-audio` at
+/// the time of writing (only the typedef and class IDs are), so we name
+/// it ourselves. Apple's `CoreAudio/AudioHardwareBase.h` documents the
+/// value as `1` since the API was introduced.
+const SYSTEM_OBJECT_ID: AudioObjectID = 1;
 
 /// Live Core Audio Taps binding driven by an IO block callback.
 ///
@@ -246,7 +256,20 @@ impl TapStream {
         debug!(sample_rate, channels, "tap stream format negotiated");
 
         // 4. Aggregate device dictionary with the tap as a sub-tap.
-        let aggregate_device_dict = build_aggregate_device_dict(&tap_uid)?;
+        //
+        // Apple's reference implementation (insidegui/AudioCap) wires
+        // the aggregate to the user's actual default output device
+        // through `kAudioAggregateDeviceMainSubDeviceKey` +
+        // `kAudioAggregateDeviceSubDeviceListKey`. Without these the
+        // aggregate has no rendering pipeline for the tap to mirror,
+        // and the IO callback fires but the buffer it reads is
+        // undriven — observed in v1.0.x as `frames=141 peak=0.0000`
+        // in `scrybe doctor --check-tap` output even with TCC consent
+        // granted. Read the default output's UID once at construction
+        // so the aggregate can anchor to a concrete device.
+        let output_device_uid = read_default_output_device_uid()?;
+        debug!(output_device_uid, "default system output resolved");
+        let aggregate_device_dict = build_aggregate_device_dict(&tap_uid, &output_device_uid)?;
         let mut aggregate_device_id: AudioObjectID = 0;
         let status = unsafe {
             AudioHardwareCreateAggregateDevice(
@@ -606,42 +629,114 @@ fn read_tap_format(tap_id: AudioObjectID) -> Result<AudioStreamBasicDescription,
 }
 
 /// Construct the CFDictionary that
-/// `AudioHardwareCreateAggregateDevice` consumes. We build it as an
-/// `NSDictionary` because CFDictionary toll-free bridges with
-/// NSDictionary on Apple platforms; the cast at the bottom is the
-/// documented bridging path.
-fn build_aggregate_device_dict(tap_uid: &str) -> Result<CFRetained<CFDictionary>, MacCaptureError> {
+/// `AudioHardwareCreateAggregateDevice` consumes. The dictionary
+/// shape mirrors the one Apple's reference implementation ships in
+/// `insidegui/AudioCap` (`AudioCap/ProcessTap/ProcessTap.swift`):
+///
+/// ```text
+/// {
+///   kAudioAggregateDeviceUIDKey:           "dev.scrybe.tap-aggregate.<tap-uid>"
+///   kAudioAggregateDeviceNameKey:          "scrybe-tap-aggregate"
+///   kAudioAggregateDeviceIsPrivateKey:     1
+///   kAudioAggregateDeviceIsStackedKey:     0
+///   kAudioAggregateDeviceTapAutoStartKey:  1
+///   kAudioAggregateDeviceMainSubDeviceKey: <output device UID>
+///   kAudioAggregateDeviceSubDeviceListKey: [ { kAudioSubDeviceUIDKey: <output UID> } ]
+///   kAudioAggregateDeviceTapListKey:       [
+///       { kAudioSubTapUIDKey: <tap UID>,
+///         kAudioSubTapDriftCompensationKey: 1 }
+///   ]
+/// }
+/// ```
+///
+/// The main sub-device + sub-device list keys are critical: without
+/// them the aggregate is "an aggregate of nothing plus a tap" — the
+/// IO callback fires but reads from an undriven buffer and produces
+/// the zero-filled frames we observed in v1.0.x.
+///
+/// We build everything as `NSDictionary` / `NSArray` and toll-free
+/// bridge to `CFDictionary` at the end (Apple-documented bridging path
+/// on macOS).
+fn build_aggregate_device_dict(
+    tap_uid: &str,
+    output_device_uid: &str,
+) -> Result<CFRetained<CFDictionary>, MacCaptureError> {
     let aggregate_uid_value = NSString::from_str(&format!("dev.scrybe.tap-aggregate.{tap_uid}"));
     let aggregate_name_value = NSString::from_str("scrybe-tap-aggregate");
-    let one = NSNumber::new_i32(1);
-    let zero = NSNumber::new_i32(0);
+    let true_num = NSNumber::new_i32(1);
+    let false_num = NSNumber::new_i32(0);
 
-    let sub_tap_dict: Retained<NSDictionary<NSString, NSString>> = {
-        let sub_key = NSString::from_str(c_str_to_str(kAudioSubTapUIDKey));
-        let sub_value = NSString::from_str(tap_uid);
-        let keys: [&NSString; 1] = [&sub_key];
-        let values: [&NSString; 1] = [&sub_value];
+    // Sub-tap entry: tap UID + drift compensation. Drift compensation
+    // resamples the tap's clock to match the main device's clock so
+    // the IO callback receives sample-aligned audio without periodic
+    // overruns/underruns. AudioCap sets this to true unconditionally;
+    // we follow suit.
+    let sub_tap_dict: Retained<NSDictionary<NSString, NSObject>> = {
+        let key_uid = NSString::from_str(c_str_to_str(kAudioSubTapUIDKey));
+        let key_drift = NSString::from_str(c_str_to_str(kAudioSubTapDriftCompensationKey));
+        let val_uid = NSString::from_str(tap_uid);
+        let val_drift = NSNumber::new_i32(1);
+        let keys: [&NSString; 2] = [&key_uid, &key_drift];
+        let v_uid: Retained<NSObject> = val_uid.into_super();
+        let v_drift: Retained<NSObject> = val_drift.into_super().into_super();
+        let values: [&NSObject; 2] = [&v_uid, &v_drift];
         NSDictionary::from_slices(&keys, &values)
     };
-    let tap_list: Retained<NSArray<NSDictionary<NSString, NSString>>> =
+    let tap_list: Retained<NSArray<NSDictionary<NSString, NSObject>>> =
         NSArray::from_retained_slice(&[sub_tap_dict]);
+
+    // Sub-device entry: pin the aggregate's "main" sub-device to the
+    // user's current default output. The aggregate mirrors this
+    // device's stream and the tap captures the result.
+    let sub_device_dict: Retained<NSDictionary<NSString, NSString>> = {
+        let key = NSString::from_str(c_str_to_str(kAudioSubDeviceUIDKey));
+        let val = NSString::from_str(output_device_uid);
+        let keys: [&NSString; 1] = [&key];
+        let values: [&NSString; 1] = [&val];
+        NSDictionary::from_slices(&keys, &values)
+    };
+    let sub_device_list: Retained<NSArray<NSDictionary<NSString, NSString>>> =
+        NSArray::from_retained_slice(&[sub_device_dict]);
 
     let key_uid = NSString::from_str(c_str_to_str(kAudioAggregateDeviceUIDKey));
     let key_name = NSString::from_str(c_str_to_str(kAudioAggregateDeviceNameKey));
     let key_private = NSString::from_str(c_str_to_str(kAudioAggregateDeviceIsPrivateKey));
     let key_stacked = NSString::from_str(c_str_to_str(kAudioAggregateDeviceIsStackedKey));
+    let key_auto_start = NSString::from_str(c_str_to_str(kAudioAggregateDeviceTapAutoStartKey));
+    let key_main_sub = NSString::from_str(c_str_to_str(kAudioAggregateDeviceMainSubDeviceKey));
+    let key_sub_devices = NSString::from_str(c_str_to_str(kAudioAggregateDeviceSubDeviceListKey));
     let key_taps = NSString::from_str(c_str_to_str(kAudioAggregateDeviceTapListKey));
 
-    let keys: [&NSString; 5] = [&key_uid, &key_name, &key_private, &key_stacked, &key_taps];
-    // Promote each value to its NSObject super so the dictionary value
-    // type is homogeneous. NSNumber → NSValue → NSObject;
-    // NSString/NSArray inherit from NSObject directly.
+    let main_sub_device_value = NSString::from_str(output_device_uid);
+
+    let keys: [&NSString; 8] = [
+        &key_uid,
+        &key_name,
+        &key_private,
+        &key_stacked,
+        &key_auto_start,
+        &key_main_sub,
+        &key_sub_devices,
+        &key_taps,
+    ];
     let v_uid: Retained<NSObject> = aggregate_uid_value.into_super();
     let v_name: Retained<NSObject> = aggregate_name_value.into_super();
-    let v_private: Retained<NSObject> = one.into_super().into_super();
-    let v_stacked: Retained<NSObject> = zero.into_super().into_super();
+    let v_private: Retained<NSObject> = true_num.clone().into_super().into_super();
+    let v_stacked: Retained<NSObject> = false_num.into_super().into_super();
+    let v_auto_start: Retained<NSObject> = true_num.into_super().into_super();
+    let v_main_sub: Retained<NSObject> = main_sub_device_value.into_super();
+    let v_sub_devices: Retained<NSObject> = sub_device_list.into_super();
     let v_taps: Retained<NSObject> = tap_list.into_super();
-    let value_refs: [&NSObject; 5] = [&v_uid, &v_name, &v_private, &v_stacked, &v_taps];
+    let value_refs: [&NSObject; 8] = [
+        &v_uid,
+        &v_name,
+        &v_private,
+        &v_stacked,
+        &v_auto_start,
+        &v_main_sub,
+        &v_sub_devices,
+        &v_taps,
+    ];
     let ns_dict: Retained<NSDictionary<NSString, NSObject>> =
         NSDictionary::from_slices(&keys, &value_refs);
 
@@ -654,6 +749,46 @@ fn build_aggregate_device_dict(tap_uid: &str) -> Result<CFRetained<CFDictionary>
         let cf_raw: NonNull<CFDictionary> = NonNull::new_unchecked(raw.cast::<CFDictionary>());
         Ok(CFRetained::from_raw(cf_raw))
     }
+}
+
+/// Read the system's current default-output device's UID. Used to
+/// anchor the aggregate device's main sub-device. This is the API
+/// flow Apple's reference implementation follows for the global
+/// audio capture path.
+///
+/// # Errors
+///
+/// Returns `MacCaptureError::CoreAudioTapUnsupported` if either of
+/// the two `AudioObjectGetPropertyData` calls fails — typically
+/// indicates no audio output device is currently configured.
+fn read_default_output_device_uid() -> Result<String, MacCaptureError> {
+    let address = AudioObjectPropertyAddress {
+        mSelector: kAudioHardwarePropertyDefaultSystemOutputDevice,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain,
+    };
+    let mut device_id: AudioObjectID = 0;
+    let mut size = std::mem::size_of::<AudioObjectID>() as u32;
+    let status = unsafe {
+        AudioObjectGetPropertyData(
+            SYSTEM_OBJECT_ID,
+            NonNull::from(&address),
+            0,
+            std::ptr::null(),
+            NonNull::from(&mut size),
+            NonNull::from(&mut device_id).cast(),
+        )
+    };
+    check_status(
+        status,
+        "AudioObjectGetPropertyData(DefaultSystemOutputDevice)",
+    )?;
+    if device_id == 0 {
+        return Err(MacCaptureError::CoreAudioTapUnsupported {
+            found: "no default system output device is configured".to_string(),
+        });
+    }
+    read_object_uid(device_id, kAudioDevicePropertyDeviceUID)
 }
 
 /// Map an `OSStatus` into a [`MacCaptureError`]. Zero is success; every

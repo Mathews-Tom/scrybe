@@ -114,6 +114,92 @@ The egress audit walks `scrybe-cli`'s default-feature dependency graph and asser
 
 ---
 
+## macOS — system audio capture (`--source mic+system`)
+
+Capturing the meeting counterparty's voice via Core Audio Taps requires the binary to be wrapped in a `.app` bundle and code-signed. A bare CLI at `~/.cargo/bin/scrybe` cannot receive Audio Capture consent: TCC refuses to surface the permission prompt without an `Info.plist` declaring `NSAudioCaptureUsageDescription`, and the underlying tap silently zero-fills its IO callback when no consent record can be created. `scrybe doctor --check-tap` reports `frames>0, peak=0.0000` in this state — the diagnostic that distinguishes "tap delivered silence" from "IOProc never fired".
+
+### Self-signed certificate (free, no Apple Developer membership)
+
+A self-signed Code Signing certificate created in Keychain Access produces a stable designated requirement (`anchor leaf [Subject.CN] = "..."`) that survives `cargo install --force` rebuilds — TCC keeps the Audio Capture grant attached to the cert's identity rather than the binary's hash.
+
+```text
+Applications → Utilities → Keychain Access
+  Menu: Keychain Access → Certificate Assistant → Create a Certificate…
+    Name: scrybe-local-signing
+    Identity Type: Self Signed Root
+    Certificate Type: Code Signing
+    ✓ Let me override defaults  → Continue
+    Validity: 3650 days  → Continue through remaining defaults  → Done
+```
+
+Verify the cert exists, then build the bundle:
+
+```sh
+security find-identity -v -p codesigning | grep scrybe-local-signing
+
+cargo install --path scrybe-cli --force --locked \
+    --features cli-shell,hook-git,mic-capture,system-capture-mac,whisper-local,encoder-opus,llm-openai-compat
+packaging/macos-app/build-app.sh \
+    --binary "$HOME/.cargo/bin/scrybe" \
+    --output ./scrybe.app \
+    --sign-self scrybe-local-signing
+```
+
+Remove any stale TCC entry, launch the bundle, and accept the prompt:
+
+```text
+System Settings → Privacy & Security → Audio Recording
+  click scrybe (if listed)  → click `-`  → quit Settings
+```
+
+```sh
+open ./scrybe.app --args doctor --check-tap
+# click Allow when the dialog appears
+# expected: tap probe: frames=N peak=0.X → OK
+```
+
+For day-to-day recording, invoke the binary inside the bundle (which is the one TCC has granted):
+
+```sh
+./scrybe.app/Contents/MacOS/scrybe record --source mic+system --title my-meeting --yes
+```
+
+Or symlink it onto `PATH`:
+
+```sh
+ln -sf "$PWD/scrybe.app/Contents/MacOS/scrybe" "$HOME/.local/bin/scrybe"
+```
+
+### Iteration loop
+
+Each `cargo install --force` rewrites `~/.cargo/bin/scrybe`. Re-run `build-app.sh` to refresh the bundle's binary; the cert identity is stable so the existing TCC grant carries over without a second prompt:
+
+```sh
+alias scrybe-rebundle='packaging/macos-app/build-app.sh \
+    --binary "$HOME/.cargo/bin/scrybe" \
+    --output ./scrybe.app \
+    --sign-self scrybe-local-signing'
+```
+
+### Developer ID (paid, required for distribution)
+
+For builds intended to ship through the GitHub Releases tarball, swap `--sign-self` for `--sign` and pass the Developer ID Application identity:
+
+```sh
+packaging/macos-app/build-app.sh \
+    --binary "$HOME/.cargo/bin/scrybe" \
+    --output ./scrybe.app \
+    --sign "Developer ID Application: Your Name (TEAMID)"
+```
+
+Notarization is currently out of scope for the v1 line; see `README.md:151`.
+
+### Why this is needed
+
+The full rationale, including the entitlements specifically required by Core Audio Taps under the hardened runtime, lives in `packaging/macos-app/README.md`.
+
+---
+
 ## Record from a real microphone with local Whisper transcription
 
 The default `scrybe record` runs a synthetic 440 Hz sine through the pipeline so CI smoke tests stay hermetic. To record from your actual mic and transcribe with whisper.cpp, build with the `mic-capture` and `whisper-local` features and supply a model path at runtime:

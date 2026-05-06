@@ -255,13 +255,100 @@ async fn check_tap(report: &mut Report) {
         "FAIL: IOProc never fired (entitlement, sandbox, or aggregate-device construction failure)"
     } else if peak < TAP_PROBE_NOISE_FLOOR {
         report.warnings += 1;
-        "FAIL: tap delivered silent frames (Audio Capture TCC denied for this binary, or tap routed to wrong device)"
+        "FAIL: tap delivered silent frames (TCC cannot consent because this binary has no `.app` bundle + Info.plist)"
     } else {
         "OK"
     };
     report.lines.push(format!(
         "tap probe: frames={frame_count} peak={peak:.4} → {verdict}"
     ));
+
+    // When the tap is silent, surface concrete remediation steps so the
+    // user can act without leaving the terminal. The dominant root cause
+    // (per Reddit r/rust 1t4y3bd) is missing bundle structure: TCC
+    // cannot attach an Audio Capture grant to a bare CLI binary without
+    // an Info.plist declaring `NSAudioCaptureUsageDescription`. The
+    // signing identity matters too — ad-hoc identities don't survive
+    // rebuilds because the designated requirement is hash-pinned.
+    if frame_count > 0 && peak < TAP_PROBE_NOISE_FLOOR {
+        emit_silent_tap_remediation(report);
+    }
+}
+
+/// Emit remediation guidance when the tap probe reports silent frames.
+/// Each line is prefixed with two spaces so it nests visually under the
+/// `tap probe:` verdict line in the doctor report.
+#[cfg(all(target_os = "macos", feature = "system-capture-mac"))]
+fn emit_silent_tap_remediation(report: &mut Report) {
+    report.lines.push("  remediation:".to_string());
+    report.lines.push(
+        "    1. Build a `.app` bundle: packaging/macos-app/build-app.sh \
+         --binary $(which scrybe) --output ./scrybe.app --sign-self <cert>"
+            .to_string(),
+    );
+    report.lines.push(
+        "    2. Self-signed cert: Keychain Access → Certificate Assistant \
+         → Create a Certificate (Self Signed Root, Code Signing)"
+            .to_string(),
+    );
+    report.lines.push(
+        "    3. Remove stale TCC entry: System Settings → Privacy & Security \
+         → Audio Recording → click `-` next to scrybe"
+            .to_string(),
+    );
+    report.lines.push(
+        "    4. Launch the bundle: open ./scrybe.app --args doctor --check-tap \
+         (Allow the prompt, then re-probe)"
+            .to_string(),
+    );
+
+    // Try to discover the TCC service name used by this macOS version.
+    // Apple changes this between releases (Sequoia → Tahoe renamed
+    // `SystemAudioRecording`), so probing the live framework is more
+    // reliable than baking a constant. Failure is non-fatal — the
+    // remediation steps still work via the System Settings UI.
+    if let Some(service) = discover_tcc_audio_service() {
+        report.lines.push(format!(
+            "    5. (alternative reset) sudo tccutil reset {service} dev.scrybe.scrybe"
+        ));
+    }
+}
+
+/// Best-effort discovery of the macOS TCC service name that gates Core
+/// Audio Tap consent. Apple's `tccutil` rejects unknown names and the
+/// canonical service is renamed across minor releases, so we ask the
+/// live `TCC.framework` what symbols it exports and pick the one
+/// matching audio capture. Returns `None` when the framework cannot be
+/// inspected (e.g., `dyld_info` missing or framework moved).
+#[cfg(all(target_os = "macos", feature = "system-capture-mac"))]
+fn discover_tcc_audio_service() -> Option<String> {
+    // `dyld_info -exports` lists every exported symbol of a Mach-O.
+    // The TCC framework exports each service constant as
+    // `_kTCCService<Name>`; we strip the prefix and pick the audio one.
+    let framework = "/System/Library/PrivateFrameworks/TCC.framework/Versions/A/TCC";
+    let output = std::process::Command::new("dyld_info")
+        .args(["-exports", framework])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = std::str::from_utf8(&output.stdout).ok()?;
+    // Match either `AudioCapture`, `SystemAudioRecording`, or any
+    // future audio-flavoured service. Prefer "AudioCapture" if both
+    // exist because that is the modern (14.4+) name.
+    let candidates: Vec<&str> = text
+        .lines()
+        .filter_map(|line| line.split_whitespace().last())
+        .filter(|tok| tok.starts_with("_kTCCService"))
+        .map(|tok| tok.trim_start_matches("_kTCCService"))
+        .filter(|name| name.to_ascii_lowercase().contains("audio"))
+        .collect();
+    candidates
+        .iter()
+        .find(|n| n.eq_ignore_ascii_case("AudioCapture"))
+        .or_else(|| candidates.first())
+        .map(|s| (*s).to_string())
 }
 
 #[cfg(not(all(target_os = "macos", feature = "system-capture-mac")))]
