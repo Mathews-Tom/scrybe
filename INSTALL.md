@@ -158,17 +158,18 @@ open ./scrybe.app --args doctor --check-tap
 # expected: tap probe: frames=N peak=0.X → OK
 ```
 
-For day-to-day recording, invoke the binary inside the bundle (which is the one TCC has granted):
+For day-to-day recording, use the ergonomic `scrybe record` subcommand from any terminal:
 
 ```sh
-./scrybe.app/Contents/MacOS/scrybe record --source mic+system --title my-meeting --yes
+scrybe record "client-call"
+# Press Ctrl-C to stop. Per-chunk transcript prints live as the session runs.
 ```
 
-Or symlink it onto `PATH`:
+The CLI auto-detects the `.app` bundle (looking under `./`, `/Applications/`, then `~/Applications/`) and re-launches through Launch Services so the AudioCapture TCC grant binds correctly. SIGINT from the controlling terminal is forwarded to the launched bundle, so Ctrl-C works as expected — no `pkill -INT` from a second terminal anymore.
 
-```sh
-ln -sf "$PWD/scrybe.app/Contents/MacOS/scrybe" "$HOME/.local/bin/scrybe"
-```
+Direct invocation of `./scrybe.app/Contents/MacOS/scrybe …` continues to work for explicit-flags use cases, but silently zero-fills the system tap because TCC binds the grant to the Launch-Services responsible process, not to direct-exec child processes. See `.docs/handoff.md` §1 and §7 for the full investigation; the new `scrybe record` command exists to insulate users from this subtlety.
+
+For CI scripts and advanced users that need explicit flag control, `scrybe rec` exposes the full v1.0.4-compatible flag surface (`--source`, `--whisper-model`, `--llm`, `--shell`, …) without the bundle auto-launch.
 
 ### Iteration loop
 
@@ -225,7 +226,7 @@ scrybe init --force
 # attributes utterances as `Me:` (mic) and `Them:` (system) via the
 # binary-channel diarizer. No per-run source/model flags are required
 # once the profile has been written.
-scrybe record
+scrybe record "client-call"
 # Press Ctrl-C to stop.
 
 scrybe list                       # shows the new session
