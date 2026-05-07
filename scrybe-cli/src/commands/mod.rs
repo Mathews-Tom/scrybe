@@ -16,14 +16,21 @@ pub mod doctor;
 pub mod init;
 pub mod list;
 pub mod rec;
+pub mod record;
 pub mod show;
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
     /// Bootstrap config and verify environment.
     Init(init::Args),
-    /// Record a session end-to-end (explicit-flags entry point — used by
-    /// CI, scripts, and advanced users; prefer `scrybe record <title>`).
+    /// Record a session with sensible defaults: `scrybe record TITLE`.
+    /// Resolves capture source, Whisper model, and LLM kind from
+    /// config plus platform probes; on macOS auto-launches via the
+    /// `.app` bundle so the `AudioCapture` `TCC` grant binds correctly.
+    Record(record::Args),
+    /// Record a session end-to-end with explicit flags. Used by CI,
+    /// scripts, and advanced users; prefer `scrybe record TITLE` for
+    /// interactive use.
     Rec(rec::Args),
     /// List recorded sessions under the configured root.
     List(list::Args),
@@ -44,6 +51,7 @@ pub enum Command {
 pub async fn run(cmd: Command) -> Result<()> {
     match cmd {
         Command::Init(a) => init::run(a).await,
+        Command::Record(a) => record::run(a).await,
         Command::Rec(a) => rec::run(a).await,
         Command::List(a) => list::run(a).await,
         Command::Show(a) => show::run(a).await,

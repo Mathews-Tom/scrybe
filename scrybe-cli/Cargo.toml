@@ -82,7 +82,7 @@ scrybe-capture-mic = { path = "../scrybe-capture-mic", version = "1.0.4" }
 scrybe-core = { path = "../scrybe-core", version = "1.0.4" }
 serde.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "fs", "io-util", "sync", "time"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "fs", "io-util", "process", "sync", "time"] }
 toml.workspace = true
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

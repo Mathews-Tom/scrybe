@@ -79,7 +79,18 @@ LOC_CEILINGS: dict[str, int] = {
     # three failure shapes for the system-tap-silent-frames bug. The
     # probe is gated behind `system-capture-mac` so non-feature builds
     # surface a "skipped" message rather than carrying the dead path.
-    "scrybe-cli": 2800,
+    # Raised to 3300 for v1.0.5 to absorb the new `record` ergonomic
+    # subcommand (~280 LoC including 8 unit tests at
+    # `commands/record.rs`) and the `bundle_launcher` module (~210 LoC
+    # including 3 unit tests). The ergonomic command resolves capture
+    # source, Whisper model, and LLM kind from config plus platform
+    # probes, then on macOS auto-launches via the .app bundle so
+    # TCC's AudioCapture grant binds to the bundle's responsible
+    # process — direct invocation of the inner binary silently
+    # zero-fills the system tap (see `.docs/handoff.md` §1, §7).
+    # Existing `scrybe rec` semantics are unchanged; the new command
+    # is additive.
+    "scrybe-cli": 3300,
     "scrybe-capture-mac": 2500,
     "scrybe-capture-linux": 2500,
     "scrybe-capture-win": 2500,
