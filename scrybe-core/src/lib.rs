@@ -26,6 +26,7 @@ pub mod hooks;
 pub mod notes;
 pub mod pipeline;
 pub mod providers;
+pub mod record_defaults;
 pub mod session;
 pub mod storage;
 pub mod testing;
