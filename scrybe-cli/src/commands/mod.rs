@@ -15,15 +15,16 @@ pub mod bench;
 pub mod doctor;
 pub mod init;
 pub mod list;
-pub mod record;
+pub mod rec;
 pub mod show;
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
     /// Bootstrap config and verify environment.
     Init(init::Args),
-    /// Record a session end-to-end.
-    Record(record::Args),
+    /// Record a session end-to-end (explicit-flags entry point — used by
+    /// CI, scripts, and advanced users; prefer `scrybe record <title>`).
+    Rec(rec::Args),
     /// List recorded sessions under the configured root.
     List(list::Args),
     /// Render a session's transcript and notes.
@@ -43,7 +44,7 @@ pub enum Command {
 pub async fn run(cmd: Command) -> Result<()> {
     match cmd {
         Command::Init(a) => init::run(a).await,
-        Command::Record(a) => record::run(a).await,
+        Command::Rec(a) => rec::run(a).await,
         Command::List(a) => list::run(a).await,
         Command::Show(a) => show::run(a).await,
         Command::Doctor(a) => doctor::run(a).await,

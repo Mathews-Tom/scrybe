@@ -39,14 +39,14 @@ fn main() -> Result<()> {
 
     let runtime = build_runtime()?;
 
-    if let commands::Command::Record(args) = &cli.command {
+    if let commands::Command::Rec(args) = &cli.command {
         if args.shell {
             #[cfg(feature = "cli-shell")]
             return shell::run_record_with_shell(args.clone(), &runtime);
 
             #[cfg(not(feature = "cli-shell"))]
             tracing::info!(
-                "scrybe record --shell: this binary was built without the cli-shell \
+                "scrybe rec --shell: this binary was built without the cli-shell \
                  feature; running headless and stopping on SIGINT only."
             );
         }

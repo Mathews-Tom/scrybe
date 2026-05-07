@@ -4,7 +4,15 @@
 // You may obtain a copy of the License at
 //     https://www.apache.org/licenses/LICENSE-2.0
 
-//! `scrybe record` — start a session.
+//! `scrybe rec` — start a session (explicit-flags entry point).
+//!
+//! v1.0.5+ split: this module is the explicit-flags entry point used
+//! by CI, scripts, and advanced users. The new `scrybe record <title>`
+//! ergonomic command (see `commands::record`) wraps this with config-
+//! default resolution and macOS Launch-Services auto-launch so end
+//! users typically never invoke `rec` directly. The module name is
+//! `rec` (renamed from `record` at v1.0.5) to free up the `record`
+//! word for the user-facing entry point.
 //!
 //! v1.0.1+ closes the v0.1 mic-only path (`.docs/development-plan.md`
 //! §7.2). Three opt-in flags surface real audio capture and real
