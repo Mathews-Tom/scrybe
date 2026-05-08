@@ -90,7 +90,17 @@ LOC_CEILINGS: dict[str, int] = {
     # zero-fills the system tap (see `.docs/handoff.md` §1, §7).
     # Existing `scrybe rec` semantics are unchanged; the new command
     # is additive.
-    "scrybe-cli": 3300,
+    # Raised to 3400 for v1.0.5 to absorb the bundle_launcher polish
+    # found during hardware testing: stderr suppression on the
+    # post-shutdown `kill -0` poll (was leaking "kill: PID: No such
+    # process" to the user's terminal twice per session), graceful
+    # already-exited handling on `send_sigint`, and a final session-
+    # summary block (`scrybe record: session ULID written to ...`
+    # with transcript/notes/meta/audio paths) reconstructed from the
+    # session folder since the bundle's own stdout summary is
+    # detached by Launch Services. Adds ~50 LoC including 2 unit
+    # tests for the meta.toml session_id parser.
+    "scrybe-cli": 3400,
     "scrybe-capture-mac": 2500,
     "scrybe-capture-linux": 2500,
     "scrybe-capture-win": 2500,

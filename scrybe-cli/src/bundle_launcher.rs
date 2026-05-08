@@ -20,6 +20,7 @@
 //! (closed-unmerged) is the empirical confirmation.
 
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -95,6 +96,13 @@ pub async fn launch_via_bundle(
     if is_pid_alive(pid) {
         anyhow::bail!("bundle did not exit within {SHUTDOWN_GRACE:?} of SIGINT");
     }
+
+    // Brief drain so the transcript-tail task gets the bundle's final
+    // chunks before we print the summary on top of them.
+    sleep(EXIT_POLL_INTERVAL).await;
+    if let Some(dir) = &session_dir {
+        print_final_summary(dir);
+    }
     Ok(())
 }
 
@@ -124,21 +132,72 @@ fn find_bundle_pid() -> Option<u32> {
 }
 
 fn send_sigint(pid: u32) -> Result<()> {
+    if !is_pid_alive(pid) {
+        // Bundle already exited (e.g., via Ctrl-C reaching the
+        // foreground process group); SIGINT would be a no-op.
+        return Ok(());
+    }
     let status = std::process::Command::new("kill")
         .args(["-INT", &pid.to_string()])
+        .stderr(Stdio::null())
         .status()
         .with_context(|| format!("sending SIGINT to pid {pid}"))?;
     if !status.success() {
-        anyhow::bail!("`kill -INT {pid}` returned non-zero status");
+        // Race: bundle exited between the alive check and the kill
+        // call. Treat as success — there was nothing to interrupt.
     }
     Ok(())
 }
 
 fn is_pid_alive(pid: u32) -> bool {
+    // `kill -0 PID` writes "kill: PID: No such process" to stderr when
+    // the target is gone; redirect to /dev/null so the launcher's
+    // terminal stays clean during the post-SIGINT shutdown poll.
     std::process::Command::new("kill")
         .args(["-0", &pid.to_string()])
+        .stderr(Stdio::null())
         .status()
         .is_ok_and(|s| s.success())
+}
+
+fn print_final_summary(session_dir: &Path) {
+    let session_id = std::fs::read_to_string(session_dir.join("meta.toml"))
+        .ok()
+        .as_deref()
+        .and_then(parse_session_id_from_meta)
+        .unwrap_or_else(|| {
+            session_dir
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .rsplit_once('-')
+                .map_or_else(|| "(unknown)".to_string(), |(_, ulid)| ulid.to_string())
+        });
+
+    println!(
+        "scrybe record: session {session_id} written to {}",
+        session_dir.display()
+    );
+    println!(
+        "  transcript: {}",
+        session_dir.join("transcript.md").display()
+    );
+    println!("  notes:      {}", session_dir.join("notes.md").display());
+    println!("  meta:       {}", session_dir.join("meta.toml").display());
+    println!("  audio:      {}", session_dir.join("audio.opus").display());
+}
+
+fn parse_session_id_from_meta(meta_toml: &str) -> Option<String> {
+    meta_toml.lines().find_map(|line| {
+        line.trim()
+            .strip_prefix("session_id")?
+            .trim_start()
+            .strip_prefix('=')?
+            .trim()
+            .strip_prefix('"')?
+            .strip_suffix('"')
+            .map(str::to_string)
+    })
 }
 
 fn newest_session_mtime(root: &Path) -> Option<std::time::SystemTime> {
@@ -231,6 +290,21 @@ mod tests {
         // pid 999_999_999 is far beyond any realistic PID; kill -0
         // returns non-zero, so the helper reports false.
         assert!(!is_pid_alive(999_999_999));
+    }
+
+    #[test]
+    fn test_parse_session_id_extracts_ulid_from_canonical_meta() {
+        let meta = "session_id = \"01KR3GDRT5HZS0VQ9FHBX1P1TW\"\ntitle = \"x\"\n";
+        assert_eq!(
+            parse_session_id_from_meta(meta).as_deref(),
+            Some("01KR3GDRT5HZS0VQ9FHBX1P1TW")
+        );
+    }
+
+    #[test]
+    fn test_parse_session_id_returns_none_when_field_absent() {
+        let meta = "title = \"x\"\nstarted_at = \"2026-05-08T00:00:00Z\"\n";
+        assert!(parse_session_id_from_meta(meta).is_none());
     }
 
     #[test]
