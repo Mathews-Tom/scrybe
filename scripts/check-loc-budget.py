@@ -64,7 +64,17 @@ LOC_CEILINGS: dict[str, int] = {
     # existing `scrybe rec` invocations and bare config behavior are
     # unchanged; the resolvers only run when the new ergonomic command
     # is invoked.
-    "scrybe-core": 9750,
+    # Raised to 10100 for v1.1.0 to absorb the `pipeline::journal`
+    # module (`journal.rs` ~360 LoC including tests) and its wiring
+    # into `session.rs`'s `SessionJournals`. Every session now writes
+    # per-source raw f32 PCM to rotating `journal/<source>-<seq>.f32`
+    # segments on a dedicated OS thread, independent of the live
+    # encode path, so a crash mid-session loses at most the current
+    # segment rather than the whole recording (closes
+    # `.docs/development-plan.md` §19.2 defect D1's durability half;
+    # the anchor manifest and offline merge that replace the live
+    # encode path land in later stacks of the same release).
+    "scrybe-core": 10100,
     # 2000 was the v0.5 ceiling. Raised to 2300 at v0.6 to absorb the
     # `scrybe bench` subcommand. Raised to 2500 at v1.0.1 to absorb
     # the `--source mic` and `--whisper-model` wiring on `scrybe record`
