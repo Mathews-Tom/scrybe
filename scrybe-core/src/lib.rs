@@ -27,6 +27,7 @@ pub mod notes;
 pub mod pipeline;
 pub mod providers;
 pub mod record_defaults;
+pub mod repair;
 pub mod session;
 pub mod storage;
 pub mod testing;
@@ -41,6 +42,7 @@ pub use error::{
     CaptureError, ConfigError, ConsentError, CoreError, HookError, LlmError, PipelineError,
     StorageError, SttError,
 };
+pub use repair::{repair_session, RepairOutcome, RepairReport};
 pub use types::{
     AttributedChunk, AudioChunk, AudioFrame, Capabilities, ConsentAttestation, ConsentMode,
     FrameSource, Language, PermissionModel, SessionId, SpeakerLabel, TranscriptChunk,
