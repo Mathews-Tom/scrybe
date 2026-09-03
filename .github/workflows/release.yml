@@ -78,6 +78,21 @@ jobs:
       # the binary directly. Same pattern applies to `dist build` below.
       - name: dist plan
         run: dist plan --output-format=human
+      # `dist plan --output-format=json` emits the canonical
+      # `dist-manifest.json` schema (cargo-dist-schema) without a build —
+      # planning is enough to enumerate every artifact this release will
+      # produce. Captured here (not in `build`/`release`) because `plan`
+      # is the one job that runs once per release rather than once per
+      # target, so the manifest reflects the whole release, not a single
+      # target's local artifacts.
+      - name: dist manifest
+        run: dist plan --output-format=json > dist-manifest.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-manifest
+          path: dist-manifest.json
+          if-no-files-found: error
+          retention-days: 7
 
   build:
     name: build (${{ matrix.target }})
@@ -136,6 +151,10 @@ jobs:
           path: dist-staging
           pattern: dist-*
           merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-manifest
+          path: dist-staging
       - name: list staged artifacts
         run: ls -la dist-staging/
       # cargo-dist splits artifacts into "local" (per-target tarballs, built by
@@ -196,7 +215,7 @@ jobs:
         run: |
           shopt -s nullglob
           : > SHA256SUMS.txt
-          for f in *.tar.* *.zip *.sh *.cdx.json; do
+          for f in *.tar.* *.zip *.sh *.cdx.json dist-manifest.json; do
             [ -e "$f" ] || continue
             shasum -a 256 "$f" >> SHA256SUMS.txt
           done
