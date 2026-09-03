@@ -6,7 +6,7 @@ All notable changes to scrybe are documented here. The format follows [Keep a Ch
 
 ## [1.1.0-rc1] — 2026-09-03
 
-Repairs the `release.yml` pipeline (broken since `v1.0.2`) and lands the finished ergonomic `scrybe record TITLE` subcommand — the two M1 deliverables in `.docs/DEVELOPMENT_PLAN.md`. This is the first tag to exercise the pipeline since the fix: `main`'s `cosign@2.4.1` root cause (unsupported by `taiki-e/install-action` on `x86_64_linux`) was already resolved by a prior commit (`sigstore/cosign-installer` migration) but had never been validated against a real tag push.
+Repairs the `release.yml` pipeline (broken since `v1.0.2`) and lands the finished ergonomic `scrybe record TITLE` subcommand — the release-pipeline-repair and ergonomic-record-command deliverables from `.docs/DEVELOPMENT_PLAN.md`. This is the first tag to exercise the pipeline since the fix: `main`'s `cosign@2.4.1` root cause (unsupported by `taiki-e/install-action` on `x86_64_linux`) was already resolved by a prior commit (`sigstore/cosign-installer` migration) but had never been validated against a real tag push.
 
 Closes the v1.0.x → v1.1 deliverable flagged in the v1.0.3 and v1.0.4 known limitations: `--source mic+system` recordings encode the mic and system streams as a single stereo Ogg-Opus file with mic on the left channel and system on the right. Prior releases pushed each source's mono frames serially into a mono encoder, which produced an `audio.opus` whose duration ran roughly the sum of both source durations rather than the wall-clock session length (observed in the field as 1088 s of session time → 2380 s of audio).
 
