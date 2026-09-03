@@ -43,7 +43,7 @@ use anyhow::{Context, Result};
 use tokio::runtime::Runtime;
 use tokio::sync::watch;
 
-use crate::commands::record::{run_with_stop, Args};
+use crate::commands::rec::{run_with_stop, Args};
 use crate::hotkey::{HotkeyEvent, HotkeyListener, DEFAULT_TOGGLE_ACCELERATOR};
 use crate::runtime::load_or_default_config;
 use crate::tray::{IndicatorState, RecordingIndicator, TrayCommand};

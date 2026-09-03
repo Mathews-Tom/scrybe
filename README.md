@@ -75,11 +75,13 @@ fresh profile defaults.
 Record:
 
 ```sh
-scrybe record
+scrybe record "client-call"
 # Press Ctrl-C to stop.
 scrybe list
 scrybe show <session-id>
 ```
+
+The ergonomic `scrybe record TITLE` resolves capture source, Whisper model, and LLM kind from your config and platform probes. On macOS it auto-launches via the `.app` bundle so the AudioCapture TCC grant binds correctly. Use `scrybe rec --title TITLE --source … --whisper-model … --llm …` when you need explicit flag control (CI, debugging, alternate hardware setups).
 
 For cloud or hosted-compatible LLMs, configure `[llm]` with a base URL, model, and an environment-variable name for the API key. Secrets stay in the environment, not in `config.toml`.
 

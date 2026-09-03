@@ -43,6 +43,20 @@ ignore = [
     # `rust-toolchain.toml`. Drop this ignore alongside a deliberate
     # `cargo update -p git2` follow-up.
     { id = "RUSTSEC-2026-0008", reason = "git2 0.19 unsound advisory; 0.20 upgrade pending lockfile regeneration after the rustc 1.95 toolchain bump." },
+    # Two more `git2 0.19` unsound findings (published 2026-05-12 and
+    # 2026-05-13), discovered during the M1 CI gate on 2026-09-03.
+    # Same upgrade path as RUSTSEC-2026-0008 above (git2 >=0.21.0);
+    # same lockfile-regeneration blocker. Verified unreachable from
+    # `scrybe-core/src/hooks/git.rs` (the only git2 call site,
+    # `hook-git` feature): -0183 (`Remote::list()`) is never called —
+    # the hook uses `find_remote` + `push` only; -0184 (`Blame`/
+    # `BlameHunk` via `blame_buffer()`) is never touched — the hook
+    # only opens a repo, indexes a file, writes a tree, and commits.
+    # `RUSTSEC-2026-0190` (anyhow `Error::downcast_mut()` unsoundness,
+    # also found in this gate) needed no ignore — `cargo update -p
+    # anyhow` (1.0.102 -> 1.0.104) resolved it directly.
+    { id = "RUSTSEC-2026-0183", reason = "git2 0.19 unsound Remote::list(); not called — Hook::Git uses find_remote+push only." },
+    { id = "RUSTSEC-2026-0184", reason = "git2 0.19 unsound Blame/BlameHunk via blame_buffer(); not reachable — Hook::Git never calls Blame APIs." },
     # `glib 0.18.5` is pulled in transitively by `tray-icon 0.23 →
     # muda → gtk-rs 0.18` and only when the optional `cli-shell`
     # cargo feature is enabled (Linux desktop builds). The default

@@ -6,18 +6,26 @@ All notable changes to scrybe are documented here. The format follows [Keep a Ch
 
 Closes the v1.0.x → v1.1 deliverable flagged in the v1.0.3 and v1.0.4 known limitations: `--source mic+system` recordings encode the mic and system streams as a single stereo Ogg-Opus file with mic on the left channel and system on the right. Prior releases pushed each source's mono frames serially into a mono encoder, which produced an `audio.opus` whose duration ran roughly the sum of both source durations rather than the wall-clock session length (observed in the field as 1088 s of session time → 2380 s of audio).
 
+Adds the ergonomic `scrybe record TITLE` subcommand so end users no longer need to assemble `--source mic+system --whisper-model <path> --llm openai-compat --yes` on every invocation, and so the macOS Launch-Services launch path that AudioCapture TCC requires is invisible to the user. The previous explicit-flags `scrybe record` implementation moved to `scrybe rec` for CI scripts and advanced users.
+
 ### Added
 
 - `scrybe_core::pipeline::interleave::StereoInterleaver` — buffers per-source samples in bounded ring buffers, down-mixes multi-channel per-source frames to mono so a stereo USB mic and the macOS Core Audio Tap (created stereo by default) both feed the same pairing logic, emits aligned interleaved L/R PCM as soon as both sides have data, and zero-fills the lagging side once one source lags beyond a configurable tolerance (default 200 ms). Frames with a mismatched sample rate, zero channels, or `FrameSource::Mixed` source fail fast with `PipelineError::InvalidFrame` rather than silently producing corrupted output.
 - `meta.toml [audio]` block with `channels`, `layout`, `sample_rate`, and `bitrate_bps` keys. The `layout` field is the stable channel-attribution descriptor (`stereo:mic-l,system-r` or `mono:mic`) consumed by future `scrybe rerun` and any third-party tool that needs to split the recording without re-running the diarizer. Older sessions without this block read back as v1.0 mono via `#[serde(default)]`.
+- `scrybe record TITLE` ergonomic subcommand. Resolves capture source, Whisper model, and LLM kind from config defaults plus platform probes (mic+system on macOS, mic elsewhere; `ggml-medium.en.bin` under `~/Library/Application Support/dev.scrybe.scrybe/models/` if the file exists; `openai-compat` if a 100 ms TCP probe of `127.0.0.1:11434` succeeds, else `stub`). Title is positional and required.
+- `scrybe_core::record_defaults` module providing the four resolver helpers (`ergonomic_source`, `ergonomic_whisper_model`, `ergonomic_llm`, `default_whisper_model_path`, `platform_default_source`) consumed by the new subcommand. Schema defaults in `RecordConfig` remain `synthetic` / `stub` so existing `scrybe rec` invocations and bare-config behavior are unchanged.
+- `scrybe-cli::bundle_launcher` module wrapping `open --args` to launch the `.app` bundle through Launch Services on macOS. Forwards SIGINT from the controlling terminal to the launched bundle's PID via `kill -INT`, eliminating the `pkill -INT` workaround. Tails the session's `transcript.md` so per-chunk transcription progress reaches the user's terminal during recording. Bundle path resolves from `SCRYBE_BUNDLE` env, then `./scrybe.app`, `/Applications/scrybe.app`, `~/Applications/scrybe.app`.
 - Regression test in `scrybe_core::session` (`test_run_stereo_audio_interleaves_mic_left_and_system_right`) that asserts mic samples land on the left channel and system samples land on the right at the byte level. The pre-fix serial encode would fail this assertion at the first sample pair.
 - Ten unit tests for `StereoInterleaver` covering aligned drain, sub-threshold buffering, lag-tolerance zero-fill, finish-with-uneven-rings, and the three reject paths (mismatched sample rate, non-mono frames, `Mixed` source).
+- Ten unit tests for `record_defaults` covering explicit-config passthrough, platform-default fallbacks, source/LLM round-trips through their string forms.
+- Eight unit tests across `commands::record` and `bundle_launcher` covering resolution, bundle-path env override, argv construction, and PID-aliveness probes.
 
 ### Changed
 
 - `scrybe_core::session::drive_session` now selects encoder channels from the presence of `system_vad`. With `system_vad: Some(_)`, the encoder is constructed with `channels = 2` and frames flow through `StereoInterleaver::push` → `drain` before reaching `audio_encoder.push_pcm`. With `system_vad: None`, the mono path is unchanged: frames pass through to the encoder verbatim.
 - `MetaArgs` and `build_meta_toml` take ownership rather than reference (`*args` deref no longer fits because the new `audio: Option<AudioMeta>` field carries an owned `String`).
 - `PipelineError` adds an `InvalidFrame(String)` variant for fail-fast frame-shape rejection.
+- **CLI surface**: the previous `scrybe record` (explicit flags, requires manual bundle dispatch on macOS for system audio) renamed to `scrybe rec`. CI scripts and shell aliases using `scrybe record --title X --source mic+system …` need a one-token swap to `scrybe rec --title X --source mic+system …`. The new `scrybe record TITLE` is positional-title-only with sensible defaults.
 
 ### Deprecated / Removed
 
@@ -25,7 +33,7 @@ Closes the v1.0.x → v1.1 deliverable flagged in the v1.0.3 and v1.0.4 known li
 
 ### Security
 
-- No new dependencies. No new network surface. Egress audit unchanged.
+- No new dependencies. No new network surface. The Ollama probe is a 100 ms TCP connect to `127.0.0.1:11434` (no HTTP, no payload, no DNS); the egress audit's denylist semantics are unchanged.
 
 ### Known limitations
 

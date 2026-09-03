@@ -53,7 +53,18 @@ LOC_CEILINGS: dict[str, int] = {
     # length was the sum of mic and system sample counts rather than
     # the wall-clock session duration; further growth in scrybe-core
     # should still trip this gate.
-    "scrybe-core": 9550,
+    # Raised to 9750 for v1.0.5 to absorb the `record_defaults` module
+    # (~161 LoC including tests). The module provides ergonomic-default
+    # resolvers consumed by the `scrybe record <title>` subcommand:
+    # platform-aware source defaults (mic+system on macOS, mic
+    # elsewhere), Whisper model path resolution against the platform
+    # project-data dir, and a 100 ms TCP probe of `127.0.0.1:11434` to
+    # auto-select `openai-compat` when a local Ollama is reachable. The
+    # schema defaults in `RecordConfig` remain `synthetic` / `stub` so
+    # existing `scrybe rec` invocations and bare config behavior are
+    # unchanged; the resolvers only run when the new ergonomic command
+    # is invoked.
+    "scrybe-core": 9750,
     # 2000 was the v0.5 ceiling. Raised to 2300 at v0.6 to absorb the
     # `scrybe bench` subcommand. Raised to 2500 at v1.0.1 to absorb
     # the `--source mic` and `--whisper-model` wiring on `scrybe record`
@@ -68,7 +79,28 @@ LOC_CEILINGS: dict[str, int] = {
     # three failure shapes for the system-tap-silent-frames bug. The
     # probe is gated behind `system-capture-mac` so non-feature builds
     # surface a "skipped" message rather than carrying the dead path.
-    "scrybe-cli": 2800,
+    # Raised to 3300 for v1.0.5 to absorb the new `record` ergonomic
+    # subcommand (~280 LoC including 8 unit tests at
+    # `commands/record.rs`) and the `bundle_launcher` module (~210 LoC
+    # including 3 unit tests). The ergonomic command resolves capture
+    # source, Whisper model, and LLM kind from config plus platform
+    # probes, then on macOS auto-launches via the .app bundle so
+    # TCC's AudioCapture grant binds to the bundle's responsible
+    # process — direct invocation of the inner binary silently
+    # zero-fills the system tap (see `.docs/handoff.md` §1, §7).
+    # Existing `scrybe rec` semantics are unchanged; the new command
+    # is additive.
+    # Raised to 3400 for v1.0.5 to absorb the bundle_launcher polish
+    # found during hardware testing: stderr suppression on the
+    # post-shutdown `kill -0` poll (was leaking "kill: PID: No such
+    # process" to the user's terminal twice per session), graceful
+    # already-exited handling on `send_sigint`, and a final session-
+    # summary block (`scrybe record: session ULID written to ...`
+    # with transcript/notes/meta/audio paths) reconstructed from the
+    # session folder since the bundle's own stdout summary is
+    # detached by Launch Services. Adds ~50 LoC including 2 unit
+    # tests for the meta.toml session_id parser.
+    "scrybe-cli": 3400,
     "scrybe-capture-mac": 2500,
     "scrybe-capture-linux": 2500,
     "scrybe-capture-win": 2500,

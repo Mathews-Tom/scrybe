@@ -8,11 +8,17 @@
 #
 # cargo-audit semantics: "vulnerability" advisories hard-fail by
 # default; "unsound", "notice", and "unmaintained" categories surface
-# as warnings (the "10 allowed warnings" in CI output). Only
+# as warnings (the "N allowed warnings" in CI output). Only
 # vulnerability-class advisories typically need explicit ignores;
-# the workspace's other RUSTSEC entries (RUSTSEC-2026-0008 git2,
-# RUSTSEC-2024-0429 glib, the gtk-rs cluster) are unsound or
-# unmaintained categories that cargo-audit already permits.
+# the workspace's other RUSTSEC entries (RUSTSEC-2026-0008/-0183/
+# -0184 git2, RUSTSEC-2024-0429 glib, the gtk-rs cluster) are unsound
+# or unmaintained categories that cargo-audit already permits — see
+# `deny.toml`'s ignore list for their per-ID rationale, since
+# cargo-deny (unlike cargo-audit) hard-fails on unsound by default.
+# `RUSTSEC-2026-0190` (anyhow), `-0204` (crossbeam-epoch), `-0258`
+# (h2), and `-0185` (quinn-proto, severity 7.5) were vulnerability-
+# or unsound-class findings resolved directly via `cargo update`
+# during the 2026-09-03 M1 CI gate rather than ignored.
 
 [advisories]
 ignore = [
