@@ -9,27 +9,31 @@ The authoritative architectural contract is `docs/system-design.md` §12 (versio
 
 ---
 
-## 1. Six-month scope freeze
+## 1. Post-v1.0 scope policy
 
-From the v1.0.0 release date (2026-05-02), for at least six months (through 2026-11-02), the project commits to **no scope expansion** beyond the surface enumerated in `docs/system-design.md` §12.
+At v1.0.0 (2026-05-02) the project announced a six-month scope freeze running through 2026-11-02: no new platform adapters, extension seams, top-level CLI subcommands, or `scrybe-core` feature flags until a "v1.0 retrospective" decided v1.1's scope (see §4, historical text below).
 
-What that means in practice:
+That retrospective happened early. On 2026-09-03 the maintainer authored `.docs/DEVELOPMENT_PLAN.md`, a concrete milestone-by-milestone post-v1.0 roadmap (M1–M9, `v1.1.0-rc1` through `v1.4.1`) that requires new CLI subcommands and feature flags well before the original November date — M1 already shipped `scrybe rec` as `v1.1.0-rc1`.
 
-- No new platform adapters. The four `AudioCapture` implementations (`scrybe-capture-{mac,linux,win,android}`) are the v1.0 set; iOS, BSD, ChromeOS, embedded targets are out of scope for the freeze window.
-- No new extension seams. The five traits (`AudioCapture`, `ContextProvider`, `SttProvider`, `LlmProvider`, `Hook`, `Diarizer`) are the v1.0 set; a sixth seam needs a tracked issue with two real downstream call sites and a minor-version cycle to land.
-- No new top-level CLI subcommands. The Tier-2 set in `system-design.md` §12.2 (`init`, `record`, `list`, `show`, `doctor`, `bench`) is what v1.0 maintains.
-- No new optional feature flags on `scrybe-core`. The set committed at v1.0 (`hook-git`, `whisper-local`, `parakeet-local`, `openai-compat`, `context-ics`, `hook-webhook`, `hook-tantivy`, `diarize-pyannote`, `encoder-opus`) is what v1.0 supports. (`encoder-opus` was anticipated in `scrybe-core/src/pipeline/encoder.rs` since v0.5 and landed at v1.0.2 to close the v0.1 carryover where `audio.opus` was raw PCM under an `.opus` filename; it was always part of the v1.0 surface in intent.)
+**The six-month freeze is retired, effective 2026-09-03.** `.docs/DEVELOPMENT_PLAN.md` — not a fixed calendar date — is the live scope authority for what ships next. Each milestone's own pre-implementation design gate is the scope-review mechanism: it revalidates the milestone against current code, prior merges, and this document before any product code is written. The Tier-1 architectural freeze in §2 below (and `docs/system-design.md` §12.1) is unrelated and remains fully in force — it protects trait/schema shapes until a major-version bump, not a calendar window, and nothing here changes it.
 
-What is **in** scope during the freeze:
+### Historical: the original six-month freeze text (2026-05-02 – 2026-09-03, retired)
+
+What the freeze meant in practice while it held:
+
+- No new platform adapters. The four `AudioCapture` implementations (`scrybe-capture-{mac,linux,win,android}`) were the v1.0 set; iOS, BSD, ChromeOS, embedded targets were out of scope for the freeze window.
+- No new extension seams. The five traits (`AudioCapture`, `ContextProvider`, `SttProvider`, `LlmProvider`, `Hook`, `Diarizer`) were the v1.0 set; a sixth seam needed a tracked issue with two real downstream call sites and a minor-version cycle to land.
+- No new top-level CLI subcommands. The Tier-2 set in `system-design.md` §12.2 (`init`, `record`, `list`, `show`, `doctor`, `bench`) was what v1.0 maintained.
+- No new optional feature flags on `scrybe-core`. The set committed at v1.0 (`hook-git`, `whisper-local`, `parakeet-local`, `openai-compat`, `context-ics`, `hook-webhook`, `hook-tantivy`, `diarize-pyannote`, `encoder-opus`) was what v1.0 supported.
+
+What was **in** scope during the freeze — this stays true now, unchanged:
 
 - Bug fixes. Every bug report is triaged; severe bugs cut a patch release.
 - Security advisories. CVE-bearing dependencies get patched out under the SLA in §3 below.
-- Live-binding work behind already-shipped feature flags. The `core-audio-tap`, `media-projection`, `wasapi-loopback`, `parakeet-local`, `diarize-pyannote`, `encoder-opus`, and `system-capture-mac` features all carry follow-up work to land their real native bindings or wire them into the CLI; that work continues without re-opening the scope question. (`encoder-opus` shipped its live `OggOpusEncoder` at v1.0.2; `system-capture-mac` shipped at v1.0.3 and now wires `MacCapture` into `scrybe record --source mic+system`.)
+- Live-binding work behind already-shipped feature flags — this class of work continues without re-opening the scope question, same as before.
 - Documentation, examples, README polish.
-- Reproducibility hardening (`reproducibility.yml`) and supply-chain hardening (`cargo-vet`) — both shipped advisory at v0.9.0-rc1 and remain advisory at v1.0.0; promoting either to a blocking gate is a v1.0.x → v1.1 deliverable.
-- Downstream package-manager submissions (Homebrew tap, Scoop bucket, AUR, Flathub, F-Droid). The in-tree templates at `packaging/` are ready; the submissions themselves are maintainer actions and may land at any v1.0.x patch release.
-
-If a feature request arrives during the freeze, the response is "thank you, deferred to v1.1 — feel free to comment on the issue with a use case." Holding the scope is a feature.
+- Reproducibility hardening (`reproducibility.yml`) and supply-chain hardening (`cargo-vet`).
+- Downstream package-manager submissions (Homebrew tap, Scoop bucket, AUR, Flathub, F-Droid).
 
 ---
 
@@ -65,7 +69,7 @@ Triage SLA at v1.0:
 
 - Bugs (any severity): first response within 7 days of report. Reproducible bugs get a tracking issue and a target release; non-reproducible bugs are closed with a "needs more info" template.
 - Security disclosures: first response within 72 hours. Use private security advisories on GitHub (`Security` tab → `Report a vulnerability`); do not post in public issues. The maintainer aims for a fix-or-mitigate within 7 days for High/Critical and 30 days for Medium.
-- Feature requests: triaged but not necessarily acted on during the freeze. The expected response is "thanks, queued for v1.1 consideration" unless the request maps to an existing follow-up tracked in `docs/system-design.md` open questions or `.docs/development-plan.md` §17.
+- Feature requests: triaged against `.docs/DEVELOPMENT_PLAN.md`'s milestone sequence. The expected response is "thanks, tracked against milestone M<n>" when it maps to a planned deliverable, or "queued for a future milestone" otherwise.
 
 The maintainer is a single person on evenings; the SLA is best-effort, not contractual. If the SLA slips, the only recourse is to fork — Apache-2.0 makes that an honest option, not a threat.
 
@@ -75,10 +79,7 @@ The maintainer is a single person on evenings; the SLA is best-effort, not contr
 
 Per `docs/system-design.md` §12.5, scrybe targets a **time-boxed minor release every 6 weeks**. Predictability beats feature completeness for an OSS project — releases go out on schedule with whatever shipped, not "when ready". Patch releases (`1.0.x`) cut on demand for bug fixes and security advisories.
 
-The next planned milestones:
-
-- `v1.0.x` patch stream — bug fixes and security advisories as needed.
-- `v1.1.0` — first minor after the freeze; targeted for ~2026-11-02 if the cadence holds. Scope decided in the v1.0 retrospective, not this document.
+The active release train — supersedes the "first minor after the freeze" framing this section carried through 2026-09-03 — is `.docs/DEVELOPMENT_PLAN.md` §4: nine milestones (M1–M9) each cutting their own minor/patch release, `v1.1.0-rc1` through `v1.4.1`. `v1.1.0-rc1` shipped 2026-09-03.
 
 ---
 
@@ -99,7 +100,7 @@ Contributions land via pull request with the conventional-commit format document
 
 - Every PR must keep the workspace CI green: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test --workspace`, `cargo audit`, `cargo deny check`, the coverage gate, the LoC-budget gate, and the egress-audit gate.
 - New code carries unit tests at the 90% line-coverage threshold for `scrybe-core` and 80% for the workspace. Critical paths (capture, atomic writes, retry policy, consent attestation, config validation) target 95%.
-- Tier-1 changes are non-starters during the v1.0 series — see §1 and §2. A PR that touches a Tier-1 type closes with a pointer to this document.
+- Tier-1 changes are non-starters — see §2. The scope freeze in §1 that used to pair with this line is retired; Tier-1 (architectural trait/schema shapes) is the remaining hard boundary. A PR that touches a Tier-1 type closes with a pointer to this document.
 - Contributors retain copyright on their contributions. There is no CLA. A `CONTRIBUTING.md` documenting the licensing record (whether DCO sign-off, an explicit Apache-2.0 §5 contribution clause, or another mechanism) is a v1.0.x deliverable; until it lands, contributions are accepted under the repository's existing Apache-2.0 license per Apache-2.0 §5 ("each Contributor hereby grants ... a perpetual, worldwide, non-exclusive ... license").
 
 ---
