@@ -4,6 +4,10 @@ All notable changes to scrybe are documented here. The format follows [Keep a Ch
 
 ## [Unreleased]
 
+## [1.1.0-rc1] — 2026-09-03
+
+Repairs the `release.yml` pipeline (broken since `v1.0.2`) and lands the finished ergonomic `scrybe record TITLE` subcommand — the two M1 deliverables in `.docs/DEVELOPMENT_PLAN.md`. This is the first tag to exercise the pipeline since the fix: `main`'s `cosign@2.4.1` root cause (unsupported by `taiki-e/install-action` on `x86_64_linux`) was already resolved by a prior commit (`sigstore/cosign-installer` migration) but had never been validated against a real tag push.
+
 Closes the v1.0.x → v1.1 deliverable flagged in the v1.0.3 and v1.0.4 known limitations: `--source mic+system` recordings encode the mic and system streams as a single stereo Ogg-Opus file with mic on the left channel and system on the right. Prior releases pushed each source's mono frames serially into a mono encoder, which produced an `audio.opus` whose duration ran roughly the sum of both source durations rather than the wall-clock session length (observed in the field as 1088 s of session time → 2380 s of audio).
 
 Adds the ergonomic `scrybe record TITLE` subcommand so end users no longer need to assemble `--source mic+system --whisper-model <path> --llm openai-compat --yes` on every invocation, and so the macOS Launch-Services launch path that AudioCapture TCC requires is invisible to the user. The previous explicit-flags `scrybe record` implementation moved to `scrybe rec` for CI scripts and advanced users.
@@ -22,6 +26,8 @@ Adds the ergonomic `scrybe record TITLE` subcommand so end users no longer need 
 
 ### Changed
 
+- All workspace crates bump from `1.0.4` to `1.1.0-rc1`. Path-dep version pins follow. `scrybe::tests::test_version_constant_matches_cargo_metadata` re-locks from `starts_with("1.0.")` to `starts_with("1.1.")`.
+
 - `scrybe_core::session::drive_session` now selects encoder channels from the presence of `system_vad`. With `system_vad: Some(_)`, the encoder is constructed with `channels = 2` and frames flow through `StereoInterleaver::push` → `drain` before reaching `audio_encoder.push_pcm`. With `system_vad: None`, the mono path is unchanged: frames pass through to the encoder verbatim.
 - `MetaArgs` and `build_meta_toml` take ownership rather than reference (`*args` deref no longer fits because the new `audio: Option<AudioMeta>` field carries an owned `String`).
 - `PipelineError` adds an `InvalidFrame(String)` variant for fail-fast frame-shape rejection.
@@ -33,12 +39,25 @@ Adds the ergonomic `scrybe record TITLE` subcommand so end users no longer need 
 
 ### Security
 
-- No new dependencies. No new network surface. The Ollama probe is a 100 ms TCP connect to `127.0.0.1:11434` (no HTTP, no payload, no DNS); the egress audit's denylist semantics are unchanged.
+- No new dependencies from the feature work. The Ollama probe is a 100 ms TCP connect to `127.0.0.1:11434` (no HTTP, no payload, no DNS); the egress audit's denylist semantics are unchanged.
+- RustSec advisory-database drift since `main`'s last CI validation (2026-05-02) surfaced 3 vulnerability-class findings, patched via `cargo update`: `crossbeam-epoch` 0.9.18 → 0.9.20 (`RUSTSEC-2026-0204`, invalid pointer dereference), `h2` 0.4.13 → 0.4.19 (`RUSTSEC-2026-0258`, unbounded empty DATA frames), `quinn-proto` 0.11.14 → 0.11.17 (`RUSTSEC-2026-0185`, severity 7.5, remote memory exhaustion via unbounded out-of-order stream reassembly). `anyhow` 1.0.102 → 1.0.104 fixes an unsound-class finding (`RUSTSEC-2026-0190`) that `cargo-deny` hard-fails on. Two further `git2 0.19` unsound findings (`RUSTSEC-2026-0183` `Remote::list()`, `RUSTSEC-2026-0184` `BlameHunk`) are ignored in `deny.toml`/`audit.toml` alongside the pre-existing `RUSTSEC-2026-0008` — fixing them needs a breaking `git2 0.19 → 0.21` bump out of scope here; verified unreachable from `scrybe-core/src/hooks/git.rs`, the only `git2` call site.
 
 ### Known limitations
 
 - The mic-only and synthetic capture paths produce mono audio (`channels = 1`). Channel-split is exclusive to `--source mic+system`.
 - Sample-rate normalization across mismatched sources is out of scope: both `MicCapture` and `MacCapture` deliver 48 kHz today; a future device emitting a different rate will fail fast at `StereoInterleaver::push` rather than resampling silently.
+
+### Workspace
+
+- 8 crates (unchanged).
+- Publish posture unchanged.
+- Test counts: 544 default / 558 with `--features scrybe-cli/system-capture-mac`.
+
+### Contributors
+
+- Maintainer: Mathews Tom.
+
+[1.1.0-rc1]: https://github.com/Mathews-Tom/scrybe/releases/tag/v1.1.0-rc1
 
 ## [1.0.4] — 2026-05-02
 
