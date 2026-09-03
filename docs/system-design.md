@@ -158,7 +158,7 @@ pub struct AudioFrame {
     pub samples: Arc<[f32]>,       // interleaved; cheaply cloneable for fan-out
     pub channels: u16,             // 1 (mic-only) or 2 (mic L, system R)
     pub sample_rate: u32,          // raw rate; resampled to 16kHz before STT
-    pub timestamp_ns: u64,
+    pub timestamp_ns: u64,         // source-relative; NOT comparable across sources (see §8.1 D2)
     pub source: FrameSource,
 }
 
@@ -561,11 +561,39 @@ Mode is selected per-session via `--consent {quick,notify,announce}` flag or `co
 ```
 ~/scrybe/
 └── 2026-04-29-1430-acme-discovery/
-    ├── audio.opus              # Opus, 32kbps, ~14MB/hour
+    ├── audio.opus              # Opus, 32kbps, ~14MB/hour; written by the offline merge
     ├── transcript.md           # Appended live during recording
     ├── notes.md                # Generated at SessionEnd
     └── meta.toml               # Static metadata
 ```
+
+During recording (and in any session interrupted before the offline
+merge ran) the folder instead looks like:
+
+```
+~/scrybe/
+└── 2026-04-29-1430-acme-discovery/
+    ├── journal/                 # transient; deleted after a verified merge
+    │   ├── manifest.toml        # per-source anchor: first_frame_epoch_ms, sample_rate, channels, frames_written
+    │   ├── mic-0000.f32         # raw interleaved f32 PCM, rotated every ~30s
+    │   └── system-0000.f32      # present only when --source includes system
+    ├── transcript.md
+    └── meta.toml                # absent until the session actually completes
+```
+
+`audio.opus` is not written incrementally during capture. Each source
+writes raw f32 PCM to its own `journal/<source>-<seq>.f32` segments on
+a dedicated thread, independent of the live encode path, so a crash
+loses at most the still-open segment. At session end (or on demand via
+`scrybe repair <id-or-folder>` after a crash), `pipeline::merge_journal`
+reads `journal/manifest.toml`'s per-source anchors, resamples each
+source to the encoder rate, silence-prefixes whichever source started
+later by the exact wall-clock delta between their `first_frame_epoch_ms`
+anchors, interleaves to stereo (or leaves mono for `--source mic`),
+encodes once, and only then deletes `journal/`. A folder with
+`journal/` present and no `audio.opus` is always an unfinished session
+recoverable with `scrybe repair`; `scrybe list` reports it as
+`UNFINISHED` rather than silently skipping it.
 
 `meta.toml`:
 ```toml
@@ -803,13 +831,13 @@ flowchart LR
 
 ### 8.1 Audio is the source of truth
 
-The single most important reliability invariant: **if the process crashes mid-session, the audio file is recoverable, and from it everything else can be regenerated.**
+The single most important reliability invariant: **if the process crashes mid-session, `journal/`'s raw per-source segments are recoverable via `scrybe repair`, and from the recovered audio everything else can be regenerated.**
 
 | Failure | Impact | Recovery |
 |---|---|---|
 | STT API fails mid-chunk | One chunk missing from `transcript.md` | Retranscribe from `audio.opus` post-hoc with `scrybe retranscribe <session-id>` |
 | LLM call fails at SessionEnd | No `notes.md` | `scrybe notes <session-id>` to retry |
-| Process crashes during recording | Possible final-30s chunk loss | Audio is flushed every chunk boundary; transcript is up to last successful chunk |
+| Process crashes during recording (`SIGKILL`, power loss) | `audio.opus`/`meta.toml` were never written; `journal/` and whatever `transcript.md` chunks completed remain | `scrybe repair <id-or-folder>` runs the same offline merge a normal session runs against `journal/`'s segments, writes `audio.opus`, and reconstructs a minimal `meta.toml` (consent/provider/title fields marked `unknown`, since those were never durably recorded pre-crash). `scrybe list` flags the folder `UNFINISHED` until repaired |
 | Disk fills | Recording stops cleanly | Pre-flight check at session start: minimum 1GB free, abort if not |
 | Permission revoked mid-session (macOS) | Capture stream closes | Detected via stream error; pipeline emits `SessionFailed`, audio up to that point is preserved |
 | Microphone unplugged (USB) | System-audio continues | Mic channel goes silent in transcript; system channel continues normally |
@@ -847,7 +875,8 @@ Filesystem-as-database is only safe when each on-disk file presents either its o
 |---|---|---|
 | `meta.toml`, `notes.md` | atomic replace (write `tmp` → `fsync(file)` → rename → `fsync(parent_dir)`) | Either the previous version or the new one; never partial |
 | `transcript.md` | append-only (`O_APPEND` + `fdatasync` per chunk-boundary append) | All committed chunks present; trailing partial chunk truncated on next open |
-| `audio.opus` | append-only with periodic page flush (1-second Opus pages, `fdatasync` per page) | All complete pages decode; final partial page discarded by the Opus demuxer |
+| `audio.opus` | write-once via the offline merge's `atomic_replace` (`pipeline::merge_journal`, after capture ends or on `scrybe repair`) | Absent until the merge succeeds; a prior `audio.opus` is left untouched if a repair's duration assertion fails |
+| `journal/<source>-<seq>.f32` | append-only per-source segment on a dedicated writer thread, rotated every ~30s, `fsync`'d on segment close | Closed segments are complete; only the still-open segment can lose its tail. `journal/manifest.toml` (atomic-replace) carries the anchor `merge_journal` needs to resume from any completed segment |
 | `<model>.partial` → `<model>` | atomic replace after SHA256 verify | `.partial` files are recoverable orphans; loader refuses to load them |
 | `pid.lock` | exclusive create (`O_CREAT|O_EXCL`); written once with caller pid | Stale lock detection by reading pid and checking liveness |
 
@@ -954,7 +983,7 @@ Notes:
 ~/scrybe/
 └── 2026-04-29-1430-acme-discovery-01HXY7K9RZ/
     ├── pid.lock               # owner pid; deleted on clean exit
-    ├── audio.opus             # append-only, 1s-page-flushed
+    ├── audio.opus             # write-once, produced by offline merge from journal/ (see §8.3)
     ├── transcript.md          # append-only, fdatasync-per-chunk
     ├── transcript.partial.jsonl # write-ahead log of the in-flight chunk
     ├── notes.md               # written once at SessionEnd, atomic-replace
@@ -1083,8 +1112,8 @@ Breaking changes require a major-version bump (`v2.0`) and a 6-month deprecation
 | `LifecycleEvent` variant set | The seven variants in §4.5. Adding a variant is breaking (consumers exhaustive-match), so future events go into a `LifecycleEvent::Extension` payload |
 | `ConsentAttestation` schema | `scrybe-core::types::ConsentAttestation { mode, attested_at, by_user, chat_message_sent, chat_message_target, tts_announce_played }` and the `[consent]` table key set in `meta.toml` |
 | `meta.toml` on-disk schema (v1) | `session_id`, `title`, `started_at`, `ended_at`, `duration_secs`, `language`, `[capture]`, `[consent]`, `[providers]`, `[hooks]`, `[scrybe].version`. The schema is monotonic: an older reader must reject `meta.toml` files whose `[scrybe].version` is greater than its own |
-| Storage-layout invariants | `<root>/<YYYY-MM-DD-HHMM-title-ULID>/{audio.opus, transcript.md, notes.md, meta.toml, pid.lock, .stignore, transcript.partial.jsonl}`; the ULID-suffixed folder name; the per-session `pid.lock` file format (single line, decimal pid) |
-| Atomic-write guarantees | `meta.toml` and `notes.md` are atomic-replace; `transcript.md` and `audio.opus` are append-only with `fdatasync`/`F_FULLFSYNC` per chunk-boundary. Crashes leave at-most-one torn trailing chunk |
+| Storage-layout invariants | `<root>/<YYYY-MM-DD-HHMM-title-ULID>/{audio.opus, transcript.md, notes.md, meta.toml, pid.lock, .stignore, transcript.partial.jsonl}` for a completed session, or `{journal/, transcript.md}` for one still recording or awaiting `scrybe repair`; the ULID-suffixed folder name; the per-session `pid.lock` file format (single line, decimal pid) |
+| Atomic-write guarantees | `meta.toml` and `notes.md` are atomic-replace; `transcript.md` is append-only with `fdatasync`/`F_FULLFSYNC` per chunk-boundary; `audio.opus` is write-once via `atomic_replace` from the offline merge (`pipeline::merge_journal`), never appended to live; `journal/<source>-<seq>.f32` segments are append-only and `fsync`'d on rotation/close |
 | Apache-2.0 license | `LICENSE` is the unmodified Apache 2.0 text. License changes are major-version events on principle |
 
 ### 12.2 Tier 2 — stable, may evolve in minor releases
