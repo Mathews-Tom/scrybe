@@ -64,6 +64,59 @@ pub struct JournalSummary {
     pub segment_count: u32,
 }
 
+/// Anchor metadata for one source's journal.
+///
+/// `first_frame_epoch_ms` is the wall-clock time (milliseconds since
+/// the Unix epoch) captured when the session orchestrator first
+/// observed a frame from this source — the anchor the offline merge
+/// uses to align two independently-clocked sources, since
+/// `AudioFrame::timestamp_ns` is only comparable within one source's
+/// own stream (`docs/development-plan.md` §19.2 defect D2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct JournalAnchor {
+    pub first_frame_epoch_ms: i64,
+    pub sample_rate: u32,
+    pub channels: u16,
+    pub frames_written: u64,
+}
+
+/// `journal/manifest.toml` contents: one optional anchor per source.
+/// Written once at session end, after both writers have closed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct JournalManifest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mic: Option<JournalAnchor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system: Option<JournalAnchor>,
+}
+
+/// Durably writes `manifest.toml` under `journal_dir`.
+///
+/// # Errors
+///
+/// Returns `CoreError::Pipeline` if serialization fails, or
+/// `CoreError::Storage` if the atomic write fails.
+pub fn write_manifest(journal_dir: &Path, manifest: &JournalManifest) -> Result<(), CoreError> {
+    let toml = toml::to_string(manifest).map_err(|e| {
+        CoreError::Pipeline(crate::error::PipelineError::MetaSerialize(Box::new(e)))
+    })?;
+    crate::storage::atomic_replace(&journal_dir.join("manifest.toml"), toml.as_bytes())
+        .map_err(CoreError::Storage)
+}
+
+/// Reads and parses `journal/manifest.toml` under `journal_dir`.
+///
+/// # Errors
+///
+/// Returns `CoreError::Storage` if the file cannot be read, or
+/// `CoreError::Pipeline` if it cannot be parsed as a `JournalManifest`.
+pub fn read_manifest(journal_dir: &Path) -> Result<JournalManifest, CoreError> {
+    let raw = std::fs::read_to_string(journal_dir.join("manifest.toml"))
+        .map_err(|e| CoreError::Storage(StorageError::from(e)))?;
+    toml::from_str(&raw)
+        .map_err(|e| CoreError::Pipeline(crate::error::PipelineError::MetaSerialize(Box::new(e))))
+}
+
 /// Handle to a running per-source journal writer thread.
 ///
 /// `push` is non-blocking: it only enqueues onto an unbounded channel,
@@ -432,5 +485,101 @@ mod tests {
         let seg0 = segment_path(&journal_dir, "mic", 0);
         assert!(seg0.exists(), "Drop must flush and close the open segment");
         assert_eq!(read_segment_samples(&seg0).len(), 20);
+    }
+
+    #[test]
+    fn test_journal_manifest_round_trips_both_sources_through_toml() {
+        let dir = tempdir().unwrap();
+        let journal_dir = dir.path().join("journal");
+        std::fs::create_dir_all(&journal_dir).unwrap();
+        let manifest = JournalManifest {
+            mic: Some(JournalAnchor {
+                first_frame_epoch_ms: 1_735_000_000_123,
+                sample_rate: 16_000,
+                channels: 1,
+                frames_written: 960_000,
+            }),
+            system: Some(JournalAnchor {
+                first_frame_epoch_ms: 1_735_000_000_163,
+                sample_rate: 48_000,
+                channels: 2,
+                frames_written: 2_880_000,
+            }),
+        };
+
+        write_manifest(&journal_dir, &manifest).unwrap();
+        let read_back = read_manifest(&journal_dir).unwrap();
+
+        assert_eq!(read_back, manifest);
+    }
+
+    #[test]
+    fn test_journal_manifest_round_trips_mic_only_session() {
+        let dir = tempdir().unwrap();
+        let journal_dir = dir.path().join("journal");
+        std::fs::create_dir_all(&journal_dir).unwrap();
+        let manifest = JournalManifest {
+            mic: Some(JournalAnchor {
+                first_frame_epoch_ms: 1_735_000_000_000,
+                sample_rate: 16_000,
+                channels: 1,
+                frames_written: 480_000,
+            }),
+            system: None,
+        };
+
+        write_manifest(&journal_dir, &manifest).unwrap();
+        let read_back = read_manifest(&journal_dir).unwrap();
+
+        assert_eq!(read_back, manifest);
+        assert!(read_back.system.is_none());
+    }
+
+    #[test]
+    fn test_journal_manifest_omits_absent_source_from_toml_text() {
+        let dir = tempdir().unwrap();
+        let journal_dir = dir.path().join("journal");
+        std::fs::create_dir_all(&journal_dir).unwrap();
+        let manifest = JournalManifest {
+            mic: Some(JournalAnchor {
+                first_frame_epoch_ms: 0,
+                sample_rate: 16_000,
+                channels: 1,
+                frames_written: 0,
+            }),
+            system: None,
+        };
+        write_manifest(&journal_dir, &manifest).unwrap();
+
+        let raw = std::fs::read_to_string(journal_dir.join("manifest.toml")).unwrap();
+
+        assert!(raw.contains("[mic]"));
+        assert!(
+            !raw.contains("[system]"),
+            "absent source must not appear in the TOML at all, not as a null/empty table"
+        );
+    }
+
+    #[test]
+    fn test_journal_manifest_read_missing_file_returns_storage_error() {
+        let dir = tempdir().unwrap();
+        let journal_dir = dir.path().join("journal");
+        std::fs::create_dir_all(&journal_dir).unwrap();
+
+        let err = read_manifest(&journal_dir).unwrap_err();
+
+        assert!(matches!(err, CoreError::Storage(_)));
+    }
+
+    #[test]
+    fn test_journal_manifest_read_malformed_toml_returns_pipeline_error() {
+        let dir = tempdir().unwrap();
+        let journal_dir = dir.path().join("journal");
+        std::fs::create_dir_all(&journal_dir).unwrap();
+        std::fs::write(journal_dir.join("manifest.toml"), b"not = [valid toml").unwrap();
+
+        let err = read_manifest(&journal_dir).unwrap_err();
+
+        assert!(matches!(err, CoreError::Pipeline(_)));
     }
 }

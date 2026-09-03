@@ -74,7 +74,15 @@ LOC_CEILINGS: dict[str, int] = {
     # `.docs/development-plan.md` §19.2 defect D1's durability half;
     # the anchor manifest and offline merge that replace the live
     # encode path land in later stacks of the same release).
-    "scrybe-core": 10100,
+    # Raised to 10350 for v1.1.0 to absorb the journal anchor contract:
+    # `JournalAnchor`/`JournalManifest` plus `write_manifest`/
+    # `read_manifest` in `pipeline::journal` (with round-trip tests),
+    # the `AudioFrame::timestamp_ns` doc-comment correction (source-
+    # relative, undefined origin across sources — defect D2), and
+    # `AudioMeta`'s new `mic_epoch_ms`/`system_epoch_ms` fields plus
+    # the session-level tests proving they and `journal/manifest.toml`
+    # land correctly end-to-end.
+    "scrybe-core": 10350,
     # 2000 was the v0.5 ceiling. Raised to 2300 at v0.6 to absorb the
     # `scrybe bench` subcommand. Raised to 2500 at v1.0.1 to absorb
     # the `--source mic` and `--whisper-model` wiring on `scrybe record`
