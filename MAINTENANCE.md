@@ -13,9 +13,9 @@ The authoritative architectural contract is `docs/system-design.md` §12 (versio
 
 At v1.0.0 (2026-05-02) the project announced a six-month scope freeze running through 2026-11-02: no new platform adapters, extension seams, top-level CLI subcommands, or `scrybe-core` feature flags until a "v1.0 retrospective" decided v1.1's scope (see §4, historical text below).
 
-That retrospective happened early. On 2026-09-03 the maintainer authored `.docs/DEVELOPMENT_PLAN.md`, a concrete milestone-by-milestone post-v1.0 roadmap (M1–M9, `v1.1.0-rc1` through `v1.4.1`) that requires new CLI subcommands and feature flags well before the original November date — M1 already shipped `scrybe rec` as `v1.1.0-rc1`.
+That retrospective happened early. On 2026-09-03 the maintainer authored `.docs/DEVELOPMENT_PLAN.md`, a concrete deliverable-by-deliverable post-v1.0 roadmap (nine releases, `v1.1.0-rc1` through `v1.4.1`) that requires new CLI subcommands and feature flags well before the original November date — the first of those deliverables already shipped `scrybe rec` as `v1.1.0-rc1`.
 
-**The six-month freeze is retired, effective 2026-09-03.** `.docs/DEVELOPMENT_PLAN.md` — not a fixed calendar date — is the live scope authority for what ships next. Each milestone's own pre-implementation design gate is the scope-review mechanism: it revalidates the milestone against current code, prior merges, and this document before any product code is written. The Tier-1 architectural freeze in §2 below (and `docs/system-design.md` §12.1) is unrelated and remains fully in force — it protects trait/schema shapes until a major-version bump, not a calendar window, and nothing here changes it.
+**The six-month freeze is retired, effective 2026-09-03.** `.docs/DEVELOPMENT_PLAN.md` — not a fixed calendar date — is the live scope authority for what ships next. Each deliverable's own pre-implementation design gate is the scope-review mechanism: it revalidates that deliverable against current code, prior merges, and this document before any product code is written. The Tier-1 architectural freeze in §2 below (and `docs/system-design.md` §12.1) is unrelated and remains fully in force — it protects trait/schema shapes until a major-version bump, not a calendar window, and nothing here changes it.
 
 ### Historical: the original six-month freeze text (2026-05-02 – 2026-09-03, retired)
 
@@ -69,7 +69,7 @@ Triage SLA at v1.0:
 
 - Bugs (any severity): first response within 7 days of report. Reproducible bugs get a tracking issue and a target release; non-reproducible bugs are closed with a "needs more info" template.
 - Security disclosures: first response within 72 hours. Use private security advisories on GitHub (`Security` tab → `Report a vulnerability`); do not post in public issues. The maintainer aims for a fix-or-mitigate within 7 days for High/Critical and 30 days for Medium.
-- Feature requests: triaged against `.docs/DEVELOPMENT_PLAN.md`'s milestone sequence. The expected response is "thanks, tracked against milestone M<n>" when it maps to a planned deliverable, or "queued for a future milestone" otherwise.
+- Feature requests: triaged against `.docs/DEVELOPMENT_PLAN.md`'s deliverable sequence. The expected response is "thanks, tracked for an upcoming release" when it maps to a planned deliverable, or "queued for a future release" otherwise.
 
 The maintainer is a single person on evenings; the SLA is best-effort, not contractual. If the SLA slips, the only recourse is to fork — Apache-2.0 makes that an honest option, not a threat.
 
@@ -79,7 +79,7 @@ The maintainer is a single person on evenings; the SLA is best-effort, not contr
 
 Per `docs/system-design.md` §12.5, scrybe targets a **time-boxed minor release every 6 weeks**. Predictability beats feature completeness for an OSS project — releases go out on schedule with whatever shipped, not "when ready". Patch releases (`1.0.x`) cut on demand for bug fixes and security advisories.
 
-The active release train — supersedes the "first minor after the freeze" framing this section carried through 2026-09-03 — is `.docs/DEVELOPMENT_PLAN.md` §4: nine milestones (M1–M9) each cutting their own minor/patch release, `v1.1.0-rc1` through `v1.4.1`. `v1.1.0-rc1` shipped 2026-09-03.
+The active release train — supersedes the "first minor after the freeze" framing this section carried through 2026-09-03 — is `.docs/DEVELOPMENT_PLAN.md` §4: nine deliverables, each cutting its own minor/patch release, `v1.1.0-rc1` through `v1.4.1`. `v1.1.0-rc1` shipped 2026-09-03.
 
 ---
 
