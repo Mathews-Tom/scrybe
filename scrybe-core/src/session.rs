@@ -34,6 +34,7 @@ use crate::notes;
 use crate::pipeline::chunker::{ChunkBoundary, Chunker, ChunkerConfig, EmittedChunk};
 use crate::pipeline::encoder::{default_session_encoder, EncoderConfig};
 use crate::pipeline::interleave::StereoInterleaver;
+use crate::pipeline::journal::{JournalSummary, JournalWriter};
 use crate::pipeline::resample::resample_linear;
 use crate::pipeline::vad::Vad;
 use crate::providers::{LlmProvider, SttProvider};
@@ -194,6 +195,57 @@ where
     chunker_config: ChunkerConfig,
 }
 
+/// Lazily-spawned per-source journal writers for one session. Each
+/// source spawns its writer on its own first frame, using that
+/// frame's native `sample_rate`/`channels` — the same stability
+/// assumption every other per-source pipeline stage makes. Additive
+/// to the live encode path below: every session now also durably
+/// journals raw per-source PCM, independent of whatever the encoder
+/// does with it. The anchor manifest and the offline merge that
+/// replace the live encode path are layered on top in later stacks.
+struct SessionJournals {
+    dir: PathBuf,
+    mic: Option<JournalWriter>,
+    system: Option<JournalWriter>,
+}
+
+impl SessionJournals {
+    const fn new(dir: PathBuf) -> Self {
+        Self {
+            dir,
+            mic: None,
+            system: None,
+        }
+    }
+
+    fn push(&mut self, frame: &AudioFrame) -> Result<(), CoreError> {
+        let slot = match frame.source {
+            FrameSource::System => &mut self.system,
+            FrameSource::Mic | FrameSource::Mixed => &mut self.mic,
+        };
+        if slot.is_none() {
+            *slot = Some(JournalWriter::spawn(
+                &self.dir,
+                frame.source,
+                frame.sample_rate,
+                frame.channels,
+            )?);
+        }
+        if let Some(writer) = slot.as_ref() {
+            writer.push(Arc::clone(&frame.samples));
+        }
+        Ok(())
+    }
+
+    /// Closes every spawned writer and returns each source's summary,
+    /// `None` for a source that never received a frame this session.
+    fn finish(self) -> Result<(Option<JournalSummary>, Option<JournalSummary>), CoreError> {
+        let mic = self.mic.map(JournalWriter::finish).transpose()?;
+        let system = self.system.map(JournalWriter::finish).transpose()?;
+        Ok((mic, system))
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 async fn drive_session<C, V, S, L, D>(
     inputs: DriveInputs<'_, V, S, L, D>,
@@ -274,6 +326,7 @@ where
     let mut audio_encoder = default_session_encoder(encoder_config).map_err(CoreError::Pipeline)?;
     let mut interleaver =
         stereo_mode.then(|| StereoInterleaver::new(encoder_config.sample_rate, 200));
+    let mut journals = SessionJournals::new(folder.join("journal"));
 
     let mut mic_text_chunks: Vec<crate::types::TranscriptChunk> = Vec::new();
     let mut sys_text_chunks: Vec<crate::types::TranscriptChunk> = Vec::new();
@@ -293,6 +346,7 @@ where
 
     while let Some(frame_result) = capture_stream.next().await {
         let frame = frame_result?;
+        journals.push(&frame)?;
         let mut chunks_for_stt: Vec<EmittedChunk> = Vec::new();
         let mut sink = |c: EmittedChunk| chunks_for_stt.push(c);
         match frame.source {
@@ -422,6 +476,9 @@ where
     if !tail_page.is_empty() {
         append_durable(&audio_path, &tail_page)?;
     }
+
+    let (mic_journal, system_journal) = journals.finish()?;
+    debug!(?mic_journal, ?system_journal, "per-source journal closed");
 
     // Diagnostic summary (temporary; see the comment at the counters'
     // declaration above). `diag_encoder_samples` counts
