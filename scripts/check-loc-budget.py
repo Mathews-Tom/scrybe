@@ -82,7 +82,17 @@ LOC_CEILINGS: dict[str, int] = {
     # `AudioMeta`'s new `mic_epoch_ms`/`system_epoch_ms` fields plus
     # the session-level tests proving they and `journal/manifest.toml`
     # land correctly end-to-end.
-    "scrybe-core": 10350,
+    # Raised to 10850 for v1.1.0 to absorb `pipeline::merge`
+    # (`merge.rs` ~450 LoC including tests): the offline merge that
+    # turns per-source journal segments into `audio.opus` after
+    # capture ends -- downmix, resample to the encoder rate,
+    # epoch-delta silence-prefix the later-starting source,
+    # interleave, encode once, and assert the result is within 1% of
+    # wall clock (`PipelineError::DurationMismatch`) before deleting
+    # the journal. Not yet wired into `session::drive_session`'s live
+    # path -- that cutover, plus `StereoInterleaver` removal and
+    # `scrybe repair`, lands in the next stack of this release.
+    "scrybe-core": 10850,
     # 2000 was the v0.5 ceiling. Raised to 2300 at v0.6 to absorb the
     # `scrybe bench` subcommand. Raised to 2500 at v1.0.1 to absorb
     # the `--source mic` and `--whisper-model` wiring on `scrybe record`
