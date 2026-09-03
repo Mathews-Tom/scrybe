@@ -92,11 +92,18 @@ pub struct JournalManifest {
 
 /// Durably writes `manifest.toml` under `journal_dir`.
 ///
+/// Creates the directory first if it does not exist yet. Callers may
+/// write a manifest immediately after spawning a `JournalWriter` —
+/// whose own `create_dir_all` runs asynchronously on its writer
+/// thread — so this must not assume the directory is already there.
+///
 /// # Errors
 ///
 /// Returns `CoreError::Pipeline` if serialization fails, or
-/// `CoreError::Storage` if the atomic write fails.
+/// `CoreError::Storage` if creating the directory or the atomic
+/// write fails.
 pub fn write_manifest(journal_dir: &Path, manifest: &JournalManifest) -> Result<(), CoreError> {
+    std::fs::create_dir_all(journal_dir).map_err(|e| CoreError::Storage(StorageError::from(e)))?;
     let toml = toml::to_string(manifest).map_err(|e| {
         CoreError::Pipeline(crate::error::PipelineError::MetaSerialize(Box::new(e)))
     })?;

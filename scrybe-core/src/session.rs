@@ -32,9 +32,9 @@ use crate::error::{CoreError, PipelineError};
 use crate::hooks::{dispatch_hooks, Hook, LifecycleEvent};
 use crate::notes;
 use crate::pipeline::chunker::{ChunkBoundary, Chunker, ChunkerConfig, EmittedChunk};
-use crate::pipeline::encoder::{default_session_encoder, EncoderConfig};
-use crate::pipeline::interleave::StereoInterleaver;
+use crate::pipeline::encoder::EncoderConfig;
 use crate::pipeline::journal::{JournalAnchor, JournalManifest, JournalWriter};
+use crate::pipeline::merge::merge_journal;
 use crate::pipeline::resample::resample_linear;
 use crate::pipeline::vad::Vad;
 use crate::providers::{LlmProvider, SttProvider};
@@ -75,6 +75,18 @@ where
     pub prompter: &'a P,
     pub hooks: &'a [Box<dyn Hook>],
     pub chunker_config: ChunkerConfig,
+    /// Whether the offline merge asserts the encoded audio duration
+    /// is within 1% of real wall-clock elapsed time
+    /// (`Utc::now() - started_at`). `true` for every capture source
+    /// backed by real hardware, where the assertion is a genuine
+    /// safety net against journal-level data loss or a resample bug
+    /// (`docs/development-plan.md` §19.2 defect D1). `false` for the
+    /// deterministic synthetic source, whose frames declare their
+    /// own elapsed time via `AudioFrame::timestamp_ns` but are
+    /// generated in-process without real-time pacing — comparing
+    /// their encoded duration against actual CPU wall-clock time
+    /// would fail by construction, not because anything is wrong.
+    pub verify_duration: bool,
 }
 
 /// Outputs the orchestrator surfaces to the caller. Paths are owned so
@@ -128,6 +140,7 @@ where
         prompter,
         hooks,
         chunker_config,
+        verify_duration,
     } = inputs;
 
     let attestation = crate::consent::run(consent_mode, user, prompter).await?;
@@ -155,6 +168,7 @@ where
             diarizer,
             hooks,
             chunker_config,
+            verify_duration,
         },
         capture_stream,
     )
@@ -193,6 +207,7 @@ where
     diarizer: &'a D,
     hooks: &'a [Box<dyn Hook>],
     chunker_config: ChunkerConfig,
+    verify_duration: bool,
 }
 
 /// Lazily-spawned per-source journal writers for one session. Each
@@ -205,8 +220,33 @@ where
 /// replace the live encode path are layered on top in later stacks.
 struct SessionJournals {
     dir: PathBuf,
-    mic: Option<(i64, JournalWriter)>,
-    system: Option<(i64, JournalWriter)>,
+    mic: Option<JournalSlot>,
+    system: Option<JournalSlot>,
+}
+
+/// A spawned writer plus the anchor fields known the moment it was
+/// spawned (`sample_rate`/`channels`/`first_frame_epoch_ms` — all
+/// final at spawn time; only `frames_written` grows afterward).
+struct JournalSlot {
+    first_frame_epoch_ms: i64,
+    sample_rate: u32,
+    channels: u16,
+    writer: JournalWriter,
+}
+
+impl JournalSlot {
+    /// Anchor reflecting this slot's state right now. `frames_written`
+    /// is `0` while capture is still in progress — never load-bearing
+    /// for the merge (which re-reads segment bytes directly), only
+    /// informational for a partial manifest written mid-session.
+    const fn partial_anchor(&self) -> JournalAnchor {
+        JournalAnchor {
+            first_frame_epoch_ms: self.first_frame_epoch_ms,
+            sample_rate: self.sample_rate,
+            channels: self.channels,
+            frames_written: 0,
+        }
+    }
 }
 
 impl SessionJournals {
@@ -223,15 +263,49 @@ impl SessionJournals {
             FrameSource::System => &mut self.system,
             FrameSource::Mic | FrameSource::Mixed => &mut self.mic,
         };
-        if slot.is_none() {
+        let spawned_new = slot.is_none();
+        if spawned_new {
             let writer =
                 JournalWriter::spawn(&self.dir, frame.source, frame.sample_rate, frame.channels)?;
-            *slot = Some((Utc::now().timestamp_millis(), writer));
+            *slot = Some(JournalSlot {
+                first_frame_epoch_ms: Utc::now().timestamp_millis(),
+                sample_rate: frame.sample_rate,
+                channels: frame.channels,
+                writer,
+            });
         }
-        if let Some((_, writer)) = slot.as_ref() {
-            writer.push(Arc::clone(&frame.samples));
+        if let Some(s) = slot.as_ref() {
+            s.writer.push(Arc::clone(&frame.samples));
+        }
+        if spawned_new {
+            // Refresh the on-disk manifest immediately, not just at
+            // session end: a process that never reaches its normal
+            // `finish()` (crash, SIGKILL) still leaves a usable
+            // anchor on disk for `scrybe repair` to read.
+            self.write_partial_manifest();
         }
         Ok(())
+    }
+
+    /// Best-effort, fire-and-forget: runs on a detached OS thread so
+    /// its `fsync`-backed write never delays processing of the next
+    /// frame. Blocking here would widen the wall-clock gap between
+    /// capturing this source's `first_frame_epoch_ms` and the other
+    /// source's, corrupting the merge's cross-source alignment
+    /// (`pipeline::merge::interleave_stereo`'s silence-prefix math)
+    /// for no benefit — a session that completes normally overwrites
+    /// this with an authoritative manifest synchronously (see below),
+    /// and one that crashes only needs *a* recent manifest, not this
+    /// exact one.
+    fn write_partial_manifest(&self) {
+        let manifest = JournalManifest {
+            mic: self.mic.as_ref().map(JournalSlot::partial_anchor),
+            system: self.system.as_ref().map(JournalSlot::partial_anchor),
+        };
+        let dir = self.dir.clone();
+        std::thread::spawn(move || {
+            let _ = crate::pipeline::journal::write_manifest(&dir, &manifest);
+        });
     }
 
     /// Closes every spawned writer and returns the session's journal
@@ -244,13 +318,13 @@ impl SessionJournals {
     }
 }
 
-fn finish_anchor(slot: Option<(i64, JournalWriter)>) -> Result<Option<JournalAnchor>, CoreError> {
-    let Some((first_frame_epoch_ms, writer)) = slot else {
+fn finish_anchor(slot: Option<JournalSlot>) -> Result<Option<JournalAnchor>, CoreError> {
+    let Some(slot) = slot else {
         return Ok(None);
     };
-    let summary = writer.finish()?;
+    let summary = slot.writer.finish()?;
     Ok(Some(JournalAnchor {
-        first_frame_epoch_ms,
+        first_frame_epoch_ms: slot.first_frame_epoch_ms,
         sample_rate: summary.sample_rate,
         channels: summary.channels,
         frames_written: summary.frames_written,
@@ -283,6 +357,7 @@ where
         diarizer,
         hooks,
         chunker_config,
+        verify_duration,
     } = inputs;
 
     let context_arc = Arc::new(context.clone());
@@ -312,48 +387,22 @@ where
     )
     .await;
 
-    let stereo_mode = system_vad.is_some();
     let mut mic_chunker = Chunker::new(chunker_config, mic_vad, FrameSource::Mic);
     let mut system_chunker =
         system_vad.map(|v| Chunker::new(chunker_config, v, FrameSource::System));
-    // Pick the audio encoder via the pipeline's compile-time feature
-    // gate. With `encoder-opus` on, this returns `OggOpusEncoder` and
-    // `audio.opus` is a real Ogg-Opus file decodable by ffmpeg, vlc,
-    // etc. Without the feature, the deterministic `NullEncoder` writes
-    // raw f32 PCM (sized for tests; mismatched with the `.opus`
-    // filename but documented under §7.6.4 E-6 as a v0.1 carryover).
-    //
-    // When `stereo_mode` is set (mic+system source), the encoder is
-    // configured for two channels and the per-source mono frames are
-    // interleaved into L=mic, R=system before encoding. Without this
-    // step, mic and system frames push serially into a mono encoder
-    // and `audio.opus` ends up at roughly the sum of both source
-    // durations (the v1.0.4 bug observed where 1088 s of session time
-    // produced a 2380 s file).
-    let encoder_config = EncoderConfig {
-        channels: if stereo_mode { 2 } else { 1 },
-        ..EncoderConfig::default()
-    };
-    let mut audio_encoder = default_session_encoder(encoder_config).map_err(CoreError::Pipeline)?;
-    let mut interleaver =
-        stereo_mode.then(|| StereoInterleaver::new(encoder_config.sample_rate, 200));
+    // `audio.opus` is produced entirely by the offline merge
+    // (`pipeline::merge::merge_journal`) after capture ends, from the
+    // per-source journal this loop writes below — never by a live
+    // push/drain/encode path. This closes defect D1 (a crash loses at
+    // most the current journal segment, not the whole recording) and
+    // defect D2 (the merge aligns sources by their wall-clock
+    // `first_frame_epoch_ms` anchors, not by comparing
+    // `AudioFrame::timestamp_ns` across sources).
+    let encoder_config = EncoderConfig::default();
     let mut journals = SessionJournals::new(folder.join("journal"));
 
     let mut mic_text_chunks: Vec<crate::types::TranscriptChunk> = Vec::new();
     let mut sys_text_chunks: Vec<crate::types::TranscriptChunk> = Vec::new();
-
-    // --- Duration-mismatch diagnostic instrumentation (temporary; see
-    // `.docs/development-plan.md` §19.2 defect D1 and `.docs/handoff.md`
-    // §3.11's findings note). Tallies raw source samples received
-    // against samples actually handed to `audio_encoder.push_pcm`, and
-    // flags every frame pushed through the non-interleaved path whose
-    // native rate disagrees with `encoder_config.sample_rate` — the
-    // interleaved path already resamples on mismatch (see the comment
-    // above), the non-interleaved path never did. Removed once the
-    // journal-and-offline-merge redesign deletes this live push/drain/
-    // encode path.
-    let mut diag_source_samples: u64 = 0;
-    let mut diag_encoder_samples: u64 = 0;
 
     while let Some(frame_result) = capture_stream.next().await {
         let frame = frame_result?;
@@ -368,75 +417,6 @@ where
             }
             FrameSource::Mic | FrameSource::Mixed => {
                 mic_chunker.push(frame.clone(), &mut sink);
-            }
-        }
-        let pcm_for_audio: Vec<f32> = if let Some(iv) = interleaver.as_mut() {
-            // Capture adapters negotiate sample rate with the platform
-            // and may disagree: `MacCapture`'s tap delivers 48 kHz, but
-            // `MicCapture` via cpal often lands on 16 kHz on built-in
-            // Mac inputs. The interleaver requires matched per-source
-            // rates, so resample any frame whose native rate disagrees
-            // with the encoder's target before pushing. The encoder is
-            // pinned to 48 kHz today; if that ever changes,
-            // `encoder_config.sample_rate` carries the canonical value.
-            let resampled_frame: AudioFrame;
-            let frame_to_push = if frame.sample_rate == encoder_config.sample_rate {
-                &frame
-            } else {
-                let resampled_samples = resample_linear(
-                    &frame.samples,
-                    frame.sample_rate,
-                    encoder_config.sample_rate,
-                )
-                .map_err(|e| CoreError::Pipeline(e.into()))?;
-                resampled_frame = AudioFrame::from_slice(
-                    &resampled_samples,
-                    frame.channels,
-                    encoder_config.sample_rate,
-                    frame.timestamp_ns,
-                    frame.source,
-                );
-                &resampled_frame
-            };
-            diag_source_samples += frame_to_push.samples.len() as u64;
-            iv.push(frame_to_push).map_err(CoreError::Pipeline)?;
-            iv.drain()
-        } else {
-            diag_source_samples += frame.samples.len() as u64;
-            if frame.sample_rate != encoder_config.sample_rate {
-                // D1 root cause: unlike the interleaved branch above,
-                // this path never resamples before handing samples to
-                // the encoder. The encoder's OpusHead declares
-                // `encoder_config.sample_rate` (48 kHz), so every
-                // sample generated at a different native rate gets
-                // time-labeled wrong on decode — e.g. a 16 kHz source
-                // encodes to 1/3 its real duration. Confirmed
-                // synthetically: a 36 s `--source synthetic` session
-                // (16 kHz) produced a 12.02 s `audio.opus`;
-                // `ffmpeg -i audio.opus -f wav - | wc -c` proved every
-                // sample survived intact (no data loss) — this is a
-                // rate-label defect, not a dropped-samples defect.
-                warn!(
-                    frame_rate = frame.sample_rate,
-                    encoder_rate = encoder_config.sample_rate,
-                    "D1: non-interleaved push path fed the encoder samples at a rate that \
-                     disagrees with its configured rate without resampling; the encoded \
-                     duration will be wrong by frame_rate/encoder_rate"
-                );
-            }
-            frame.samples.as_ref().to_vec()
-        };
-        if !pcm_for_audio.is_empty() {
-            diag_encoder_samples += pcm_for_audio.len() as u64;
-            let page = audio_encoder
-                .push_pcm(&pcm_for_audio)
-                .map_err(CoreError::Pipeline)?;
-            if !page.is_empty() {
-                // Per docs/system-design.md §8.3: audio is the source of
-                // truth, so each completed page is durably appended with
-                // fdatasync on Unix / FlushFileBuffers on Windows. A crash
-                // mid-session loses at most the most recent partial page.
-                append_durable(&audio_path, &page)?;
             }
         }
 
@@ -471,45 +451,33 @@ where
         }
     }
 
-    if let Some(iv) = interleaver.as_mut() {
-        let tail_pcm = iv.finish();
-        if !tail_pcm.is_empty() {
-            diag_encoder_samples += tail_pcm.len() as u64;
-            let page = audio_encoder
-                .push_pcm(&tail_pcm)
-                .map_err(CoreError::Pipeline)?;
-            if !page.is_empty() {
-                append_durable(&audio_path, &page)?;
-            }
-        }
-    }
-    let tail_page = audio_encoder.finish().map_err(CoreError::Pipeline)?;
-    if !tail_page.is_empty() {
-        append_durable(&audio_path, &tail_page)?;
-    }
-
     let journal_manifest = journals.finish()?;
     if journal_manifest.mic.is_some() || journal_manifest.system.is_some() {
+        // Written before the merge attempt (not after) so a duration-
+        // assertion failure below still leaves a manifest on disk for
+        // `scrybe repair` to read the anchors from without re-deriving
+        // them.
         crate::pipeline::journal::write_manifest(&folder.join("journal"), &journal_manifest)?;
     }
-    debug!(?journal_manifest, "journal manifest written");
-
-    // Diagnostic summary (temporary; see the comment at the counters'
-    // declaration above). `diag_encoder_samples` counts
-    // interleaved stereo pairs as 2 samples each in stereo mode, so
-    // divide by `channels` to get a frame count comparable to
-    // wall-clock seconds at `encoder_config.sample_rate`.
-    let encoder_frames = diag_encoder_samples / u64::from(encoder_config.channels.max(1));
     #[allow(clippy::cast_precision_loss)]
-    let encoder_implied_secs = encoder_frames as f64 / f64::from(encoder_config.sample_rate.max(1));
-    #[allow(clippy::cast_precision_loss)]
-    let wall_clock_secs = (Utc::now() - started_at).num_milliseconds() as f64 / 1000.0;
-    debug!(
-        diag_source_samples,
-        diag_encoder_samples,
-        encoder_implied_secs,
+    let wall_clock_secs = if verify_duration {
+        (Utc::now() - started_at).num_milliseconds() as f64 / 1000.0
+    } else {
+        0.0
+    };
+    let merge_report = merge_journal(
+        &folder.join("journal"),
+        &audio_path,
+        &journal_manifest,
+        encoder_config,
         wall_clock_secs,
-        "duration diagnostic: encoder-implied duration vs wall clock"
+    )?;
+    debug!(
+        ?journal_manifest,
+        encoded_secs = merge_report.encoded_secs,
+        channels = merge_report.channels,
+        wall_clock_secs,
+        "offline journal merge complete"
     );
 
     let attributed = diarizer
@@ -543,8 +511,8 @@ where
 
     let ended_at = Utc::now();
     let audio_meta = Some(AudioMeta {
-        channels: encoder_config.channels,
-        layout: audio_layout(stereo_mode, encoder_config.channels).to_string(),
+        channels: merge_report.channels,
+        layout: audio_layout(merge_report.channels == 2, merge_report.channels).to_string(),
         sample_rate: encoder_config.sample_rate,
         bitrate_bps: encoder_config.bitrate_bps,
         mic_epoch_ms: journal_manifest.mic.map(|a| a.first_frame_epoch_ms),
@@ -720,7 +688,7 @@ fn downmix_to_mono(interleaved: &[f32], channels: u16) -> Vec<f32> {
 }
 
 #[derive(Serialize, Deserialize)]
-struct MetaTomlV1 {
+pub(crate) struct MetaTomlV1 {
     session_id: String,
     title: Option<String>,
     started_at: DateTime<Utc>,
@@ -734,14 +702,14 @@ struct MetaTomlV1 {
 }
 
 #[derive(Serialize, Deserialize)]
-struct Providers {
+pub(crate) struct Providers {
     stt: String,
     llm: String,
     diarizer: String,
 }
 
 #[derive(Serialize, Deserialize)]
-struct Versioning {
+pub(crate) struct Versioning {
     version: String,
 }
 
@@ -754,41 +722,41 @@ struct Versioning {
 /// implicitly `mono:mic` or `mono:synthetic` — readers MUST treat the
 /// absence as v1.0 mono and not assume any channel attribution.
 #[derive(Serialize, Deserialize)]
-struct AudioMeta {
-    channels: u16,
-    layout: String,
-    sample_rate: u32,
-    bitrate_bps: u32,
+pub(crate) struct AudioMeta {
+    pub(crate) channels: u16,
+    pub(crate) layout: String,
+    pub(crate) sample_rate: u32,
+    pub(crate) bitrate_bps: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    mic_epoch_ms: Option<i64>,
+    pub(crate) mic_epoch_ms: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    system_epoch_ms: Option<i64>,
+    pub(crate) system_epoch_ms: Option<i64>,
 }
 
-struct MetaArgs<'a> {
-    id: SessionId,
-    title: Option<&'a str>,
-    started_at: DateTime<Utc>,
-    ended_at: DateTime<Utc>,
-    attestation: &'a ConsentAttestation,
-    stt_name: &'a str,
-    llm_name: &'a str,
-    diarizer_name: &'a str,
-    audio: Option<AudioMeta>,
+pub(crate) struct MetaArgs<'a> {
+    pub(crate) id: SessionId,
+    pub(crate) title: Option<&'a str>,
+    pub(crate) started_at: DateTime<Utc>,
+    pub(crate) ended_at: DateTime<Utc>,
+    pub(crate) attestation: &'a ConsentAttestation,
+    pub(crate) stt_name: &'a str,
+    pub(crate) llm_name: &'a str,
+    pub(crate) diarizer_name: &'a str,
+    pub(crate) audio: Option<AudioMeta>,
 }
 
 /// Canonical channel-attribution descriptor written into
 /// `meta.audio.layout`. Stable values consumed by `scrybe show`,
 /// future `scrybe rerun`, and any third-party tool that needs to
 /// know what each channel of `audio.opus` carries.
-const fn audio_layout(stereo: bool, channels: u16) -> &'static str {
+pub(crate) const fn audio_layout(stereo: bool, channels: u16) -> &'static str {
     match (stereo, channels) {
         (true, 2) => "stereo:mic-l,system-r",
         _ => "mono:mic",
     }
 }
 
-fn build_meta_toml(args: MetaArgs<'_>) -> Result<String, CoreError> {
+pub(crate) fn build_meta_toml(args: MetaArgs<'_>) -> Result<String, CoreError> {
     let MetaArgs {
         id,
         title,
@@ -957,6 +925,7 @@ mod tests {
             prompter: &prompter,
             hooks: &hooks,
             chunker_config: small_chunker_config(),
+            verify_duration: false,
         };
 
         let outputs = run(inputs, frames).await.unwrap();
@@ -1003,6 +972,7 @@ mod tests {
             prompter: &prompter,
             hooks: &hooks,
             chunker_config: small_chunker_config(),
+            verify_duration: false,
         };
 
         let outputs = run(inputs, frames).await.unwrap();
@@ -1050,6 +1020,7 @@ mod tests {
             prompter: &prompter,
             hooks: &hooks,
             chunker_config: small_chunker_config(),
+            verify_duration: false,
         };
 
         let err = run(inputs, frames).await.unwrap_err();
@@ -1084,6 +1055,7 @@ mod tests {
             prompter: &prompter,
             hooks: &hooks,
             chunker_config: small_chunker_config(),
+            verify_duration: false,
         };
 
         let outputs = run(inputs, frames).await.unwrap();
@@ -1137,6 +1109,7 @@ mod tests {
             prompter: &prompter,
             hooks: &hooks,
             chunker_config: small_chunker_config(),
+            verify_duration: false,
         };
 
         let outputs = run(inputs, frames).await.unwrap();
@@ -1192,6 +1165,7 @@ mod tests {
             prompter: &prompter,
             hooks: &hooks,
             chunker_config: small_chunker_config(),
+            verify_duration: false,
         };
 
         let outputs = run(inputs, frames).await.unwrap();
@@ -1207,7 +1181,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_run_writes_journal_manifest_and_meta_epoch_fields_for_stereo_session() {
+    async fn test_run_writes_meta_epoch_fields_for_stereo_session_and_deletes_journal() {
         let tmp = tempfile::tempdir().unwrap();
         let stt = EchoStt;
         let llm = CannedLlm;
@@ -1243,26 +1217,23 @@ mod tests {
             prompter: &prompter,
             hooks: &hooks,
             chunker_config: small_chunker_config(),
+            verify_duration: false,
         };
 
         let outputs = run(inputs, frames).await.unwrap();
 
-        let manifest_path = outputs.folder.join("journal").join("manifest.toml");
-        assert!(manifest_path.exists(), "journal/manifest.toml must exist");
-        let manifest =
-            crate::pipeline::journal::read_manifest(&outputs.folder.join("journal")).unwrap();
-        let mic = manifest.mic.expect("mic anchor recorded");
-        let system = manifest.system.expect("system anchor recorded");
-        assert_eq!(mic.sample_rate, 48_000);
-        assert_eq!(mic.channels, 1);
-        assert_eq!(mic.frames_written, 3_840);
-        assert_eq!(system.sample_rate, 48_000);
-        assert_eq!(system.channels, 1);
-        assert_eq!(system.frames_written, 3_840);
-        assert!(mic.first_frame_epoch_ms > 0);
-        assert!(system.first_frame_epoch_ms > 0);
+        let journal_dir = outputs.folder.join("journal");
+        assert!(
+            !journal_dir.exists(),
+            "journal must be deleted after a successful offline merge"
+        );
+        assert!(outputs.audio_path.exists());
 
         let meta = std::fs::read_to_string(&outputs.meta_path).unwrap();
+        assert!(
+            meta.contains("channels = 2"),
+            "expected stereo merge: {meta}"
+        );
         assert!(
             meta.contains("mic_epoch_ms"),
             "meta.toml [audio] missing mic_epoch_ms: {meta}"
@@ -1271,10 +1242,25 @@ mod tests {
             meta.contains("system_epoch_ms"),
             "meta.toml [audio] missing system_epoch_ms: {meta}"
         );
+
+        // Decode the merged audio (NullEncoder writes raw interleaved
+        // f32 LE) and confirm the frame count is at least what was
+        // pushed: 8 mic + 8 system frames of 480 samples each = 3840
+        // stereo frames. Any epoch delta between the two sources'
+        // `first_frame_epoch_ms` (real, even for frames generated
+        // back-to-back, under scheduler pressure) adds a silence
+        // prefix on top, so `>=` rather than `==`.
+        let audio_bytes = std::fs::read(&outputs.audio_path).unwrap();
+        let total_samples = audio_bytes.len() / 4;
+        assert!(
+            total_samples / 2 >= 3_840,
+            "expected at least 3840 stereo frames, got {}",
+            total_samples / 2
+        );
     }
 
     #[tokio::test]
-    async fn test_run_mono_session_journal_manifest_omits_system_anchor() {
+    async fn test_run_mono_session_meta_omits_system_epoch_ms_and_deletes_journal() {
         let tmp = tempfile::tempdir().unwrap();
         let stt = EchoStt;
         let llm = CannedLlm;
@@ -1300,20 +1286,74 @@ mod tests {
             prompter: &prompter,
             hooks: &hooks,
             chunker_config: small_chunker_config(),
+            verify_duration: false,
         };
 
         let outputs = run(inputs, frames).await.unwrap();
 
-        let manifest =
-            crate::pipeline::journal::read_manifest(&outputs.folder.join("journal")).unwrap();
-        assert!(manifest.mic.is_some());
-        assert!(manifest.system.is_none());
-
+        assert!(
+            !outputs.folder.join("journal").exists(),
+            "journal must be deleted after a successful offline merge"
+        );
         let meta = std::fs::read_to_string(&outputs.meta_path).unwrap();
+        assert!(meta.contains("channels = 1"), "expected mono merge: {meta}");
         assert!(meta.contains("mic_epoch_ms"));
         assert!(
             !meta.contains("system_epoch_ms"),
             "mono session must not emit system_epoch_ms: {meta}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_run_with_verify_duration_true_fails_loudly_on_declared_vs_wall_clock_mismatch() {
+        // Regression guard for the `verify_duration` field itself:
+        // when set (every real capture source), a session whose
+        // frames declare far more audio than the real wall-clock time
+        // `run()` actually took must fail loudly via the offline
+        // merge's duration assertion, rather than silently accepting
+        // a corrupt-duration `audio.opus`. `started_at: Utc::now()`
+        // makes this a genuine real-time comparison: frames still
+        // generate near-instantly (in-memory `stream::iter`), so the
+        // encoded duration (7s of declared content) is wildly off
+        // from the real elapsed wall-clock time of this test.
+        let tmp = tempfile::tempdir().unwrap();
+        let stt = EchoStt;
+        let llm = CannedLlm;
+        let diarizer = PassThroughDiarizer;
+        let prompter = AcceptingPrompter;
+        let hooks: Vec<Box<dyn Hook>> = Vec::new();
+
+        // 7s of declared audio (frame_size=1600 at 16kHz = 100ms per
+        // frame; 70 frames = 7s), generated instantly.
+        let frames = stream::iter((0..70).map(|i| Ok(speech_frame(i * 100_000_000, 1_600))));
+
+        let inputs = SessionInputs {
+            id: SessionId::new(),
+            started_at: Utc::now(),
+            root: tmp.path().to_path_buf(),
+            title: Some("duration-guard".into()),
+            user: "tom".into(),
+            consent_mode: ConsentMode::Quick,
+            context: MeetingContext::default(),
+            mic_vad: EnergyVad::default(),
+            system_vad: None,
+            stt: &stt,
+            llm: &llm,
+            diarizer: &diarizer,
+            prompter: &prompter,
+            hooks: &hooks,
+            chunker_config: small_chunker_config(),
+            verify_duration: true,
+        };
+
+        let err = run(inputs, frames).await.unwrap_err();
+
+        assert!(
+            matches!(
+                err,
+                CoreError::Pipeline(PipelineError::DurationMismatch { .. })
+            ),
+            "expected DurationMismatch, got {err:?}"
         );
     }
 
@@ -1371,6 +1411,7 @@ mod tests {
             prompter: &prompter,
             hooks: &hooks,
             chunker_config: small_chunker_config(),
+            verify_duration: false,
         };
 
         let outputs = run(inputs, frames).await.unwrap();
@@ -1386,22 +1427,38 @@ mod tests {
         assert!(!pcm.is_empty(), "expected non-empty PCM payload");
         assert_eq!(pcm.len() % 2, 0, "stereo PCM must have even sample count");
 
-        // Every L sample must be the mic value (+0.5), every R sample
-        // must be the system value (-0.5). Pre-fix output was a single
-        // mono stream alternating between the two sources, which would
-        // fail this assertion immediately at index 0.
+        // Every L sample must be the mic value (+0.5) or silence
+        // (0.0, from the epoch-delta prefix `interleave_stereo` adds
+        // when one source's `first_frame_epoch_ms` lands even a
+        // handful of milliseconds after the other's — real under
+        // scheduler pressure even for frames generated back-to-back
+        // in this test, not just on real hardware). Every R sample
+        // must be the system value (-0.5) or silence, symmetrically.
+        // The regression this guards against — a channel swap or a
+        // collapse back to a single mono stream — would put a +0.5
+        // on R or a -0.5 on L, which never happens under legitimate
+        // silence-prefix padding.
+        let mut mic_real_seen = false;
+        let mut system_real_seen = false;
         for (i, pair) in pcm.chunks_exact(2).enumerate() {
+            let l = pair[0];
+            let r = pair[1];
             assert!(
-                (pair[0] - 0.5).abs() < 1e-6,
-                "L channel at frame {i}: expected mic sample 0.5, got {}",
-                pair[0]
+                l.abs() < 1e-6 || (l - 0.5).abs() < 1e-6,
+                "L channel at frame {i}: expected mic sample 0.5 or silence, got {l}"
             );
             assert!(
-                (pair[1] + 0.5).abs() < 1e-6,
-                "R channel at frame {i}: expected system sample -0.5, got {}",
-                pair[1]
+                r.abs() < 1e-6 || (r + 0.5).abs() < 1e-6,
+                "R channel at frame {i}: expected system sample -0.5 or silence, got {r}"
             );
+            mic_real_seen |= (l - 0.5).abs() < 1e-6;
+            system_real_seen |= (r + 0.5).abs() < 1e-6;
         }
+        assert!(mic_real_seen, "expected at least one real mic sample on L");
+        assert!(
+            system_real_seen,
+            "expected at least one real system sample on R"
+        );
     }
 
     #[test]

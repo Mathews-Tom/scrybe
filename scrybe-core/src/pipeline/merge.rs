@@ -116,7 +116,11 @@ pub fn merge_journal(
     bytes.extend(encoder.finish().map_err(CoreError::Pipeline)?);
 
     atomic_replace(audio_path, &bytes).map_err(CoreError::Storage)?;
-    std::fs::remove_dir_all(journal_dir).map_err(|e| CoreError::Storage(StorageError::from(e)))?;
+    if let Err(e) = std::fs::remove_dir_all(journal_dir) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            return Err(CoreError::Storage(StorageError::from(e)));
+        }
+    }
 
     Ok(MergeReport {
         encoded_secs,
@@ -485,6 +489,32 @@ mod tests {
         .unwrap();
 
         assert!(report.encoded_secs.abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_merge_succeeds_when_journal_dir_was_never_created() {
+        // Regression guard: a session where no source ever produced a
+        // frame never spawns a JournalWriter, so `journal/` is never
+        // created on disk at all (JournalWriter::spawn is what calls
+        // create_dir_all, lazily, on the first frame). merge_journal
+        // must not fail trying to delete a directory that was never
+        // there in the first place.
+        let tmp = tempdir().unwrap();
+        let journal_dir = tmp.path().join("journal-never-created");
+        let audio_path = tmp.path().join("audio.opus");
+        let manifest = JournalManifest::default();
+
+        let report = merge_journal(
+            &journal_dir,
+            &audio_path,
+            &manifest,
+            EncoderConfig::default(),
+            0.0,
+        )
+        .unwrap();
+
+        assert!(report.encoded_secs.abs() < 1e-9);
+        assert!(audio_path.exists());
     }
 
     #[test]
