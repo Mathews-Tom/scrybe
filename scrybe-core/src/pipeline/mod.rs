@@ -22,6 +22,6 @@ pub mod vad;
 pub use chunker::{ChunkSink, Chunker, ChunkerConfig, EmittedChunk};
 pub use encoder::{Encoder, EncoderConfig, NullEncoder};
 pub use interleave::StereoInterleaver;
-pub use journal::{JournalSummary, JournalWriter};
+pub use journal::{JournalAnchor, JournalManifest, JournalSummary, JournalWriter};
 pub use resample::{resample_linear, ResampleError};
 pub use vad::{EnergyVad, Vad, VadDecision};

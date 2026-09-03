@@ -44,9 +44,17 @@ pub struct AudioFrame {
     /// Native rate from the platform; the pipeline resamples to 16 kHz
     /// before STT.
     pub sample_rate: u32,
-    /// Monotonic timestamp in nanoseconds since session start. Capture
-    /// adapters MUST emit non-decreasing timestamps for the chunker's
-    /// contiguity invariant to hold.
+    /// Monotonic timestamp in nanoseconds, non-decreasing within one
+    /// source's own stream — capture adapters MUST guarantee this for
+    /// the chunker's contiguity invariant to hold. The origin is
+    /// source-defined and undefined *across* sources: one adapter may
+    /// anchor to wall-clock session start, another to its own
+    /// sample-count-derived clock, and neither is required to agree
+    /// with the other. Two frames from different `FrameSource`s are
+    /// NOT comparable by `timestamp_ns` alone; cross-source alignment
+    /// requires each source's independently-recorded wall-clock
+    /// `first_frame_epoch_ms` anchor (`journal::JournalAnchor`,
+    /// `docs/development-plan.md` §19.2 defect D2).
     pub timestamp_ns: u64,
     pub source: FrameSource,
 }

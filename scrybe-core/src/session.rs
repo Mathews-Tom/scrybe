@@ -34,7 +34,7 @@ use crate::notes;
 use crate::pipeline::chunker::{ChunkBoundary, Chunker, ChunkerConfig, EmittedChunk};
 use crate::pipeline::encoder::{default_session_encoder, EncoderConfig};
 use crate::pipeline::interleave::StereoInterleaver;
-use crate::pipeline::journal::{JournalSummary, JournalWriter};
+use crate::pipeline::journal::{JournalAnchor, JournalManifest, JournalWriter};
 use crate::pipeline::resample::resample_linear;
 use crate::pipeline::vad::Vad;
 use crate::providers::{LlmProvider, SttProvider};
@@ -205,8 +205,8 @@ where
 /// replace the live encode path are layered on top in later stacks.
 struct SessionJournals {
     dir: PathBuf,
-    mic: Option<JournalWriter>,
-    system: Option<JournalWriter>,
+    mic: Option<(i64, JournalWriter)>,
+    system: Option<(i64, JournalWriter)>,
 }
 
 impl SessionJournals {
@@ -224,26 +224,37 @@ impl SessionJournals {
             FrameSource::Mic | FrameSource::Mixed => &mut self.mic,
         };
         if slot.is_none() {
-            *slot = Some(JournalWriter::spawn(
-                &self.dir,
-                frame.source,
-                frame.sample_rate,
-                frame.channels,
-            )?);
+            let writer =
+                JournalWriter::spawn(&self.dir, frame.source, frame.sample_rate, frame.channels)?;
+            *slot = Some((Utc::now().timestamp_millis(), writer));
         }
-        if let Some(writer) = slot.as_ref() {
+        if let Some((_, writer)) = slot.as_ref() {
             writer.push(Arc::clone(&frame.samples));
         }
         Ok(())
     }
 
-    /// Closes every spawned writer and returns each source's summary,
-    /// `None` for a source that never received a frame this session.
-    fn finish(self) -> Result<(Option<JournalSummary>, Option<JournalSummary>), CoreError> {
-        let mic = self.mic.map(JournalWriter::finish).transpose()?;
-        let system = self.system.map(JournalWriter::finish).transpose()?;
-        Ok((mic, system))
+    /// Closes every spawned writer and returns the session's journal
+    /// manifest: one `JournalAnchor` per source that received at
+    /// least one frame, `None` for a source never used this session.
+    fn finish(self) -> Result<JournalManifest, CoreError> {
+        let mic = finish_anchor(self.mic)?;
+        let system = finish_anchor(self.system)?;
+        Ok(JournalManifest { mic, system })
     }
+}
+
+fn finish_anchor(slot: Option<(i64, JournalWriter)>) -> Result<Option<JournalAnchor>, CoreError> {
+    let Some((first_frame_epoch_ms, writer)) = slot else {
+        return Ok(None);
+    };
+    let summary = writer.finish()?;
+    Ok(Some(JournalAnchor {
+        first_frame_epoch_ms,
+        sample_rate: summary.sample_rate,
+        channels: summary.channels,
+        frames_written: summary.frames_written,
+    }))
 }
 
 #[allow(clippy::too_many_lines)]
@@ -477,8 +488,11 @@ where
         append_durable(&audio_path, &tail_page)?;
     }
 
-    let (mic_journal, system_journal) = journals.finish()?;
-    debug!(?mic_journal, ?system_journal, "per-source journal closed");
+    let journal_manifest = journals.finish()?;
+    if journal_manifest.mic.is_some() || journal_manifest.system.is_some() {
+        crate::pipeline::journal::write_manifest(&folder.join("journal"), &journal_manifest)?;
+    }
+    debug!(?journal_manifest, "journal manifest written");
 
     // Diagnostic summary (temporary; see the comment at the counters'
     // declaration above). `diag_encoder_samples` counts
@@ -533,6 +547,8 @@ where
         layout: audio_layout(stereo_mode, encoder_config.channels).to_string(),
         sample_rate: encoder_config.sample_rate,
         bitrate_bps: encoder_config.bitrate_bps,
+        mic_epoch_ms: journal_manifest.mic.map(|a| a.first_frame_epoch_ms),
+        system_epoch_ms: journal_manifest.system.map(|a| a.first_frame_epoch_ms),
     });
     let meta = build_meta_toml(MetaArgs {
         id,
@@ -743,6 +759,10 @@ struct AudioMeta {
     layout: String,
     sample_rate: u32,
     bitrate_bps: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mic_epoch_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    system_epoch_ms: Option<i64>,
 }
 
 struct MetaArgs<'a> {
@@ -1184,6 +1204,117 @@ mod tests {
         assert!(meta.contains("channels = 2"));
         assert!(meta.contains("layout = \"stereo:mic-l,system-r\""));
         assert!(meta.contains("sample_rate = 48000"));
+    }
+
+    #[tokio::test]
+    async fn test_run_writes_journal_manifest_and_meta_epoch_fields_for_stereo_session() {
+        let tmp = tempfile::tempdir().unwrap();
+        let stt = EchoStt;
+        let llm = CannedLlm;
+        let diarizer = PassThroughDiarizer;
+        let prompter = AcceptingPrompter;
+        let hooks: Vec<Box<dyn Hook>> = Vec::new();
+
+        let mut interleaved: Vec<Result<AudioFrame, crate::error::CaptureError>> = Vec::new();
+        for i in 0..16 {
+            let ts = i * 10_000_000;
+            let source = if i % 2 == 0 {
+                FrameSource::Mic
+            } else {
+                FrameSource::System
+            };
+            interleaved.push(Ok(stereo_speech_frame(ts, 480, source)));
+        }
+        let frames = stream::iter(interleaved);
+
+        let inputs = SessionInputs {
+            id: SessionId::new(),
+            started_at: dt(),
+            root: tmp.path().to_path_buf(),
+            title: Some("journal-anchor".into()),
+            user: "tom".into(),
+            consent_mode: ConsentMode::Quick,
+            context: MeetingContext::default(),
+            mic_vad: EnergyVad::default(),
+            system_vad: Some(EnergyVad::default()),
+            stt: &stt,
+            llm: &llm,
+            diarizer: &diarizer,
+            prompter: &prompter,
+            hooks: &hooks,
+            chunker_config: small_chunker_config(),
+        };
+
+        let outputs = run(inputs, frames).await.unwrap();
+
+        let manifest_path = outputs.folder.join("journal").join("manifest.toml");
+        assert!(manifest_path.exists(), "journal/manifest.toml must exist");
+        let manifest =
+            crate::pipeline::journal::read_manifest(&outputs.folder.join("journal")).unwrap();
+        let mic = manifest.mic.expect("mic anchor recorded");
+        let system = manifest.system.expect("system anchor recorded");
+        assert_eq!(mic.sample_rate, 48_000);
+        assert_eq!(mic.channels, 1);
+        assert_eq!(mic.frames_written, 3_840);
+        assert_eq!(system.sample_rate, 48_000);
+        assert_eq!(system.channels, 1);
+        assert_eq!(system.frames_written, 3_840);
+        assert!(mic.first_frame_epoch_ms > 0);
+        assert!(system.first_frame_epoch_ms > 0);
+
+        let meta = std::fs::read_to_string(&outputs.meta_path).unwrap();
+        assert!(
+            meta.contains("mic_epoch_ms"),
+            "meta.toml [audio] missing mic_epoch_ms: {meta}"
+        );
+        assert!(
+            meta.contains("system_epoch_ms"),
+            "meta.toml [audio] missing system_epoch_ms: {meta}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_run_mono_session_journal_manifest_omits_system_anchor() {
+        let tmp = tempfile::tempdir().unwrap();
+        let stt = EchoStt;
+        let llm = CannedLlm;
+        let diarizer = PassThroughDiarizer;
+        let prompter = AcceptingPrompter;
+        let hooks: Vec<Box<dyn Hook>> = Vec::new();
+
+        let frames = stream::iter((0..4).map(|i| Ok(speech_frame(i * 10_000_000, 1_600))));
+
+        let inputs = SessionInputs {
+            id: SessionId::new(),
+            started_at: dt(),
+            root: tmp.path().to_path_buf(),
+            title: Some("mono-journal".into()),
+            user: "tom".into(),
+            consent_mode: ConsentMode::Quick,
+            context: MeetingContext::default(),
+            mic_vad: EnergyVad::default(),
+            system_vad: None,
+            stt: &stt,
+            llm: &llm,
+            diarizer: &diarizer,
+            prompter: &prompter,
+            hooks: &hooks,
+            chunker_config: small_chunker_config(),
+        };
+
+        let outputs = run(inputs, frames).await.unwrap();
+
+        let manifest =
+            crate::pipeline::journal::read_manifest(&outputs.folder.join("journal")).unwrap();
+        assert!(manifest.mic.is_some());
+        assert!(manifest.system.is_none());
+
+        let meta = std::fs::read_to_string(&outputs.meta_path).unwrap();
+        assert!(meta.contains("mic_epoch_ms"));
+        assert!(
+            !meta.contains("system_epoch_ms"),
+            "mono session must not emit system_epoch_ms: {meta}"
+        );
     }
 
     #[tokio::test]
