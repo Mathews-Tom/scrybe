@@ -205,6 +205,19 @@ pub enum PipelineError {
 
     #[error("invalid audio frame: {0}")]
     InvalidFrame(String),
+
+    #[error(
+        "offline merge duration mismatch: encoded {encoded_secs:.3}s vs wall clock \
+         {wall_clock_secs:.3}s ({ratio_pct:.2}% off, exceeds 1% tolerance)"
+    )]
+    DurationMismatch {
+        encoded_secs: f64,
+        wall_clock_secs: f64,
+        ratio_pct: f64,
+    },
+
+    #[error("journal for {source_tag} has no segments to merge")]
+    EmptyJournal { source_tag: String },
 }
 
 #[cfg(test)]
