@@ -354,6 +354,14 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
                 min_speech_before_silence_split: Duration::from_secs(5),
                 silence_split_after: Duration::from_secs(5),
             },
+            // The offline merge's duration assertion is a genuine
+            // safety net for a real capture device, whose frames
+            // arrive at real wall-clock pace. The synthetic source
+            // generates frames in-process with no real-time pacing
+            // (`synthetic_capture_stream`'s doc comment); comparing
+            // its encoded duration against actual elapsed CPU time
+            // would fail by construction on every invocation.
+            verify_duration: !matches!(source, CaptureSourceArg::Synthetic),
         },
         stream,
     )
@@ -441,6 +449,17 @@ fn spawn_sigint_listener(stop_tx: watch::Sender<bool>) -> JoinHandle<()> {
 /// Generates 16-kHz mono frames of a 440 Hz sine wave for `seconds`
 /// seconds and emits silence after to drive the silence-after-speech
 /// chunker boundary at session end.
+///
+/// Frames emit as fast as the pipeline can consume them (no real-time
+/// pacing) unless `SCRYBE_TEST_SYNTHETIC_FRAME_DELAY_MS` is set, in
+/// which case each frame is preceded by a sleep of that many
+/// milliseconds. The env var exists solely so
+/// `scrybe-cli/tests/repair_sigkill.rs` can spawn a real `scrybe rec`
+/// subprocess that stays "recording" long enough to `SIGKILL` it
+/// mid-stream and exercise `scrybe repair` deterministically; ordinary
+/// invocations (including every other test in this module) leave the
+/// variable unset and see the original sub-second, instant-emission
+/// behavior.
 #[allow(clippy::cast_precision_loss)]
 fn synthetic_capture_stream(
     seconds: u64,
@@ -450,8 +469,12 @@ fn synthetic_capture_stream(
     let total_speech = seconds * (u64::from(SAMPLE_RATE) / FRAME_SAMPLES as u64);
     let total_silence = (u64::from(SAMPLE_RATE) / FRAME_SAMPLES as u64) * 6;
     let total = total_speech + total_silence;
+    let frame_delay = synthetic_frame_delay();
 
-    Box::pin(stream::iter(0..total).map(move |i| {
+    Box::pin(stream::iter(0..total).then(move |i| async move {
+        if !frame_delay.is_zero() {
+            tokio::time::sleep(frame_delay).await;
+        }
         let speech = i < total_speech;
         let samples: Vec<f32> = (0..FRAME_SAMPLES)
             .map(|n| {
@@ -472,6 +495,13 @@ fn synthetic_capture_stream(
             source: FrameSource::Mic,
         })
     }))
+}
+
+fn synthetic_frame_delay() -> Duration {
+    std::env::var("SCRYBE_TEST_SYNTHETIC_FRAME_DELAY_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map_or(Duration::ZERO, Duration::from_millis)
 }
 
 /// CLI-local STT dispatch over the two providers `scrybe record` can
