@@ -36,10 +36,10 @@ pub struct AudioFrame {
     /// source streams are routed by `source`, not by `channels`:
     /// a `Mic` frame at `channels = 2` is a stereo microphone, and a
     /// `System` frame at `channels = 2` is the macOS Core Audio Tap
-    /// (which is created stereo by default). The
-    /// `StereoInterleaver` down-mixes any multi-channel per-source
-    /// frame to mono before pairing it with the other source for the
-    /// final stereo `audio.opus`.
+    /// (which is created stereo by default). The offline merge
+    /// (`pipeline::merge`) down-mixes any multi-channel per-source
+    /// journal to mono before pairing it with the other source for
+    /// the final stereo `audio.opus`.
     pub channels: u16,
     /// Native rate from the platform; the pipeline resamples to 16 kHz
     /// before STT.
