@@ -10,6 +10,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use tokio::runtime::{Builder, Runtime};
 
+#[cfg(feature = "system-capture-mac")]
 mod bundle_launcher;
 mod commands;
 mod prompter;

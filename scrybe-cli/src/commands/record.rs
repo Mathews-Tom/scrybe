@@ -16,20 +16,27 @@
 //! use `scrybe rec` instead; this command is the happy path for
 //! end-user recording with sensible defaults.
 
-use std::path::{Path, PathBuf};
+#[cfg(feature = "system-capture-mac")]
+use std::path::Path;
+use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+#[cfg(feature = "system-capture-mac")]
+use anyhow::Context;
+use anyhow::Result;
 use clap::Args as ClapArgs;
 use scrybe_core::config::{
-    Config, RECORD_LLM_OPENAI_COMPAT, RECORD_LLM_STUB, RECORD_SOURCE_MIC, RECORD_SOURCE_MIC_SYSTEM,
-    RECORD_SOURCE_SYNTHETIC,
+    Config, RECORD_LLM_OPENAI_COMPAT, RECORD_SOURCE_MIC, RECORD_SOURCE_MIC_SYSTEM,
 };
+#[cfg(feature = "system-capture-mac")]
+use scrybe_core::config::{RECORD_LLM_STUB, RECORD_SOURCE_SYNTHETIC};
 use scrybe_core::record_defaults;
 
 use crate::commands::rec::{self, CaptureSourceArg, LlmBackendArg};
 use crate::runtime::load_or_default_config;
 
+#[cfg(feature = "system-capture-mac")]
 const SCRYBE_BUNDLE_ENV: &str = "SCRYBE_BUNDLE";
+#[cfg(feature = "system-capture-mac")]
 const BUNDLE_FILE_NAME: &str = "scrybe.app";
 
 #[derive(ClapArgs, Clone, Debug)]
@@ -78,14 +85,25 @@ pub async fn run(args: Args) -> Result<()> {
     let resolved = resolve(&cfg, &args);
 
     if should_use_bundle(&resolved, &args) {
-        let bundle = resolve_bundle_path()
-            .context("no scrybe.app bundle found; install one or pass `--no-bundle`")?;
-        let session_root = effective_session_root(&cfg, args.root.as_deref());
-        let rec_argv = build_rec_argv(&resolved);
-        crate::bundle_launcher::launch_via_bundle(&bundle, &rec_argv, &session_root).await
-    } else {
-        rec::run(resolved.into_rec_args()).await
+        #[cfg(feature = "system-capture-mac")]
+        {
+            let bundle = resolve_bundle_path()
+                .context("no scrybe.app bundle found; install one or pass `--no-bundle`")?;
+            let session_root = effective_session_root(&cfg, args.root.as_deref());
+            let rec_argv = build_rec_argv(&resolved);
+            return crate::bundle_launcher::launch_via_bundle(&bundle, &rec_argv, &session_root)
+                .await;
+        }
+        #[cfg(not(feature = "system-capture-mac"))]
+        {
+            anyhow::bail!(
+                "bundle auto-launch requires the `system-capture-mac` feature (needed for \
+                 the mic+system TCC grant); rebuild with `--features system-capture-mac` or \
+                 pass `--no-bundle`"
+            );
+        }
     }
+    rec::run(resolved.into_rec_args()).await
 }
 
 #[derive(Clone, Debug)]
@@ -153,6 +171,7 @@ fn already_inside_bundle() -> bool {
         .is_some_and(|s| s.contains(".app/Contents/MacOS/"))
 }
 
+#[cfg(feature = "system-capture-mac")]
 fn resolve_bundle_path() -> Option<PathBuf> {
     if let Ok(path) = std::env::var(SCRYBE_BUNDLE_ENV) {
         let p = PathBuf::from(path);
@@ -179,6 +198,7 @@ fn resolve_bundle_path() -> Option<PathBuf> {
     None
 }
 
+#[cfg(feature = "system-capture-mac")]
 fn effective_session_root(cfg: &Config, override_root: Option<&Path>) -> PathBuf {
     if let Some(root) = override_root {
         return crate::runtime::expand_root(root);
@@ -186,6 +206,7 @@ fn effective_session_root(cfg: &Config, override_root: Option<&Path>) -> PathBuf
     crate::runtime::expand_root(Path::new(&cfg.storage.root))
 }
 
+#[cfg(feature = "system-capture-mac")]
 fn build_rec_argv(resolved: &Resolved) -> Vec<String> {
     let mut argv = vec!["--title".to_string(), resolved.title.clone()];
     argv.push("--source".to_string());
@@ -212,6 +233,7 @@ fn capture_source_arg_from_str(s: &str) -> CaptureSourceArg {
     }
 }
 
+#[cfg(feature = "system-capture-mac")]
 const fn capture_source_arg_to_str(arg: CaptureSourceArg) -> &'static str {
     match arg {
         CaptureSourceArg::Synthetic => RECORD_SOURCE_SYNTHETIC,
@@ -228,6 +250,7 @@ fn llm_backend_arg_from_str(s: &str) -> LlmBackendArg {
     }
 }
 
+#[cfg(feature = "system-capture-mac")]
 const fn llm_backend_arg_to_str(arg: LlmBackendArg) -> &'static str {
     match arg {
         LlmBackendArg::Stub => RECORD_LLM_STUB,
@@ -263,8 +286,8 @@ mod tests {
         assert_eq!(resolved.source, CaptureSourceArg::Mic);
         assert_eq!(resolved.llm, LlmBackendArg::Stub);
         assert_eq!(
-            resolved.whisper_model.as_deref(),
-            Some(Path::new("/explicit/model.bin"))
+            resolved.whisper_model,
+            Some(PathBuf::from("/explicit/model.bin"))
         );
         assert_eq!(resolved.title, "explicit");
     }
@@ -296,6 +319,7 @@ mod tests {
         assert!(!should_use_bundle(&resolved, &args));
     }
 
+    #[cfg(feature = "system-capture-mac")]
     #[test]
     fn test_capture_source_arg_round_trip_via_strings() {
         for arg in [
@@ -308,6 +332,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "system-capture-mac")]
     #[test]
     fn test_llm_backend_arg_round_trip_via_strings() {
         for arg in [LlmBackendArg::Stub, LlmBackendArg::OpenAiCompat] {
@@ -316,6 +341,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "system-capture-mac")]
     #[test]
     fn test_build_rec_argv_emits_required_flags_in_canonical_order() {
         let resolved = Resolved {
@@ -337,6 +363,7 @@ mod tests {
         assert!(argv.iter().any(|a| a == "--yes"));
     }
 
+    #[cfg(feature = "system-capture-mac")]
     #[test]
     fn test_resolve_bundle_path_honors_env_override_when_dir_exists() {
         let tmp = tempfile::tempdir().unwrap();
@@ -348,6 +375,7 @@ mod tests {
         assert_eq!(resolved.as_deref(), Some(bundle.as_path()));
     }
 
+    #[cfg(feature = "system-capture-mac")]
     #[test]
     fn test_resolve_bundle_path_ignores_env_when_not_a_dir() {
         std::env::set_var(SCRYBE_BUNDLE_ENV, "/no/such/path/scrybe.app");
