@@ -278,6 +278,19 @@ where
     let mut mic_text_chunks: Vec<crate::types::TranscriptChunk> = Vec::new();
     let mut sys_text_chunks: Vec<crate::types::TranscriptChunk> = Vec::new();
 
+    // --- Duration-mismatch diagnostic instrumentation (temporary; see
+    // `.docs/development-plan.md` §19.2 defect D1 and `.docs/handoff.md`
+    // §3.11's findings note). Tallies raw source samples received
+    // against samples actually handed to `audio_encoder.push_pcm`, and
+    // flags every frame pushed through the non-interleaved path whose
+    // native rate disagrees with `encoder_config.sample_rate` — the
+    // interleaved path already resamples on mismatch (see the comment
+    // above), the non-interleaved path never did. Removed once the
+    // journal-and-offline-merge redesign deletes this live push/drain/
+    // encode path.
+    let mut diag_source_samples: u64 = 0;
+    let mut diag_encoder_samples: u64 = 0;
+
     while let Some(frame_result) = capture_stream.next().await {
         let frame = frame_result?;
         let mut chunks_for_stt: Vec<EmittedChunk> = Vec::new();
@@ -320,12 +333,36 @@ where
                 );
                 &resampled_frame
             };
+            diag_source_samples += frame_to_push.samples.len() as u64;
             iv.push(frame_to_push).map_err(CoreError::Pipeline)?;
             iv.drain()
         } else {
+            diag_source_samples += frame.samples.len() as u64;
+            if frame.sample_rate != encoder_config.sample_rate {
+                // D1 root cause: unlike the interleaved branch above,
+                // this path never resamples before handing samples to
+                // the encoder. The encoder's OpusHead declares
+                // `encoder_config.sample_rate` (48 kHz), so every
+                // sample generated at a different native rate gets
+                // time-labeled wrong on decode — e.g. a 16 kHz source
+                // encodes to 1/3 its real duration. Confirmed
+                // synthetically: a 36 s `--source synthetic` session
+                // (16 kHz) produced a 12.02 s `audio.opus`;
+                // `ffmpeg -i audio.opus -f wav - | wc -c` proved every
+                // sample survived intact (no data loss) — this is a
+                // rate-label defect, not a dropped-samples defect.
+                warn!(
+                    frame_rate = frame.sample_rate,
+                    encoder_rate = encoder_config.sample_rate,
+                    "D1: non-interleaved push path fed the encoder samples at a rate that \
+                     disagrees with its configured rate without resampling; the encoded \
+                     duration will be wrong by frame_rate/encoder_rate"
+                );
+            }
             frame.samples.as_ref().to_vec()
         };
         if !pcm_for_audio.is_empty() {
+            diag_encoder_samples += pcm_for_audio.len() as u64;
             let page = audio_encoder
                 .push_pcm(&pcm_for_audio)
                 .map_err(CoreError::Pipeline)?;
@@ -372,6 +409,7 @@ where
     if let Some(iv) = interleaver.as_mut() {
         let tail_pcm = iv.finish();
         if !tail_pcm.is_empty() {
+            diag_encoder_samples += tail_pcm.len() as u64;
             let page = audio_encoder
                 .push_pcm(&tail_pcm)
                 .map_err(CoreError::Pipeline)?;
@@ -384,6 +422,24 @@ where
     if !tail_page.is_empty() {
         append_durable(&audio_path, &tail_page)?;
     }
+
+    // Diagnostic summary (temporary; see the comment at the counters'
+    // declaration above). `diag_encoder_samples` counts
+    // interleaved stereo pairs as 2 samples each in stereo mode, so
+    // divide by `channels` to get a frame count comparable to
+    // wall-clock seconds at `encoder_config.sample_rate`.
+    let encoder_frames = diag_encoder_samples / u64::from(encoder_config.channels.max(1));
+    #[allow(clippy::cast_precision_loss)]
+    let encoder_implied_secs = encoder_frames as f64 / f64::from(encoder_config.sample_rate.max(1));
+    #[allow(clippy::cast_precision_loss)]
+    let wall_clock_secs = (Utc::now() - started_at).num_milliseconds() as f64 / 1000.0;
+    debug!(
+        diag_source_samples,
+        diag_encoder_samples,
+        encoder_implied_secs,
+        wall_clock_secs,
+        "duration diagnostic: encoder-implied duration vs wall clock"
+    );
 
     let attributed = diarizer
         .diarize(&mic_text_chunks, &sys_text_chunks, &context)
