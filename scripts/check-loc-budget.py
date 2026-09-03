@@ -128,7 +128,21 @@ LOC_CEILINGS: dict[str, int] = {
     # session folder since the bundle's own stdout summary is
     # detached by Launch Services. Adds ~50 LoC including 2 unit
     # tests for the meta.toml session_id parser.
-    "scrybe-cli": 3400,
+    # Raised to 3650 for v1.1.0 to absorb the `scrybe repair
+    # <id-or-folder>` subcommand (`commands/repair.rs` ~150 LoC
+    # including 3 tests): recovers `audio.opus` from a session's
+    # `journal/` after a crash or `SIGKILL` left it without a
+    # completed offline merge, using the same `pipeline::merge_journal`
+    # a live session runs, then reconstructs `meta.toml` when one
+    # was never durably written. Also absorbs `commands::list`'s
+    # `UNFINISHED` row detection (journal present, no `audio.opus`)
+    # that points users at the new subcommand, and a net LoC increase
+    # from extracting the `resolve_folder` duplicated between
+    # `commands::show` and the new `commands::repair` into
+    # `runtime::resolve_session_folder` (fewer total lines than two
+    # private copies, but the shared helper's doc comment and tests
+    # now live in `runtime.rs` instead of a `show.rs`-local fn).
+    "scrybe-cli": 3650,
     "scrybe-capture-mac": 2500,
     "scrybe-capture-linux": 2500,
     "scrybe-capture-win": 2500,

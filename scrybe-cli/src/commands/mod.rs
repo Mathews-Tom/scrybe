@@ -17,6 +17,7 @@ pub mod init;
 pub mod list;
 pub mod rec;
 pub mod record;
+pub mod repair;
 pub mod show;
 
 #[derive(Subcommand, Debug)]
@@ -40,6 +41,9 @@ pub enum Command {
     Doctor(doctor::Args),
     /// Aggregate Criterion bench results into a versioned snapshot.
     Bench(bench::BenchArgs),
+    /// Recover `audio.opus` from a crashed or `SIGKILL`ed session's
+    /// journal.
+    Repair(repair::Args),
 }
 
 /// Dispatch the parsed subcommand.
@@ -57,6 +61,7 @@ pub async fn run(cmd: Command) -> Result<()> {
         Command::Show(a) => show::run(a).await,
         Command::Doctor(a) => doctor::run(a).await,
         Command::Bench(a) => bench::run(a).await,
+        Command::Repair(a) => repair::run(a).await,
     }
 }
 
@@ -101,5 +106,19 @@ mod tests {
         }))
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_run_dispatches_repair_command_and_propagates_resolve_error() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let err = run(Command::Repair(repair::Args {
+            id_or_folder: "missing".into(),
+            root: Some(dir.path().to_path_buf()),
+        }))
+        .await
+        .unwrap_err();
+
+        assert!(err.to_string().contains("missing"));
     }
 }
