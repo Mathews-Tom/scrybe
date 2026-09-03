@@ -29,6 +29,23 @@ struct MetaSnapshot {
     duration_secs: Option<u64>,
 }
 
+/// One row `scrybe list` renders: either a completed session read
+/// from `meta.toml`, or an unfinished one — `journal/` present but no
+/// `audio.opus` and no `meta.toml`, meaning the process exited (crash
+/// or `SIGKILL`) before the offline merge ran. Reported explicitly
+/// rather than silently skipped, per the unfinished-session
+/// invariant: `journal/` with no `audio.opus` is always a signal to
+/// run `scrybe repair`, never a folder to quietly ignore.
+enum SessionRow {
+    Complete {
+        folder: String,
+        snapshot: MetaSnapshot,
+    },
+    Unfinished {
+        folder: String,
+    },
+}
+
 pub async fn run(args: Args) -> Result<()> {
     let root = if let Some(p) = args.root.as_deref() {
         expand_root(p)
@@ -44,7 +61,7 @@ pub async fn run(args: Args) -> Result<()> {
         return Ok(());
     }
 
-    let mut entries: Vec<(String, MetaSnapshot)> = Vec::new();
+    let mut entries: Vec<(String, SessionRow)> = Vec::new();
     let read = tokio::fs::read_dir(&root)
         .await
         .with_context(|| format!("reading {}", root.display()))?;
@@ -58,19 +75,35 @@ pub async fn run(args: Args) -> Result<()> {
         if !path.is_dir() {
             continue;
         }
-        let meta_path = path.join("meta.toml");
-        if !meta_path.exists() {
-            continue;
-        }
-        let body = tokio::fs::read_to_string(&meta_path)
-            .await
-            .with_context(|| format!("reading {}", meta_path.display()))?;
-        let snapshot: MetaSnapshot =
-            toml::from_str(&body).with_context(|| format!("parsing {}", meta_path.display()))?;
         let folder_name = path
             .file_name()
             .map_or_else(|| "<unknown>".into(), |s| s.to_string_lossy().into_owned());
-        entries.push((folder_name, snapshot));
+        let meta_path = path.join("meta.toml");
+        if meta_path.exists() {
+            let body = tokio::fs::read_to_string(&meta_path)
+                .await
+                .with_context(|| format!("reading {}", meta_path.display()))?;
+            let snapshot: MetaSnapshot = toml::from_str(&body)
+                .with_context(|| format!("parsing {}", meta_path.display()))?;
+            entries.push((
+                folder_name.clone(),
+                SessionRow::Complete {
+                    folder: folder_name,
+                    snapshot,
+                },
+            ));
+            continue;
+        }
+        let journal_dir = path.join("journal");
+        let audio_path = path.join("audio.opus");
+        if journal_dir.exists() && !audio_path.exists() {
+            entries.push((
+                folder_name.clone(),
+                SessionRow::Unfinished {
+                    folder: folder_name,
+                },
+            ));
+        }
     }
 
     entries.sort_by(|a, b| a.0.cmp(&b.0));
@@ -79,15 +112,25 @@ pub async fn run(args: Args) -> Result<()> {
         return Ok(());
     }
     println!("{:<48} {:<28} duration  title", "folder", "session_id");
-    for (folder, snap) in entries {
-        let duration = snap
-            .duration_secs
-            .map_or_else(|| "?".to_string(), format_duration);
-        let title = snap.title.unwrap_or_else(|| "(untitled)".into());
-        println!(
-            "{:<48} {:<28} {:<9} {title}",
-            folder, snap.session_id, duration
-        );
+    for (_, row) in entries {
+        match row {
+            SessionRow::Complete { folder, snapshot } => {
+                let duration = snapshot
+                    .duration_secs
+                    .map_or_else(|| "?".to_string(), format_duration);
+                let title = snapshot.title.unwrap_or_else(|| "(untitled)".into());
+                println!(
+                    "{:<48} {:<28} {:<9} {title}",
+                    folder, snapshot.session_id, duration
+                );
+            }
+            SessionRow::Unfinished { folder } => {
+                println!(
+                    "{:<48} {:<28} {:<9} UNFINISHED — journal present, no audio.opus; run `scrybe repair {folder}`",
+                    folder, "?", "?"
+                );
+            }
+        }
     }
     Ok(())
 }
@@ -197,6 +240,62 @@ mod tests {
             )
             .unwrap();
         }
+
+        run(Args {
+            root: Some(dir.path().to_path_buf()),
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_list_reports_unfinished_session_when_journal_present_without_audio() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("2026-04-29-1430-crashed-01HZZZ");
+        std::fs::create_dir(&folder).unwrap();
+        std::fs::create_dir(folder.join("journal")).unwrap();
+        std::fs::write(folder.join("journal").join("mic-0000.f32"), b"\0\0\0\0").unwrap();
+
+        // Must succeed (not silently skip the folder) and must not
+        // error just because meta.toml is absent.
+        run(Args {
+            root: Some(dir.path().to_path_buf()),
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_list_skips_folder_with_neither_meta_toml_nor_journal() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("2026-04-29-1430-empty-01HYYY");
+        std::fs::create_dir(&folder).unwrap();
+
+        // An empty session-shaped directory (no meta.toml, no
+        // journal/) is not a session at all — must not be reported
+        // as unfinished.
+        run(Args {
+            root: Some(dir.path().to_path_buf()),
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_list_prefers_complete_session_when_meta_toml_present_alongside_stale_journal() {
+        // A session whose merge succeeded (meta.toml + audio.opus
+        // written) but whose journal directory somehow still exists
+        // (should not normally happen post-merge, but defends against
+        // a partial cleanup) must render as complete, not unfinished.
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("2026-04-29-1430-both-01HWWW");
+        std::fs::create_dir(&folder).unwrap();
+        std::fs::create_dir(folder.join("journal")).unwrap();
+        std::fs::write(
+            folder.join("meta.toml"),
+            "session_id = \"01HWWW\"\ntitle = \"both\"\nduration_secs = 42\n",
+        )
+        .unwrap();
 
         run(Args {
             root: Some(dir.path().to_path_buf()),
