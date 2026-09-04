@@ -76,6 +76,8 @@ use scrybe_core::providers::openai_compat_llm::OpenAiCompatLlmProvider;
 use scrybe_core::providers::whisper_local::{WhisperLocalConfig, WhisperLocalProvider};
 use scrybe_core::providers::{LlmProvider, SttProvider};
 use scrybe_core::session::{run as run_session, SessionInputs};
+#[cfg(any(test, all(feature = "mic-capture", feature = "system-capture-mac")))]
+use scrybe_core::storage::session_folder_name;
 use scrybe_core::types::{
     AttributedChunk, AudioChunk, AudioFrame, ConsentMode, FrameSource, SessionId, SpeakerLabel,
     TranscriptChunk,
@@ -232,6 +234,97 @@ impl SystemCapture {
             Self::Tap(capture) => Box::pin(capture.frames()),
         }
     }
+
+    fn stop(&mut self) -> Result<()> {
+        match self {
+            Self::Sck(capture) => capture.stop().map_err(Into::into),
+            Self::Tap(capture) => capture.stop().map_err(Into::into),
+        }
+    }
+}
+
+#[cfg(any(test, all(feature = "mic-capture", feature = "system-capture-mac")))]
+const TAP_STARTUP_ACTIVITY_WINDOW: Duration = Duration::from_millis(1_500);
+
+#[cfg(any(test, all(feature = "mic-capture", feature = "system-capture-mac")))]
+type CaptureFrameStream = Pin<Box<dyn Stream<Item = Result<AudioFrame, CaptureError>> + Send>>;
+
+#[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
+async fn start_system_capture(
+    selected: SystemBackendArg,
+) -> Result<(SystemCapture, CaptureFrameStream, Option<&'static str>)> {
+    let mut capture = SystemCapture::new(selected);
+    if let Err(error) = capture.start() {
+        let Some(backend) = fallback_backend(selected) else {
+            return Err(error);
+        };
+        let mut fallback = SystemCapture::new(backend);
+        fallback.start().context(
+            "Core Audio Tap failed to start and ScreenCaptureKit could not start either",
+        )?;
+        let frames = fallback.frames();
+        return Ok((
+            fallback,
+            frames,
+            Some("system capture switched from tap to sck after tap start failure"),
+        ));
+    }
+    let frames = capture.frames();
+    if fallback_backend(selected).is_some() {
+        let (active, frames) = tap_produces_nonzero_frames(frames).await;
+        if !active {
+            capture
+                .stop()
+                .context("stopping silent Core Audio Tap before fallback")?;
+            let mut fallback = SystemCapture::new(SystemBackendArg::Sck);
+            fallback.start().context(
+                "Core Audio Tap had no startup activity and ScreenCaptureKit could not start",
+            )?;
+            let frames = fallback.frames();
+            return Ok((
+                fallback,
+                frames,
+                Some("system capture switched from tap to sck after no tap startup activity"),
+            ));
+        }
+        return Ok((capture, frames, None));
+    }
+    Ok((capture, frames, None))
+}
+
+#[cfg(any(test, all(feature = "mic-capture", feature = "system-capture-mac")))]
+async fn tap_produces_nonzero_frames(mut frames: CaptureFrameStream) -> (bool, CaptureFrameStream) {
+    let deadline = tokio::time::Instant::now() + TAP_STARTUP_ACTIVITY_WINDOW;
+    let mut buffered = Vec::new();
+    let mut active = false;
+    loop {
+        match tokio::time::timeout_at(deadline, frames.next()).await {
+            Ok(Some(Ok(frame))) => {
+                active |= frame.samples.iter().any(|sample| *sample != 0.0);
+                buffered.push(Ok(frame));
+                if active {
+                    break;
+                }
+            }
+            Ok(Some(Err(error))) => {
+                buffered.push(Err(error));
+                break;
+            }
+            Ok(None) | Err(_) => break,
+        }
+    }
+    (
+        active,
+        Box::pin(futures::stream::iter(buffered).chain(frames)),
+    )
+}
+
+#[cfg(any(test, all(feature = "mic-capture", feature = "system-capture-mac")))]
+const fn fallback_backend(selected: SystemBackendArg) -> Option<SystemBackendArg> {
+    match selected {
+        SystemBackendArg::Tap => Some(SystemBackendArg::Sck),
+        SystemBackendArg::Sck => None,
+    }
 }
 
 impl From<ConsentModeArg> for ConsentMode {
@@ -275,7 +368,6 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
     let llm_backend = resolve_llm_backend(args.llm, &cfg.record)?;
     let consent_mode = args.consent.map_or(cfg.consent.default_mode, Into::into);
 
-    let stt = build_stt_provider(whisper_model.as_ref())?;
     let llm = build_llm_provider(llm_backend, &cfg.llm)?;
     let system_backend = resolve_system_backend(args.system_backend, &cfg.record)?;
     #[cfg(not(all(feature = "mic-capture", feature = "system-capture-mac")))]
@@ -295,8 +387,8 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
     // the session writes its outputs.
     #[cfg(feature = "mic-capture")]
     let mut mic_capture_keepalive: Option<MicCapture> = None;
-    // Only the dual-source path constructs MacCapture; gating on the
-    // intersection of features keeps the binding warning-free in
+    // Only the dual-source path constructs system capture; gating on
+    // the intersection of features keeps the binding warning-free in
     // single-feature builds.
     #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
     let mut system_capture_keepalive: Option<SystemCapture> = None;
@@ -340,24 +432,19 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
             #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
             {
                 use futures::stream;
+
                 let mut mic = MicCapture::new();
                 mic.start().context(
                     "opening default input device (grant Microphone permission \
-                         in System Settings → Privacy & Security if prompted)",
+                     in System Settings → Privacy & Security if prompted)",
                 )?;
-                let mut system_capture = SystemCapture::new(system_backend);
-                system_capture.start().context(
-                    "opening system-audio capture (grant Screen & System Audio Recording for \
-                     sck, or Audio Capture for tap, in System Settings → Privacy & Security)",
-                )?;
-                // Merge mic + system frames by arrival order. Each
-                // frame carries its own `FrameSource`, so the
-                // orchestrator's per-source dispatch routes mic
-                // frames to `mic_chunker` and system frames to
-                // `system_chunker`. The diarizer then attributes
-                // them as `Me:` / `Them:` per
-                // `system-design.md` §4.4.
-                let merged = stream::select(mic.frames(), system_capture.frames());
+                let (system_capture, system_frames, fallback_note) =
+                    start_system_capture(system_backend).await?;
+                if let Some(note) = fallback_note {
+                    tracing::warn!(system_backend = "sck", "{note}");
+                    write_capture_diagnostic(&root, started_at, id, args.title.as_deref(), note)?;
+                }
+                let merged = stream::select(mic.frames(), system_frames);
                 let s: Pin<Box<dyn Stream<Item = _> + Send>> =
                     Box::pin(merged.take_until(stop_future));
                 mic_capture_keepalive = Some(mic);
@@ -368,10 +455,28 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
             {
                 anyhow::bail!(
                     "--source mic+system requires the binary to be built with both \
-                         --features mic-capture and --features system-capture-mac; \
-                         this binary was built without one or both"
+                     --features mic-capture and --features system-capture-mac; \
+                     this binary was built without one or both"
                 );
             }
+        }
+    };
+
+    // Start hardware capture before loading Whisper. The capture adapters buffer
+    // their frames while the model initializes, so the Tap liveness probe runs
+    // during startup instead of delaying the recording surface behind model I/O.
+    let stt = match build_stt_provider(whisper_model.as_ref()) {
+        Ok(stt) => stt,
+        Err(error) => {
+            #[cfg(feature = "mic-capture")]
+            if let Some(capture) = mic_capture_keepalive.as_mut() {
+                let _ = capture.stop();
+            }
+            #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
+            if let Some(capture) = system_capture_keepalive.as_mut() {
+                let _ = capture.stop();
+            }
+            return Err(error);
         }
     };
 
@@ -405,6 +510,7 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
             // generates frames in-process with no real-time pacing
             // (`synthetic_capture_stream`'s doc comment); comparing
             // its encoded duration against actual elapsed CPU time
+
             // would fail by construction on every invocation.
             verify_duration: !matches!(source, CaptureSourceArg::Synthetic),
         },
@@ -430,6 +536,25 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
         println!("  audio:      {}", outputs.audio_path.display());
     }
     Ok(())
+}
+
+#[cfg(any(test, all(feature = "mic-capture", feature = "system-capture-mac")))]
+fn write_capture_diagnostic(
+    root: &std::path::Path,
+    started_at: chrono::DateTime<Utc>,
+    id: SessionId,
+    title: Option<&str>,
+    note: &str,
+) -> Result<()> {
+    let folder = root.join(session_folder_name(
+        started_at,
+        title.unwrap_or("untitled"),
+        id,
+    ));
+    std::fs::create_dir_all(&folder)
+        .with_context(|| format!("creating capture diagnostic folder {}", folder.display()))?;
+    std::fs::write(folder.join("capture.log"), format!("{note}\n"))
+        .context("writing system-capture fallback diagnostic")
 }
 
 fn resolve_capture_source(
@@ -1146,6 +1271,96 @@ mod tests {
         assert_eq!(
             resolve_system_backend(None, &RecordConfig::default()).unwrap(),
             SystemBackendArg::Sck
+        );
+    }
+
+    #[test]
+    fn test_tap_fallback_is_single_hop_to_sck() {
+        assert_eq!(
+            fallback_backend(SystemBackendArg::Tap),
+            Some(SystemBackendArg::Sck)
+        );
+        assert_eq!(fallback_backend(SystemBackendArg::Sck), None);
+    }
+
+    fn system_frame(samples: &[f32], timestamp_ns: u64) -> AudioFrame {
+        AudioFrame::from_slice(samples, 1, 16_000, timestamp_ns, FrameSource::System)
+    }
+
+    #[tokio::test]
+    async fn test_silent_tap_startup_falls_back_without_dropping_frames() {
+        let input = vec![
+            Ok(system_frame(&[0.0, 0.0], 0)),
+            Ok(system_frame(&[0.0, 0.0], 125_000)),
+        ];
+
+        let (active, frames) =
+            tap_produces_nonzero_frames(Box::pin(futures::stream::iter(input))).await;
+        let observed: Vec<_> = frames
+            .map(|frame| {
+                let frame = frame.unwrap();
+                (frame.timestamp_ns, frame.samples.to_vec())
+            })
+            .collect()
+            .await;
+
+        assert!(!active);
+        assert_eq!(
+            observed,
+            vec![(0, vec![0.0, 0.0]), (125_000, vec![0.0, 0.0])]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_active_tap_startup_preserves_buffered_and_remaining_frames() {
+        let input = vec![
+            Ok(system_frame(&[0.0, 0.0], 0)),
+            Ok(system_frame(&[0.25, 0.0], 125_000)),
+            Ok(system_frame(&[0.5, 0.0], 250_000)),
+        ];
+
+        let (active, frames) =
+            tap_produces_nonzero_frames(Box::pin(futures::stream::iter(input))).await;
+        let observed: Vec<_> = frames
+            .map(|frame| {
+                let frame = frame.unwrap();
+                (frame.timestamp_ns, frame.samples.to_vec())
+            })
+            .collect()
+            .await;
+
+        assert!(active);
+        assert_eq!(
+            observed,
+            vec![
+                (0, vec![0.0, 0.0]),
+                (125_000, vec![0.25, 0.0]),
+                (250_000, vec![0.5, 0.0]),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_fallback_diagnostic_uses_initial_session_folder() {
+        let root = tempfile::tempdir().unwrap();
+        let started_at = Utc::now();
+        let id = SessionId::new();
+
+        write_capture_diagnostic(
+            root.path(),
+            started_at,
+            id,
+            Some("Initial title"),
+            "system capture switched from tap to sck after no tap startup activity",
+        )
+        .unwrap();
+
+        let folder = root
+            .path()
+            .join(session_folder_name(started_at, "Initial title", id));
+        assert_eq!(
+            std::fs::read_to_string(folder.join("capture.log")).unwrap(),
+            "system capture switched from tap to sck after no tap startup activity\n"
         );
     }
 
