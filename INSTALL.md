@@ -116,88 +116,40 @@ The egress audit walks `scrybe-cli`'s default-feature dependency graph and asser
 
 ## macOS — system audio capture (`--source mic+system`)
 
-Capturing the meeting counterparty's voice via Core Audio Taps requires the binary to be wrapped in a `.app` bundle and code-signed. A bare CLI at `~/.cargo/bin/scrybe` cannot receive Audio Capture consent: TCC refuses to surface the permission prompt without an `Info.plist` declaring `NSAudioCaptureUsageDescription`, and the underlying tap silently zero-fills its IO callback when no consent record can be created. `scrybe doctor --check-tap` reports `frames>0, peak=0.0000` in this state — the diagnostic that distinguishes "tap delivered silence" from "IOProc never fired".
-
-### Self-signed certificate (free, no Apple Developer membership)
-
-A self-signed Code Signing certificate created in Keychain Access produces a stable designated requirement (`anchor leaf [Subject.CN] = "..."`) that survives `cargo install --force` rebuilds — TCC keeps the Audio Capture grant attached to the cert's identity rather than the binary's hash.
-
-```text
-Applications → Utilities → Keychain Access
-  Menu: Keychain Access → Certificate Assistant → Create a Certificate…
-    Name: scrybe-local-signing
-    Identity Type: Self Signed Root
-    Certificate Type: Code Signing
-    ✓ Let me override defaults  → Continue
-    Validity: 3650 days  → Continue through remaining defaults  → Done
-```
-
-Verify the cert exists, then build the bundle:
+Build the live microphone and system-audio adapters:
 
 ```sh
-security find-identity -v -p codesigning | grep scrybe-local-signing
-
-cargo install --path scrybe-cli --force --locked \
-    --features cli-shell,hook-git,mic-capture,system-capture-mac,whisper-local,encoder-opus,llm-openai-compat
-packaging/macos-app/build-app.sh \
-    --binary "$HOME/.cargo/bin/scrybe" \
-    --output ./scrybe.app \
-    --sign-self scrybe-local-signing
+cargo install --path scrybe-cli --locked \
+  --features mic-capture,system-capture-mac,whisper-local,encoder-opus,llm-openai-compat
 ```
 
-Remove any stale TCC entry, launch the bundle, and accept the prompt:
+### ScreenCaptureKit default: macOS 13+
 
-```text
-System Settings → Privacy & Security → Audio Recording
-  click scrybe (if listed)  → click `-`  → quit Settings
+`[record].system_backend = "sck"` is the default. It works from the invoking terminal and does not need an `.app` bundle, signing identity, or Launch Services.
+
+The first `scrybe doctor --check-sck` or `scrybe record "client-call"` run asks for **Screen & System Audio Recording**. This is broader than audio-only consent: macOS categorizes the grant as screen recording even though scrybe registers only an audio output handler. Grant it in System Settings → Privacy & Security → Screen & System Audio Recording, then verify the actual audio path:
+
+```sh
+scrybe doctor --check-sck
+# expected: sck probe: frames=N peak=0.00… → OK
 ```
+
+Do not grant this permission when its screen-recording scope is unacceptable. Use microphone-only capture instead:
+
+```sh
+scrybe record "client-call" --source mic
+```
+
+### Core Audio Tap recovery path: macOS 14.4+
+
+Set `[record].system_backend = "tap"` or pass `scrybe rec --system-backend tap` only to recover from a ScreenCaptureKit failure or compare adapters. Tap requires the narrower Audio Capture permission but also needs a signed `.app` bundle because TCC cannot attach its grant to a bare CLI binary.
 
 ```sh
 open ./scrybe.app --args doctor --check-tap
-# click Allow when the dialog appears
-# expected: tap probe: frames=N peak=0.X → OK
+# expected: tap probe: frames=N peak=0.00… → OK
 ```
 
-For day-to-day recording, use the ergonomic `scrybe record` subcommand from any terminal:
-
-```sh
-scrybe record "client-call"
-# Press Ctrl-C to stop. Per-chunk transcript prints live as the session runs.
-```
-
-The CLI auto-detects the `.app` bundle (looking under `./`, `/Applications/`, then `~/Applications/`) and re-launches through Launch Services so the AudioCapture TCC grant binds correctly. SIGINT from the controlling terminal is forwarded to the launched bundle, so Ctrl-C works as expected — no `pkill -INT` from a second terminal anymore.
-
-Direct invocation of `./scrybe.app/Contents/MacOS/scrybe …` continues to work for explicit-flags use cases, but silently zero-fills the system tap because TCC binds the grant to the Launch-Services responsible process, not to direct-exec child processes. See `.docs/handoff.md` §1 and §7 for the full investigation; the new `scrybe record` command exists to insulate users from this subtlety.
-
-For CI scripts and advanced users that need explicit flag control, `scrybe rec` exposes the full v1.0.4-compatible flag surface (`--source`, `--whisper-model`, `--llm`, `--shell`, …) without the bundle auto-launch.
-
-### Iteration loop
-
-Each `cargo install --force` rewrites `~/.cargo/bin/scrybe`. Re-run `build-app.sh` to refresh the bundle's binary; the cert identity is stable so the existing TCC grant carries over without a second prompt:
-
-```sh
-alias scrybe-rebundle='packaging/macos-app/build-app.sh \
-    --binary "$HOME/.cargo/bin/scrybe" \
-    --output ./scrybe.app \
-    --sign-self scrybe-local-signing'
-```
-
-### Developer ID (paid, required for distribution)
-
-For builds intended to ship through the GitHub Releases tarball, swap `--sign-self` for `--sign` and pass the Developer ID Application identity:
-
-```sh
-packaging/macos-app/build-app.sh \
-    --binary "$HOME/.cargo/bin/scrybe" \
-    --output ./scrybe.app \
-    --sign "Developer ID Application: Your Name (TEAMID)"
-```
-
-Notarization is currently out of scope for the v1 line; see `README.md:151`.
-
-### Why this is needed
-
-The full rationale, including the entitlements specifically required by Core Audio Taps under the hardened runtime, lives in `packaging/macos-app/README.md`.
+`scrybe record` detects the legacy Tap backend and relaunches through an available bundle. Direct `scrybe rec --system-backend tap` remains for advanced diagnosis. If Tap fails to start or emits only zero-valued frames during its 1.5 s startup window, scrybe stops it and switches once to ScreenCaptureKit; a quiet desktop can therefore switch before external audio begins.
 
 ---
 

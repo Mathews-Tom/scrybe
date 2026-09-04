@@ -7,7 +7,7 @@
 
 scrybe is an open-source meeting transcription tool built around one constraint: the meeting artifacts belong on the user's machine as ordinary files. It captures audio locally, transcribes it with either local Whisper or a user-configured OpenAI-compatible provider, generates Markdown notes, and writes everything under `~/scrybe/`.
 
-Current release: `v1.0.4`.
+Current release: `v1.1.0`.
 
 ## What Works Today
 
@@ -18,7 +18,7 @@ The supported user path today is macOS:
 - `scrybe record` creates a session folder with `audio.opus`, `transcript.md`, `notes.md`, and `meta.toml`.
 - `--source synthetic` runs the hermetic smoke path used by CI.
 - `--source mic` records the default microphone when the binary is built with `mic-capture`.
-- `--source mic+system` records microphone plus macOS system audio through Core Audio Taps when built with `mic-capture,system-capture-mac` on macOS 14.4+.
+- `--source mic+system` records microphone plus macOS system audio through ScreenCaptureKit when built with `mic-capture,system-capture-mac` on macOS 13+. It requires the broader **Screen & System Audio Recording** permission.
 - `--whisper-model <PATH>` enables local whisper.cpp transcription when built with `whisper-local`.
 - `--llm openai-compat` enables real notes through Ollama, vLLM, OpenAI, Groq, Together, or any compatible `/chat/completions` endpoint when built with `llm-openai-compat`.
 - `scrybe list`, `scrybe show <id>`, `scrybe doctor`, and `scrybe bench` are available in the CLI.
@@ -60,6 +60,7 @@ On macOS, bare `scrybe init` writes the local recording profile:
 - `[record].source = "mic+system"`
 - `[record].whisper_model = "<platform-data-dir>/models/ggml-base.en.bin"`
 - `[record].llm = "openai-compat"`
+- `[record].system_backend = "sck"` (ScreenCaptureKit; use `"tap"` only for the macOS 14.4+ legacy Core Audio Tap recovery path)
 - `[llm].model = "gemma4:latest"`
 
 The macOS platform data path is
@@ -81,7 +82,7 @@ scrybe list
 scrybe show <session-id>
 ```
 
-The ergonomic `scrybe record TITLE` resolves capture source, Whisper model, and LLM kind from your config and platform probes. On macOS it auto-launches via the `.app` bundle so the AudioCapture TCC grant binds correctly. Use `scrybe rec --title TITLE --source … --whisper-model … --llm …` when you need explicit flag control (CI, debugging, alternate hardware setups).
+The ergonomic `scrybe record TITLE` resolves capture source, system-audio backend, Whisper model, and LLM kind from your config and platform probes. ScreenCaptureKit runs directly from the invoking terminal; the legacy `tap` backend auto-launches through the `.app` bundle so its Audio Capture TCC grant binds correctly. Use `scrybe rec --title TITLE --source … --system-backend … --whisper-model … --llm …` when you need explicit flag control (CI, debugging, alternate hardware setups).
 
 For cloud or hosted-compatible LLMs, configure `[llm]` with a base URL, model, and an environment-variable name for the API key. Secrets stay in the environment, not in `config.toml`.
 
@@ -148,8 +149,8 @@ python3 scripts/check-egress-baseline.py
 ## Current Limitations
 
 - macOS is the only polished binary distribution target today.
-- `--source mic+system` requires macOS 14.4+ and Audio Capture permission.
-- Linux, Windows, and Android adapters are in-tree but still need real end-user validation and packaging.
+- `--source mic+system` defaults to ScreenCaptureKit on macOS 13+ and requires **Screen & System Audio Recording**. This privacy permission covers screen recording in addition to system audio; deny it if that scope is unacceptable.
+- The macOS 14.4+ Core Audio Tap backend remains available as `[record].system_backend = "tap"` for recovery. It requires the narrower Audio Capture permission and a signed `.app` bundle. A failed or silent Tap switches once to ScreenCaptureKit after a 1.5 s startup window, so a quiet desktop can switch before external audio begins.
 - Tray and global-hotkey shell support exists behind `cli-shell`; the headless `record` path remains the reliable path.
 - The crates.io `scrybe` package is the public package identity. The implementation crates are currently `publish = false`; install the CLI from GitHub releases or build from source.
 - Native macOS notarization and Windows Authenticode signing are out of scope for the v1 line. Release artifacts are verified with checksums and cosign provenance instead.
