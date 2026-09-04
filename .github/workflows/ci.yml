@@ -56,6 +56,21 @@ jobs:
       - name: cargo test (mac core-audio-tap feature, ignored hardware tests skipped)
         if: matrix.os == 'macos-14'
         run: cargo test -p scrybe-capture-mac --features core-audio-tap --all-targets
+      - name: cargo check (mac ScreenCaptureKit feature)
+        if: matrix.os == 'macos-14'
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "13.0"
+        run: cargo check -p scrybe-capture-mac --features system-capture-sck --all-targets
+      - name: cargo clippy (mac ScreenCaptureKit feature)
+        if: matrix.os == 'macos-14'
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "13.0"
+        run: cargo clippy -p scrybe-capture-mac --features system-capture-sck --all-targets -- -D warnings
+      - name: cargo test (mac ScreenCaptureKit feature)
+        if: matrix.os == 'macos-14'
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "13.0"
+        run: cargo test -p scrybe-capture-mac --features system-capture-sck --all-targets
       - name: cargo test (doc)
         run: cargo test --workspace --doc
       - name: cargo doc

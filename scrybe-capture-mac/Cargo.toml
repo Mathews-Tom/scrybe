@@ -33,6 +33,12 @@ core-audio-tap = [
     "dep:cpal",
 ]
 
+# Enables the ScreenCaptureKit system-audio adapter on macOS 13.0+.
+# The framework still requires a display-backed filter for audio-only
+# capture, but the adapter requests a 2×2, 1 fps surface and consumes
+# only its 16 kHz mono audio callback.
+system-capture-sck = ["dep:screencapturekit"]
+
 [dependencies]
 async-trait.workspace = true
 futures.workspace = true
@@ -50,6 +56,7 @@ objc2-core-audio-types = { workspace = true, optional = true }
 block2 = { workspace = true, optional = true }
 dispatch2 = { workspace = true, optional = true }
 cpal = { version = "0.15", optional = true }
+screencapturekit = { version = "9.0.1", features = ["macos_13_0"], optional = true }
 
 [dev-dependencies]
 pretty_assertions = "1"
