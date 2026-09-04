@@ -92,7 +92,12 @@ LOC_CEILINGS: dict[str, int] = {
     # the journal. Not yet wired into `session::drive_session`'s live
     # path -- that cutover, plus `StereoInterleaver` removal and
     # `scrybe repair`, lands in the next stack of this release.
-    "scrybe-core": 10850,
+    # Raised to 10900 for M2/M3's macOS system-audio selection: the
+    # configuration contract names the chosen backend explicitly so absent
+    # settings can resolve to ScreenCaptureKit without changing legacy Tap
+    # invocations. The core ceiling keeps a 37-line margin after that contract;
+    # capture implementation remains isolated in its adapter crate.
+    "scrybe-core": 10900,
     # 2000 was the v0.5 ceiling. Raised to 2300 at v0.6 to absorb the
     # `scrybe bench` subcommand. Raised to 2500 at v1.0.1 to absorb
     # the `--source mic` and `--whisper-model` wiring on `scrybe record`
@@ -142,7 +147,11 @@ LOC_CEILINGS: dict[str, int] = {
     # `runtime::resolve_session_folder` (fewer total lines than two
     # private copies, but the shared helper's doc comment and tests
     # now live in `runtime.rs` instead of a `show.rs`-local fn).
-    "scrybe-cli": 3650,
+    # Raised to 4000 for the M2/M3 macOS system-audio control plane: backend
+    # selection, independent diagnostics, and bounded Tap-to-ScreenCaptureKit
+    # recovery live in CLI command handlers. This covers the committed M3 stack
+    # without weakening the adapter-specific ceilings above.
+    "scrybe-cli": 4000,
     "scrybe-capture-mac": 2500,
     "scrybe-capture-linux": 2500,
     "scrybe-capture-win": 2500,
