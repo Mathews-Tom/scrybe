@@ -4,6 +4,57 @@ All notable changes to scrybe are documented here. The format follows [Keep a Ch
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-09-04
+
+Closes M2 (`.docs/DEVELOPMENT_PLAN.md` §6) — the structural gate of the post-v1.0 plan. Fixes defect D1 (audio durability: a crash or `SIGKILL` mid-session used to lose the entire recording; it now loses at most the still-open journal segment and is always recoverable) and finishes defect D2 (`AudioFrame::timestamp_ns` is documented and structurally unused across sources — the code path that used to compare timestamps across sources no longer exists). Captured audio now reaches disk independently of the encode path: each source writes raw PCM to its own rotating `journal/<source>-<seq>.f32` segments on a dedicated thread during capture, and a single offline merge at session end (or via the new `scrybe repair` after a crash) resamples, epoch-aligns, interleaves, and encodes once — replacing the `StereoInterleaver` ring-buffer push/drain/encode-as-you-go path this milestone deletes.
+
+Verified end-to-end on real hardware (`DRUK-scrybe`): a `--source mic+system` recording `SIGKILL`ed mid-session recovered 5 min 30 s of stereo audio (well past the 4 min 30 s acceptance floor) plus a live-transcribed transcript, with the recovered duration within 0.9% of actual wall-clock elapsed.
+
+### Added
+
+- `scrybe_core::pipeline::journal` — `JournalWriter` spawns one dedicated OS thread per `FrameSource` on that source's first frame, appending raw little-endian f32 PCM to rotating `journal/<source>-<seq>.f32` segments (~30 s each) independent of the live encode path. `journal/manifest.toml` (`JournalAnchor`/`JournalManifest`, `write_manifest`/`read_manifest`) durably anchors each source's `first_frame_epoch_ms`, `sample_rate`, `channels`, and `frames_written` — written incrementally on each source's spawn, so even a process killed before any frame completes leaves a usable anchor.
+- `scrybe_core::pipeline::merge::merge_journal` — the offline merge: reads every journal segment back, downmixes multi-channel sources to mono, resamples each to the encoder's rate, silence-prefixes whichever source started later by the exact wall-clock delta between the two `first_frame_epoch_ms` anchors, interleaves to stereo (or leaves mono for a single source), encodes once, and asserts the encoded duration is within 1% of the real wall-clock elapsed before deleting the journal. A failed assertion leaves both the journal and any prior `audio.opus` untouched.
+- `scrybe_core::repair_session` and `scrybe repair <id-or-folder>` — runs the identical `merge_journal` against a crashed session's `journal/` to recover `audio.opus`, reconstructing a minimal `meta.toml` (consent/provider fields marked `unknown`) only when one was never durably written. Does not re-run transcription or notes generation — `transcript.md` is already durable independently of the merge.
+- `scrybe list` reports a folder with `journal/` present and no `audio.opus` as `UNFINISHED`, pointing at `scrybe repair`, instead of silently omitting it.
+- `meta.toml [audio]` gains `mic_epoch_ms` and `system_epoch_ms` keys (the same anchors `merge_journal` used for alignment), additive via `#[serde(default)]`.
+- `AudioCapture`'s `AudioFrame::timestamp_ns` doc comment now states the value is source-relative with an undefined origin and is never comparable across sources — a documentary addition to the existing Tier-1 contract, not a shape change.
+- `runtime::resolve_session_folder` — the `id-or-folder` → session-folder resolver shared by `scrybe show` and the new `scrybe repair`, extracted from `show.rs`'s private copy now that there are two call sites.
+- A `SIGKILL`-then-repair integration test (`scrybe-cli/tests/repair_sigkill.rs`) spawning the real binary, killing it mid-recording, and asserting `scrybe repair` recovers the audio. `synthetic_capture_stream` gained an opt-in `SCRYBE_TEST_SYNTHETIC_FRAME_DELAY_MS` pacing knob so the test can force the otherwise-instant synthetic generator to stay mid-stream long enough to kill deterministically; unset by default, every other invocation keeps the prior instant-emission behavior.
+
+### Changed
+
+- All workspace crates bump from `1.1.0-rc1` to `1.1.0`. Path-dep version pins follow. No SemVer-guard-test change — both versions satisfy the existing `starts_with("1.1.")` lock.
+- `scrybe_core::session::drive_session` no longer constructs `StereoInterleaver`; it writes every frame to its source's journal during capture and calls `merge_journal` once at session end. `session::{MetaTomlV1, Providers, Versioning, AudioMeta, MetaArgs, audio_layout, build_meta_toml}` widen from private to `pub(crate)` so `repair_session` can reconstruct an identical `meta.toml` for a crashed session using the same construction path a live session uses.
+- `merge_journal`'s journal-directory deletion now tolerates an already-absent directory (a session where no source ever produced a frame never creates `journal/` at all).
+- `scrybe-cli` LoC ceiling raised `3400` → `3650` to absorb `scrybe repair`, the unfinished-session detection in `scrybe list`, and the `runtime::resolve_session_folder` extraction (rationale in `scripts/check-loc-budget.py`).
+
+### Deprecated / Removed
+
+- `scrybe_core::pipeline::interleave::StereoInterleaver` — deleted. The ring-buffer arrival-order pairing it did is superseded by `merge_journal`'s epoch-anchored offline alignment, which additionally survives a crash. No compatibility shim; every call site cut over in the same change.
+
+### Security
+
+- No new dependencies. `git diff v1.1.0-rc1 HEAD -- Cargo.toml */Cargo.toml` is empty for dependency lines; every new module (`journal`, `merge`, `repair`) is built entirely on crates already present at `v1.1.0-rc1` (`tempfile`, `toml`, `serde`, `chrono`).
+- No new network surface. `scripts/check-egress-baseline.py` unchanged from `v1.1.0-rc1`.
+
+### Known limitations
+
+- Linux and Windows system-audio capture remain unimplemented (`scrybe-capture-linux`/`scrybe-capture-win` scaffolds only) — unchanged from prior releases; scoped to M8.
+- The offline merge and `scrybe repair` are exercised against `NullEncoder` in CI's default-feature build; real-Opus verification (`--features encoder-opus`) is a local/manual step, same posture as every prior release.
+- Tray icon and global hotkey (`--shell`) still print an advisory and run the headless path — unchanged from v1.0.1.
+
+### Workspace
+
+- 8 crates (unchanged).
+- Publish posture unchanged.
+- Test counts: 572 passed across the workspace on default features (up from 544 at `v1.1.0-rc1`), plus the new `repair_sigkill` real-subprocess integration test.
+
+### Contributors
+
+- Maintainer: Mathews Tom.
+
+[1.1.0]: https://github.com/Mathews-Tom/scrybe/releases/tag/v1.1.0
+
 ## [1.1.0-rc1] — 2026-09-03
 
 Repairs the `release.yml` pipeline (broken since `v1.0.2`) and lands the finished ergonomic `scrybe record TITLE` subcommand — the release-pipeline-repair and ergonomic-record-command deliverables from `.docs/DEVELOPMENT_PLAN.md`. This is the first tag to exercise the pipeline since the fix: `main`'s `cosign@2.4.1` root cause (unsupported by `taiki-e/install-action` on `x86_64_linux`) was already resolved by a prior commit (`sigstore/cosign-installer` migration) but had never been validated against a real tag push.
