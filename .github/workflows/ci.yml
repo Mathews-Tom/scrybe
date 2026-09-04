@@ -33,7 +33,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-14, windows-latest]
+        os: [ubuntu-latest, macos-26, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -46,16 +46,31 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: cargo check (mac core-audio-tap feature)
-        if: matrix.os == 'macos-14'
+        if: matrix.os == 'macos-26'
         run: cargo check -p scrybe-capture-mac --features core-audio-tap --all-targets
       - name: cargo clippy (mac core-audio-tap feature)
-        if: matrix.os == 'macos-14'
+        if: matrix.os == 'macos-26'
         run: cargo clippy -p scrybe-capture-mac --features core-audio-tap --all-targets -- -D warnings
       - name: cargo test (lib, bin, integration, examples)
         run: cargo test --workspace --all-targets
       - name: cargo test (mac core-audio-tap feature, ignored hardware tests skipped)
-        if: matrix.os == 'macos-14'
+        if: matrix.os == 'macos-26'
         run: cargo test -p scrybe-capture-mac --features core-audio-tap --all-targets
+      - name: cargo check (mac ScreenCaptureKit feature)
+        if: matrix.os == 'macos-26'
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "13.0"
+        run: cargo check -p scrybe-capture-mac --features system-capture-sck --all-targets
+      - name: cargo clippy (mac ScreenCaptureKit feature)
+        if: matrix.os == 'macos-26'
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "13.0"
+        run: cargo clippy -p scrybe-capture-mac --features system-capture-sck --all-targets -- -D warnings
+      - name: cargo test (mac ScreenCaptureKit feature)
+        if: matrix.os == 'macos-26'
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "13.0"
+        run: cargo test -p scrybe-capture-mac --features system-capture-sck --all-targets
       - name: cargo test (doc)
         run: cargo test --workspace --doc
       - name: cargo doc
