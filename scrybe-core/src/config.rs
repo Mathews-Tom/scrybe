@@ -176,6 +176,8 @@ impl Default for CaptureConfig {
 pub struct RecordConfig {
     #[serde(default = "default_record_source")]
     pub source: String,
+    #[serde(default = "default_system_backend")]
+    pub system_backend: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub whisper_model: Option<PathBuf>,
     #[serde(default = "default_record_llm")]
@@ -186,6 +188,10 @@ fn default_record_source() -> String {
     RECORD_SOURCE_SYNTHETIC.to_string()
 }
 
+fn default_system_backend() -> String {
+    RECORD_SYSTEM_BACKEND_SCK.to_string()
+}
+
 fn default_record_llm() -> String {
     RECORD_LLM_STUB.to_string()
 }
@@ -194,6 +200,7 @@ impl Default for RecordConfig {
     fn default() -> Self {
         Self {
             source: default_record_source(),
+            system_backend: default_system_backend(),
             whisper_model: None,
             llm: default_record_llm(),
         }
@@ -203,6 +210,8 @@ impl Default for RecordConfig {
 pub const RECORD_SOURCE_SYNTHETIC: &str = "synthetic";
 pub const RECORD_SOURCE_MIC: &str = "mic";
 pub const RECORD_SOURCE_MIC_SYSTEM: &str = "mic+system";
+pub const RECORD_SYSTEM_BACKEND_SCK: &str = "sck";
+pub const RECORD_SYSTEM_BACKEND_TAP: &str = "tap";
 
 pub const RECORD_LLM_STUB: &str = "stub";
 pub const RECORD_LLM_OPENAI_COMPAT: &str = "openai-compat";
@@ -223,6 +232,15 @@ impl RecordConfig {
         match self.llm.as_str() {
             RECORD_LLM_STUB => Some(RECORD_LLM_STUB),
             RECORD_LLM_OPENAI_COMPAT => Some(RECORD_LLM_OPENAI_COMPAT),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn validated_system_backend(&self) -> Option<&'static str> {
+        match self.system_backend.as_str() {
+            RECORD_SYSTEM_BACKEND_SCK => Some(RECORD_SYSTEM_BACKEND_SCK),
+            RECORD_SYSTEM_BACKEND_TAP => Some(RECORD_SYSTEM_BACKEND_TAP),
             _ => None,
         }
     }
@@ -743,6 +761,7 @@ mod tests {
         assert_eq!(c.storage.audio_bitrate_kbps, 32);
         assert!(c.capture.system_audio);
         assert_eq!(c.record.source, RECORD_SOURCE_SYNTHETIC);
+        assert_eq!(c.record.system_backend, RECORD_SYSTEM_BACKEND_SCK);
         assert_eq!(c.record.llm, RECORD_LLM_STUB);
         assert_eq!(c.record.whisper_model, None);
     }
@@ -790,6 +809,7 @@ schema_version = 1
 source = "mic+system"
 whisper_model = "~/Library/Application Support/scrybe/models/ggml-base.en.bin"
 llm = "openai-compat"
+system_backend = "tap"
 "#;
 
         let c = Config::from_toml_str(toml, &fake_path()).unwrap();
@@ -801,6 +821,10 @@ llm = "openai-compat"
             Some(Path::new(
                 "~/Library/Application Support/scrybe/models/ggml-base.en.bin"
             ))
+        );
+        assert_eq!(
+            c.record.validated_system_backend(),
+            Some(RECORD_SYSTEM_BACKEND_TAP)
         );
     }
 

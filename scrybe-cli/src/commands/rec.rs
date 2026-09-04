@@ -51,18 +51,18 @@ use chrono::Utc;
 use clap::{Args as ClapArgs, ValueEnum};
 use futures::stream::{self, Stream, StreamExt};
 #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
-use scrybe_capture_mac::MacCapture;
+use scrybe_capture_mac::{MacCapture, SckCapture};
 #[cfg(feature = "mic-capture")]
 use scrybe_capture_mic::MicCapture;
 // AudioCapture is consumed when either MicCapture is started (`mic`
-// source needs `mic-capture`) or both MicCapture and MacCapture are
-// started (`mic+system` source needs both). A `system-capture-mac`-only
-// build has no live `start()` call site.
+// source needs `mic-capture`) or both system adapters are started
+// with the mic.
 #[cfg(feature = "mic-capture")]
 use scrybe_core::capture::AudioCapture;
 use scrybe_core::config::{
     RecordConfig, RECORD_LLM_OPENAI_COMPAT, RECORD_LLM_STUB, RECORD_SOURCE_MIC,
-    RECORD_SOURCE_MIC_SYSTEM, RECORD_SOURCE_SYNTHETIC,
+    RECORD_SOURCE_MIC_SYSTEM, RECORD_SOURCE_SYNTHETIC, RECORD_SYSTEM_BACKEND_SCK,
+    RECORD_SYSTEM_BACKEND_TAP,
 };
 use scrybe_core::context::MeetingContext;
 use scrybe_core::diarize::Diarizer;
@@ -128,6 +128,12 @@ pub struct Args {
     #[arg(long, value_enum)]
     pub source: Option<CaptureSourceArg>,
 
+    /// System-audio adapter for `--source mic+system`. `sck` is the
+    /// macOS 13+ default; `tap` selects the macOS 14.4+ Core Audio
+    /// Tap path.
+    #[arg(long, value_enum)]
+    pub system_backend: Option<SystemBackendArg>,
+
     /// Path to a whisper.cpp model (`.bin` or `.gguf`). When set AND
     /// the binary is built with `--features whisper-local`, the STT
     /// provider becomes `WhisperLocalProvider` against these weights.
@@ -180,6 +186,13 @@ pub enum CaptureSourceArg {
 }
 
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq, ValueEnum)]
+pub enum SystemBackendArg {
+    #[default]
+    Sck,
+    Tap,
+}
+
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq, ValueEnum)]
 pub enum LlmBackendArg {
     #[default]
     Stub,
@@ -189,6 +202,36 @@ pub enum LlmBackendArg {
     /// token to match `docs/system-design.md` §4.3.
     #[value(name = "openai-compat")]
     OpenAiCompat,
+}
+
+#[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
+enum SystemCapture {
+    Sck(SckCapture),
+    Tap(MacCapture),
+}
+
+#[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
+impl SystemCapture {
+    fn new(backend: SystemBackendArg) -> Self {
+        match backend {
+            SystemBackendArg::Sck => Self::Sck(SckCapture::new()),
+            SystemBackendArg::Tap => Self::Tap(MacCapture::new()),
+        }
+    }
+
+    fn start(&mut self) -> Result<()> {
+        match self {
+            Self::Sck(capture) => capture.start().map_err(Into::into),
+            Self::Tap(capture) => capture.start().map_err(Into::into),
+        }
+    }
+
+    fn frames(&self) -> Pin<Box<dyn Stream<Item = Result<AudioFrame, CaptureError>> + Send>> {
+        match self {
+            Self::Sck(capture) => Box::pin(capture.frames()),
+            Self::Tap(capture) => Box::pin(capture.frames()),
+        }
+    }
 }
 
 impl From<ConsentModeArg> for ConsentMode {
@@ -234,6 +277,8 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
 
     let stt = build_stt_provider(whisper_model.as_ref())?;
     let llm = build_llm_provider(llm_backend, &cfg.llm)?;
+    #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
+    let system_backend = resolve_system_backend(args.system_backend, &cfg.record)?;
     let diarizer = BinaryChannelDiarizer;
     let hooks: Vec<Box<dyn Hook>> = Vec::new();
 
@@ -253,7 +298,7 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
     // intersection of features keeps the binding warning-free in
     // single-feature builds.
     #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
-    let mut system_capture_keepalive: Option<MacCapture> = None;
+    let mut system_capture_keepalive: Option<SystemCapture> = None;
 
     // System frames need their own VAD/chunker for the binary-channel
     // diarizer to attribute them as `Them:`. Set to `Some(...)` only
@@ -299,11 +344,10 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
                     "opening default input device (grant Microphone permission \
                          in System Settings → Privacy & Security if prompted)",
                 )?;
-                let mut mac = MacCapture::new();
-                mac.start().context(
-                    "creating Core Audio Tap (grant Audio Capture permission in \
-                         System Settings → Privacy & Security if prompted; macOS 14.4+ \
-                         is required)",
+                let mut system_capture = SystemCapture::new(system_backend);
+                system_capture.start().context(
+                    "opening system-audio capture (grant Screen & System Audio Recording for \
+                     sck, or Audio Capture for tap, in System Settings → Privacy & Security)",
                 )?;
                 // Merge mic + system frames by arrival order. Each
                 // frame carries its own `FrameSource`, so the
@@ -312,11 +356,11 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
                 // `system_chunker`. The diarizer then attributes
                 // them as `Me:` / `Them:` per
                 // `system-design.md` §4.4.
-                let merged = stream::select(mic.frames(), mac.frames());
+                let merged = stream::select(mic.frames(), system_capture.frames());
                 let s: Pin<Box<dyn Stream<Item = _> + Send>> =
                     Box::pin(merged.take_until(stop_future));
                 mic_capture_keepalive = Some(mic);
-                system_capture_keepalive = Some(mac);
+                system_capture_keepalive = Some(system_capture);
                 s
             }
             #[cfg(not(all(feature = "mic-capture", feature = "system-capture-mac")))]
@@ -401,6 +445,23 @@ fn resolve_capture_source(
         Some(_) | None => anyhow::bail!(
             "invalid [record].source {}; expected one of: synthetic, mic, mic+system",
             cfg.source
+        ),
+    }
+}
+
+fn resolve_system_backend(
+    explicit: Option<SystemBackendArg>,
+    cfg: &RecordConfig,
+) -> Result<SystemBackendArg> {
+    if let Some(backend) = explicit {
+        return Ok(backend);
+    }
+    match cfg.validated_system_backend() {
+        Some(RECORD_SYSTEM_BACKEND_SCK) => Ok(SystemBackendArg::Sck),
+        Some(RECORD_SYSTEM_BACKEND_TAP) => Ok(SystemBackendArg::Tap),
+        Some(_) | None => anyhow::bail!(
+            "invalid [record].system_backend {}; expected one of: sck, tap",
+            cfg.system_backend
         ),
     }
 }
@@ -881,6 +942,7 @@ mod tests {
             synthetic_secs: 1,
             shell: false,
             source: Some(CaptureSourceArg::Synthetic),
+            system_backend: None,
             llm: Some(LlmBackendArg::Stub),
             whisper_model: None,
         })
@@ -951,6 +1013,7 @@ mod tests {
             synthetic_secs: 1,
             shell: false,
             source: Some(CaptureSourceArg::Synthetic),
+            system_backend: None,
             llm: Some(LlmBackendArg::Stub),
             whisper_model: None,
         })
@@ -1013,6 +1076,7 @@ mod tests {
             synthetic_secs: 1,
             shell: false,
             source: Some(CaptureSourceArg::Synthetic),
+            system_backend: None,
             llm: Some(LlmBackendArg::Stub),
             whisper_model: None,
         })
@@ -1056,6 +1120,34 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_system_backend_flag_overrides_record_config() {
+        let cfg = RecordConfig {
+            system_backend: RECORD_SYSTEM_BACKEND_TAP.to_string(),
+            ..RecordConfig::default()
+        };
+        assert_eq!(
+            resolve_system_backend(Some(SystemBackendArg::Sck), &cfg).unwrap(),
+            SystemBackendArg::Sck
+        );
+    }
+
+    #[test]
+    fn test_system_backend_uses_valid_record_config_then_default() {
+        let tap_cfg = RecordConfig {
+            system_backend: RECORD_SYSTEM_BACKEND_TAP.to_string(),
+            ..RecordConfig::default()
+        };
+        assert_eq!(
+            resolve_system_backend(None, &tap_cfg).unwrap(),
+            SystemBackendArg::Tap
+        );
+        assert_eq!(
+            resolve_system_backend(None, &RecordConfig::default()).unwrap(),
+            SystemBackendArg::Sck
+        );
+    }
+
     #[cfg(not(all(feature = "mic-capture", feature = "system-capture-mac")))]
     #[tokio::test]
     async fn test_run_with_mic_system_source_errors_without_both_features() {
@@ -1075,6 +1167,7 @@ mod tests {
             synthetic_secs: 1,
             shell: false,
             source: Some(CaptureSourceArg::MicSystem),
+            system_backend: None,
             llm: Some(LlmBackendArg::Stub),
             whisper_model: None,
         })

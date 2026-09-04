@@ -36,6 +36,11 @@ pub struct Args {
     /// `--features system-capture-mac`.
     #[arg(long, default_value_t = false)]
     pub check_tap: bool,
+
+    /// Probe the macOS ScreenCaptureKit system-audio adapter
+    /// end-to-end. Requires Screen & System Audio Recording permission.
+    #[arg(long, default_value_t = false)]
+    pub check_sck: bool,
 }
 
 #[allow(clippy::unused_async)]
@@ -67,6 +72,9 @@ pub async fn run(args: Args) -> Result<()> {
 
     if args.check_tap {
         check_tap(&mut report).await;
+    }
+    if args.check_sck {
+        check_sck(&mut report).await;
     }
 
     for line in &report.lines {
@@ -172,6 +180,72 @@ const fn is_pid_alive(_pid: u32) -> bool {
 #[cfg(all(target_os = "macos", feature = "system-capture-mac"))]
 const TAP_PROBE_WINDOW: std::time::Duration = std::time::Duration::from_millis(1_500);
 
+#[cfg(all(target_os = "macos", feature = "system-capture-mac"))]
+async fn check_sck(report: &mut Report) {
+    use futures::StreamExt;
+    use scrybe_capture_mac::probe_chime::{play_probe_chime, PROBE_CHIME_PASS_THRESHOLD};
+    use scrybe_capture_mac::SckCapture;
+    use scrybe_core::capture::AudioCapture;
+
+    let mut capture = SckCapture::new();
+    if let Err(e) = capture.start() {
+        report.lines.push(format!("sck probe: start failed: {e}"));
+        report.warnings += 1;
+        return;
+    }
+
+    let chime_handle = tokio::task::spawn_blocking(move || play_probe_chime(TAP_PROBE_WINDOW));
+    let mut frames = capture.frames();
+    let deadline = tokio::time::Instant::now() + TAP_PROBE_WINDOW;
+    let mut frame_count: u64 = 0;
+    let mut peak: f32 = 0.0;
+    loop {
+        match tokio::time::timeout_at(deadline, frames.next()).await {
+            Ok(Some(Ok(frame))) => {
+                frame_count += 1;
+                for sample in frame.samples.iter() {
+                    peak = peak.max(sample.abs());
+                }
+            }
+            Ok(Some(Err(e))) => {
+                report
+                    .lines
+                    .push(format!("sck probe: capture error mid-stream: {e}"));
+                report.warnings += 1;
+                break;
+            }
+            Ok(None) | Err(_) => break,
+        }
+    }
+    let _ = capture.stop();
+    match chime_handle.await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            report
+                .lines
+                .push(format!("sck probe: chime playback failed: {e}"));
+            report.warnings += 1;
+        }
+        Err(e) => {
+            report
+                .lines
+                .push(format!("sck probe: chime task failed: {e}"));
+            report.warnings += 1;
+        }
+    }
+    let verdict = if frame_count == 0 {
+        report.warnings += 1;
+        "FAIL: no frames received"
+    } else if peak < PROBE_CHIME_PASS_THRESHOLD {
+        report.warnings += 1;
+        "FAIL: silent frames (Screen & System Audio Recording not granted)"
+    } else {
+        "OK"
+    };
+    report.lines.push(format!(
+        "sck probe: frames={frame_count} peak={peak:.5} → {verdict}"
+    ));
+}
 #[cfg(all(target_os = "macos", feature = "system-capture-mac"))]
 async fn check_tap(report: &mut Report) {
     use futures::StreamExt;
@@ -346,6 +420,16 @@ async fn check_tap(report: &mut Report) {
         "tap probe: skipped (binary not built with --features system-capture-mac on macOS)"
             .to_string(),
     );
+}
+
+#[cfg(not(all(target_os = "macos", feature = "system-capture-mac")))]
+#[allow(clippy::unused_async)]
+async fn check_sck(report: &mut Report) {
+    report.lines.push(
+        "sck probe: skipped (binary not built with --features system-capture-mac on macOS)"
+            .to_string(),
+    );
+    report.warnings += 1;
 }
 
 fn report_egress_posture(cfg: &Config, report: &mut Report) {
