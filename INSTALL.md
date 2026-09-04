@@ -149,7 +149,7 @@ open ./scrybe.app --args doctor --check-tap
 # expected: tap probe: frames=N peak=0.00… → OK
 ```
 
-`scrybe record` detects the legacy Tap backend and relaunches through an available bundle. Direct `scrybe rec --system-backend tap` remains for advanced diagnosis and can return silent frames when the Audio Capture grant is not bound to that process.
+`scrybe record` detects the legacy Tap backend and relaunches through an available bundle. Direct `scrybe rec --system-backend tap` remains for advanced diagnosis. If Tap fails to start or emits only zero-valued frames during its 1.5 s startup window, scrybe stops it and switches once to ScreenCaptureKit; a quiet desktop can therefore switch before external audio begins.
 
 ---
 

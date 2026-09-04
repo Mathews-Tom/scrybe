@@ -150,7 +150,7 @@ python3 scripts/check-egress-baseline.py
 
 - macOS is the only polished binary distribution target today.
 - `--source mic+system` defaults to ScreenCaptureKit on macOS 13+ and requires **Screen & System Audio Recording**. This privacy permission covers screen recording in addition to system audio; deny it if that scope is unacceptable.
-- The macOS 14.4+ Core Audio Tap backend remains available as `[record].system_backend = "tap"` for recovery. It requires the narrower Audio Capture permission and a signed `.app` bundle.
+- The macOS 14.4+ Core Audio Tap backend remains available as `[record].system_backend = "tap"` for recovery. It requires the narrower Audio Capture permission and a signed `.app` bundle. A failed or silent Tap switches once to ScreenCaptureKit after a 1.5 s startup window, so a quiet desktop can switch before external audio begins.
 - Tray and global-hotkey shell support exists behind `cli-shell`; the headless `record` path remains the reliable path.
 - The crates.io `scrybe` package is the public package identity. The implementation crates are currently `publish = false`; install the CLI from GitHub releases or build from source.
 - Native macOS notarization and Windows Authenticode signing are out of scope for the v1 line. Release artifacts are verified with checksums and cosign provenance instead.
