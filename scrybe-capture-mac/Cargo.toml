@@ -17,6 +17,11 @@ default = []
 # CoreAudio framework. Off by default so the workspace can be type-
 # checked on Linux/Windows hosts; the macOS CI lane and the release
 # build flip it on.
+#
+# `dep:cpal` powers `probe_chime`'s in-process calibration chime for
+# `scrybe doctor --check-tap` — playing it in-process (no `afplay`
+# subprocess, no on-disk fixture file) is only meaningful alongside
+# the live tap binding this feature enables.
 core-audio-tap = [
     "dep:objc2",
     "dep:objc2-foundation",
@@ -25,6 +30,7 @@ core-audio-tap = [
     "dep:objc2-core-audio-types",
     "dep:block2",
     "dep:dispatch2",
+    "dep:cpal",
 ]
 
 [dependencies]
@@ -43,6 +49,7 @@ objc2-core-audio = { workspace = true, optional = true }
 objc2-core-audio-types = { workspace = true, optional = true }
 block2 = { workspace = true, optional = true }
 dispatch2 = { workspace = true, optional = true }
+cpal = { version = "0.15", optional = true }
 
 [dev-dependencies]
 pretty_assertions = "1"

@@ -165,38 +165,19 @@ const fn is_pid_alive(_pid: u32) -> bool {
     true
 }
 
-/// Audio fixture played during `scrybe doctor --check-tap`. Submarine
-/// is ~2.5 s of broadband audio shipped on every macOS install since
-/// Mac OS X — long enough to fill the 1.5 s capture window with real
-/// signal, short enough that the probe finishes promptly.
-#[cfg(all(target_os = "macos", feature = "system-capture-mac"))]
-const TAP_PROBE_FIXTURE: &str = "/System/Library/Sounds/Submarine.aiff";
-
 /// Capture window during the tap probe. Long enough to outlast
-/// `CoreAudio`'s `IOProc` startup delay (~200 ms in practice), short
-/// enough that a tap silent under TCC denial fails fast.
+/// `CoreAudio`'s `IOProc` startup delay (~200 ms in practice) and to
+/// hear the calibration chime loop at least once, short enough that
+/// a tap silent under TCC denial fails fast.
 #[cfg(all(target_os = "macos", feature = "system-capture-mac"))]
 const TAP_PROBE_WINDOW: std::time::Duration = std::time::Duration::from_millis(1_500);
-
-/// Threshold separating "tap delivers real audio" from "tap zero-fills
-/// under TCC denial". Submarine.aiff peaks well above 0.1; a value
-/// below 0.01 is squarely in the noise floor / silence regime.
-#[cfg(all(target_os = "macos", feature = "system-capture-mac"))]
-const TAP_PROBE_NOISE_FLOOR: f32 = 0.01;
 
 #[cfg(all(target_os = "macos", feature = "system-capture-mac"))]
 async fn check_tap(report: &mut Report) {
     use futures::StreamExt;
+    use scrybe_capture_mac::probe_chime::{play_probe_chime, PROBE_CHIME_PASS_THRESHOLD};
     use scrybe_capture_mac::MacCapture;
     use scrybe_core::capture::AudioCapture;
-
-    if !std::path::Path::new(TAP_PROBE_FIXTURE).exists() {
-        report.lines.push(format!(
-            "tap probe: skipped ({TAP_PROBE_FIXTURE} not present)"
-        ));
-        report.warnings += 1;
-        return;
-    }
 
     let mut capture = MacCapture::new();
     if let Err(e) = capture.start() {
@@ -205,20 +186,13 @@ async fn check_tap(report: &mut Report) {
         return;
     }
 
-    let mut afplay = match std::process::Command::new("/usr/bin/afplay")
-        .arg(TAP_PROBE_FIXTURE)
-        .spawn()
-    {
-        Ok(child) => child,
-        Err(e) => {
-            let _ = capture.stop();
-            report
-                .lines
-                .push(format!("tap probe: afplay spawn failed: {e}"));
-            report.warnings += 1;
-            return;
-        }
-    };
+    // Play the calibration chime in-process, concurrently with the
+    // capture loop below, for exactly `TAP_PROBE_WINDOW`. A Core
+    // Audio Tap reads the digital pre-mix stream, so this chime still
+    // lands at the tap as real nonzero samples when the tap is
+    // granted, while a TCC-denied tap reads exact digital zeros
+    // regardless of what is playing.
+    let chime_handle = tokio::task::spawn_blocking(move || play_probe_chime(TAP_PROBE_WINDOW));
 
     let mut frames = capture.frames();
     let deadline = tokio::time::Instant::now() + TAP_PROBE_WINDOW;
@@ -246,21 +220,35 @@ async fn check_tap(report: &mut Report) {
         }
     }
 
-    let _ = afplay.kill();
-    let _ = afplay.wait();
     let _ = capture.stop();
+
+    match chime_handle.await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            report
+                .lines
+                .push(format!("tap probe: chime playback failed: {e}"));
+            report.warnings += 1;
+        }
+        Err(e) => {
+            report
+                .lines
+                .push(format!("tap probe: chime playback task panicked: {e}"));
+            report.warnings += 1;
+        }
+    }
 
     let verdict = if frame_count == 0 {
         report.warnings += 1;
         "FAIL: IOProc never fired (entitlement, sandbox, or aggregate-device construction failure)"
-    } else if peak < TAP_PROBE_NOISE_FLOOR {
+    } else if peak < PROBE_CHIME_PASS_THRESHOLD {
         report.warnings += 1;
         "FAIL: tap delivered silent frames (TCC cannot consent because this binary has no `.app` bundle + Info.plist)"
     } else {
         "OK"
     };
     report.lines.push(format!(
-        "tap probe: frames={frame_count} peak={peak:.4} → {verdict}"
+        "tap probe: frames={frame_count} peak={peak:.5} → {verdict}"
     ));
 
     // When the tap is silent, surface concrete remediation steps so the
@@ -270,7 +258,7 @@ async fn check_tap(report: &mut Report) {
     // an Info.plist declaring `NSAudioCaptureUsageDescription`. The
     // signing identity matters too — ad-hoc identities don't survive
     // rebuilds because the designated requirement is hash-pinned.
-    if frame_count > 0 && peak < TAP_PROBE_NOISE_FLOOR {
+    if frame_count > 0 && peak < PROBE_CHIME_PASS_THRESHOLD {
         emit_silent_tap_remediation(report);
     }
 }

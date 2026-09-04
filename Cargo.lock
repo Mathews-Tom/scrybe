@@ -2923,6 +2923,7 @@ version = "1.1.0"
 dependencies = [
  "async-trait",
  "block2",
+ "cpal",
  "dispatch2",
  "futures",
  "objc2",

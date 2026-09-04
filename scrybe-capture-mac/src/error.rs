@@ -23,6 +23,9 @@ pub enum MacCaptureError {
 
     #[error("TCC permission denied for {api}")]
     TccDenied { api: &'static str },
+
+    #[error("probe chime playback error: {0}")]
+    ProbeChimePlayback(#[source] BoxError),
 }
 
 impl From<MacCaptureError> for CaptureError {

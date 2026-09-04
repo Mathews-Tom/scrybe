@@ -30,6 +30,9 @@ pub mod error;
 #[cfg(all(target_os = "macos", feature = "core-audio-tap"))]
 mod coreaudio_tap;
 
+#[cfg(all(target_os = "macos", feature = "core-audio-tap"))]
+pub mod probe_chime;
+
 pub use error::MacCaptureError;
 
 use std::sync::{Arc, Mutex};
