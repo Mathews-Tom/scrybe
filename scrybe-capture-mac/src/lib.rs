@@ -8,22 +8,17 @@
 //!
 //! Two paths:
 //!
-//! - **Core Audio Taps** (macOS 14.4+, primary). Behind the
-//!   `core-audio-tap` feature. Requires the Tap-creation prompt, no
-//!   Screen Recording permission, no orange dot. Hardware validation
-//!   is gated by `SCRYBE_TEST_CAPTURE=1` per `docs/system-design.md`
-//!   §11 Tier 2.
-//! - **`ScreenCaptureKit`** (macOS 13.0–14.3 fallback). Triggers
-//!   Screen Recording permission and orange dot for audio-only
-//!   capture; documented as a fallback path in `system-design.md` §3.
-//!   Implementation lands in v0.2 — v0.1 of this adapter ships
-//!   Core Audio Taps only and refuses to start on older macOS.
+//! - **Core Audio Taps** (macOS 14.4+). Behind the `core-audio-tap`
+//!   feature. Requires the Tap-creation prompt, no Screen Recording
+//!   permission, no orange dot. [`MacCapture`] owns this path.
+//! - **`ScreenCaptureKit`** (macOS 13.0+). Behind the
+//!   `system-capture-sck` feature. Requires Screen Recording
+//!   permission and the orange recording indicator. `SckCapture`
+//!   owns this path.
 //!
-//! Without the `core-audio-tap` feature, `MacCapture::start()` returns
-//! `CaptureError::PermissionDenied("core-audio-tap feature disabled")`
-//! so consumer code on Linux/Windows hosts can still link this crate
-//! during cross-platform CI (the workspace runs `cargo check` on three
-//! runners; only the macOS runner enables the feature).
+//! Both implementations deliver source-relative, monotonic
+//! [`AudioFrame`] timestamps and close their one-consumer stream during
+//! [`AudioCapture::stop`].
 
 pub mod error;
 
@@ -33,7 +28,11 @@ mod coreaudio_tap;
 #[cfg(all(target_os = "macos", feature = "core-audio-tap"))]
 pub mod probe_chime;
 
-pub use error::MacCaptureError;
+#[cfg(all(target_os = "macos", feature = "system-capture-sck"))]
+pub mod screencapturekit;
+
+#[cfg(all(target_os = "macos", feature = "system-capture-sck"))]
+pub use screencapturekit::SckCapture;
 
 use std::sync::{Arc, Mutex};
 
@@ -44,7 +43,7 @@ use scrybe_core::types::{AudioFrame, Capabilities, PermissionModel};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
-mod tokio_stream {
+pub(crate) mod tokio_stream {
     pub mod wrappers {
         use std::pin::Pin;
         use std::task::{Context, Poll};
