@@ -103,6 +103,7 @@ mod tests {
         run(Command::Doctor(doctor::Args {
             root: Some(dir.path().to_path_buf()),
             check_tap: false,
+            check_sck: false,
         }))
         .await
         .unwrap();

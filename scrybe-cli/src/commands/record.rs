@@ -26,6 +26,7 @@ use anyhow::Result;
 use clap::Args as ClapArgs;
 use scrybe_core::config::{
     Config, RECORD_LLM_OPENAI_COMPAT, RECORD_SOURCE_MIC, RECORD_SOURCE_MIC_SYSTEM,
+    RECORD_SYSTEM_BACKEND_SCK, RECORD_SYSTEM_BACKEND_TAP,
 };
 #[cfg(feature = "system-capture-mac")]
 use scrybe_core::config::{RECORD_LLM_STUB, RECORD_SOURCE_SYNTHETIC};
@@ -50,6 +51,10 @@ pub struct Args {
     /// config when set to a non-synthetic value.
     #[arg(long, value_enum)]
     pub source: Option<CaptureSourceArg>,
+
+    /// Override the `sck` or `tap` system-audio adapter.
+    #[arg(long, value_enum)]
+    pub system_backend: Option<super::rec::SystemBackendArg>,
 
     /// Override the Whisper model path. Defaults to the model under
     /// `~/Library/Application Support/dev.scrybe.scrybe/models/` if
@@ -110,6 +115,7 @@ pub async fn run(args: Args) -> Result<()> {
 struct Resolved {
     title: String,
     source: CaptureSourceArg,
+    system_backend: super::rec::SystemBackendArg,
     whisper_model: Option<PathBuf>,
     llm: LlmBackendArg,
     root: Option<PathBuf>,
@@ -124,6 +130,7 @@ impl Resolved {
             consent: None,
             synthetic_secs: 5,
             source: Some(self.source),
+            system_backend: Some(self.system_backend),
             whisper_model: self.whisper_model,
             llm: Some(self.llm),
             shell: false,
@@ -135,6 +142,13 @@ fn resolve(cfg: &Config, args: &Args) -> Resolved {
     let source = args.source.unwrap_or_else(|| {
         capture_source_arg_from_str(record_defaults::ergonomic_source(&cfg.record))
     });
+    let system_backend = args.system_backend.unwrap_or_else(|| {
+        system_backend_arg_from_str(
+            cfg.record
+                .validated_system_backend()
+                .unwrap_or(RECORD_SYSTEM_BACKEND_SCK),
+        )
+    });
     let whisper_model = args
         .whisper_model
         .clone()
@@ -145,6 +159,7 @@ fn resolve(cfg: &Config, args: &Args) -> Resolved {
     Resolved {
         title: args.title.clone(),
         source,
+        system_backend,
         whisper_model,
         llm,
         root: args.root.clone(),
@@ -152,16 +167,12 @@ fn resolve(cfg: &Config, args: &Args) -> Resolved {
 }
 
 fn should_use_bundle(resolved: &Resolved, args: &Args) -> bool {
-    if args.no_bundle {
+    if args.no_bundle || !cfg!(target_os = "macos") {
         return false;
     }
-    if !cfg!(target_os = "macos") {
-        return false;
-    }
-    if !matches!(resolved.source, CaptureSourceArg::MicSystem) {
-        return false;
-    }
-    !already_inside_bundle()
+    matches!(resolved.source, CaptureSourceArg::MicSystem)
+        && matches!(resolved.system_backend, super::rec::SystemBackendArg::Tap)
+        && !already_inside_bundle()
 }
 
 fn already_inside_bundle() -> bool {
@@ -217,6 +228,8 @@ fn build_rec_argv(resolved: &Resolved) -> Vec<String> {
         argv.push("--whisper-model".to_string());
         argv.push(model.to_string_lossy().into_owned());
     }
+    argv.push("--system-backend".to_string());
+    argv.push(system_backend_arg_to_str(resolved.system_backend).to_string());
     if let Some(root) = &resolved.root {
         argv.push("--root".to_string());
         argv.push(root.to_string_lossy().into_owned());
@@ -230,6 +243,21 @@ fn capture_source_arg_from_str(s: &str) -> CaptureSourceArg {
         RECORD_SOURCE_MIC => CaptureSourceArg::Mic,
         RECORD_SOURCE_MIC_SYSTEM => CaptureSourceArg::MicSystem,
         _ => CaptureSourceArg::Synthetic,
+    }
+}
+
+fn system_backend_arg_from_str(s: &str) -> super::rec::SystemBackendArg {
+    match s {
+        RECORD_SYSTEM_BACKEND_TAP => super::rec::SystemBackendArg::Tap,
+        _ => super::rec::SystemBackendArg::Sck,
+    }
+}
+
+#[cfg(feature = "system-capture-mac")]
+const fn system_backend_arg_to_str(arg: super::rec::SystemBackendArg) -> &'static str {
+    match arg {
+        super::rec::SystemBackendArg::Sck => RECORD_SYSTEM_BACKEND_SCK,
+        super::rec::SystemBackendArg::Tap => RECORD_SYSTEM_BACKEND_TAP,
     }
 }
 
@@ -268,6 +296,7 @@ mod tests {
         Args {
             title: title.to_string(),
             source: None,
+            system_backend: None,
             whisper_model: None,
             llm: None,
             root: None,
@@ -297,6 +326,7 @@ mod tests {
         let resolved = Resolved {
             title: "t".into(),
             source: CaptureSourceArg::MicSystem,
+            system_backend: super::rec::SystemBackendArg::Sck,
             whisper_model: None,
             llm: LlmBackendArg::Stub,
             root: None,
@@ -311,6 +341,7 @@ mod tests {
         let resolved = Resolved {
             title: "t".into(),
             source: CaptureSourceArg::Mic,
+            system_backend: super::rec::SystemBackendArg::Sck,
             whisper_model: None,
             llm: LlmBackendArg::Stub,
             root: None,
@@ -347,6 +378,7 @@ mod tests {
         let resolved = Resolved {
             title: "client-call".into(),
             source: CaptureSourceArg::MicSystem,
+            system_backend: super::rec::SystemBackendArg::Sck,
             whisper_model: Some(PathBuf::from("/m.bin")),
             llm: LlmBackendArg::OpenAiCompat,
             root: None,
