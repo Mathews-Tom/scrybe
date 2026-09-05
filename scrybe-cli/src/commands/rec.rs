@@ -51,7 +51,7 @@ use chrono::Utc;
 use clap::{Args as ClapArgs, ValueEnum};
 use futures::stream::{self, Stream, StreamExt};
 #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
-use scrybe_capture_mac::{MacCapture, SckCapture};
+use scrybe_capture_mac::{MacCapture, NativeMicCapture, SckCapture};
 #[cfg(feature = "mic-capture")]
 use scrybe_capture_mic::MicCapture;
 // AudioCapture is consumed when either MicCapture is started (`mic`
@@ -129,6 +129,11 @@ pub struct Args {
     /// returns `CaptureError::PermissionDenied` at start time.
     #[arg(long, value_enum)]
     pub source: Option<CaptureSourceArg>,
+
+    /// Exact macOS Core Audio input-device UID from `scrybe devices`.
+    /// Display names are deliberately not accepted as selectors.
+    #[arg(long)]
+    pub input_device: Option<String>,
 
     /// System-audio adapter for `--source mic+system`. `sck` is the
     /// macOS 13+ default; `tap` selects the macOS 14.4+ Core Audio
@@ -387,6 +392,9 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
     // the session writes its outputs.
     #[cfg(feature = "mic-capture")]
     let mut mic_capture_keepalive: Option<MicCapture> = None;
+
+    #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
+    let mut native_mic_capture_keepalive: Option<NativeMicCapture> = None;
     // Only the dual-source path constructs system capture; gating on
     // the intersection of features keeps the binding warning-free in
     // single-feature builds.
@@ -407,49 +415,110 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
         CaptureSourceArg::Synthetic => {
             Box::pin(synthetic_capture_stream(args.synthetic_secs).take_until(stop_future))
         }
-        CaptureSourceArg::Mic => {
-            #[cfg(feature = "mic-capture")]
-            {
-                let mut mic = MicCapture::new();
-                mic.start().context(
-                    "opening default input device (grant Microphone permission \
-                     in System Settings → Privacy & Security if prompted)",
-                )?;
-                let s: Pin<Box<dyn Stream<Item = _> + Send>> =
-                    Box::pin(mic.frames().take_until(stop_future));
-                mic_capture_keepalive = Some(mic);
-                s
+        CaptureSourceArg::Mic => match args.input_device.as_deref() {
+            Some(_uid) => {
+                #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
+                {
+                    let mut mic = NativeMicCapture::new(_uid.to_string());
+                    if let Err(error) = mic.start() {
+                        tracing::error!(
+                            input_device = _uid,
+                            error = %error,
+                            "selected Core Audio input failed; falling back to the default input"
+                        );
+                        let mut fallback = MicCapture::new();
+                        fallback.start().context(
+                                "selected Core Audio input failed and opening the default input also \
+                                 failed (grant Microphone permission in System Settings → Privacy & \
+                                 Security if prompted)",
+                            )?;
+                        let stream: Pin<Box<dyn Stream<Item = _> + Send>> =
+                            Box::pin(fallback.frames().take_until(stop_future));
+                        mic_capture_keepalive = Some(fallback);
+                        stream
+                    } else {
+                        let stream: Pin<Box<dyn Stream<Item = _> + Send>> =
+                            Box::pin(mic.frames().take_until(stop_future));
+                        native_mic_capture_keepalive = Some(mic);
+                        stream
+                    }
+                }
+                #[cfg(not(all(feature = "mic-capture", feature = "system-capture-mac")))]
+                {
+                    anyhow::bail!(
+                        "--input-device requires a macOS build with --features \
+                             mic-capture,system-capture-mac"
+                    );
+                }
             }
-            #[cfg(not(feature = "mic-capture"))]
-            {
-                anyhow::bail!(
-                    "--source mic requires the binary to be built with --features mic-capture; \
-                     this binary was built without it"
-                );
+            None => {
+                #[cfg(feature = "mic-capture")]
+                {
+                    let mut mic = MicCapture::new();
+                    mic.start().context(
+                        "opening default input device (grant Microphone permission \
+                             in System Settings → Privacy & Security if prompted)",
+                    )?;
+                    let stream: Pin<Box<dyn Stream<Item = _> + Send>> =
+                        Box::pin(mic.frames().take_until(stop_future));
+                    mic_capture_keepalive = Some(mic);
+                    stream
+                }
+                #[cfg(not(feature = "mic-capture"))]
+                {
+                    anyhow::bail!(
+                            "--source mic requires the binary to be built with --features mic-capture; \
+                             this binary was built without it"
+                        );
+                }
             }
-        }
+        },
         CaptureSourceArg::MicSystem => {
             #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
             {
                 use futures::stream;
 
-                let mut mic = MicCapture::new();
-                mic.start().context(
-                    "opening default input device (grant Microphone permission \
-                     in System Settings → Privacy & Security if prompted)",
-                )?;
                 let (system_capture, system_frames, fallback_note) =
                     start_system_capture(system_backend).await?;
                 if let Some(note) = fallback_note {
                     tracing::warn!(system_backend = "sck", "{note}");
                     write_capture_diagnostic(&root, started_at, id, args.title.as_deref(), note)?;
                 }
-                let merged = stream::select(mic.frames(), system_frames);
-                let s: Pin<Box<dyn Stream<Item = _> + Send>> =
-                    Box::pin(merged.take_until(stop_future));
-                mic_capture_keepalive = Some(mic);
+                let stream: Pin<Box<dyn Stream<Item = _> + Send>> = if let Some(uid) =
+                    args.input_device.as_deref()
+                {
+                    let mut mic = NativeMicCapture::new(uid.to_string());
+                    if let Err(error) = mic.start() {
+                        tracing::error!(
+                            input_device = uid,
+                            error = %error,
+                            "selected Core Audio input failed; falling back to the default input"
+                        );
+                        let mut fallback = MicCapture::new();
+                        fallback.start().context(
+                            "selected Core Audio input failed and opening the default input \
+                                 also failed",
+                        )?;
+                        let merged = stream::select(fallback.frames(), system_frames);
+                        mic_capture_keepalive = Some(fallback);
+                        Box::pin(merged.take_until(stop_future))
+                    } else {
+                        let merged = stream::select(mic.frames(), system_frames);
+                        native_mic_capture_keepalive = Some(mic);
+                        Box::pin(merged.take_until(stop_future))
+                    }
+                } else {
+                    let mut mic = MicCapture::new();
+                    mic.start().context(
+                        "opening default input device (grant Microphone permission \
+                             in System Settings → Privacy & Security if prompted)",
+                    )?;
+                    let merged = stream::select(mic.frames(), system_frames);
+                    mic_capture_keepalive = Some(mic);
+                    Box::pin(merged.take_until(stop_future))
+                };
                 system_capture_keepalive = Some(system_capture);
-                s
+                stream
             }
             #[cfg(not(all(feature = "mic-capture", feature = "system-capture-mac")))]
             {
@@ -470,6 +539,10 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
         Err(error) => {
             #[cfg(feature = "mic-capture")]
             if let Some(capture) = mic_capture_keepalive.as_mut() {
+                let _ = capture.stop();
+            }
+            #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
+            if let Some(capture) = native_mic_capture_keepalive.as_mut() {
                 let _ = capture.stop();
             }
             #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
@@ -521,6 +594,8 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
 
     #[cfg(feature = "mic-capture")]
     drop(mic_capture_keepalive);
+    #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
+    drop(native_mic_capture_keepalive);
     #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
     drop(system_capture_keepalive);
 
@@ -1070,6 +1145,7 @@ mod tests {
             source: Some(CaptureSourceArg::Synthetic),
             system_backend: None,
             llm: Some(LlmBackendArg::Stub),
+            input_device: None,
             whisper_model: None,
         })
         .await
@@ -1141,6 +1217,7 @@ mod tests {
             source: Some(CaptureSourceArg::Synthetic),
             system_backend: None,
             llm: Some(LlmBackendArg::Stub),
+            input_device: None,
             whisper_model: None,
         })
         .await;
@@ -1204,6 +1281,7 @@ mod tests {
             source: Some(CaptureSourceArg::Synthetic),
             system_backend: None,
             llm: Some(LlmBackendArg::Stub),
+            input_device: None,
             whisper_model: None,
         })
         .await
@@ -1386,6 +1464,7 @@ mod tests {
             system_backend: None,
             llm: Some(LlmBackendArg::Stub),
             whisper_model: None,
+            input_device: None,
         })
         .await;
         let Err(err) = result else {

@@ -48,14 +48,7 @@ pub struct InputDevice {
 /// Returns an error when Core Audio cannot enumerate a property completely.
 pub fn input_devices() -> Result<Vec<InputDevice>, MacCaptureError> {
     let default_device = default_input_device()?;
-    let mut devices = all_devices()?
-        .into_iter()
-        .filter_map(|device_id| match device_has_input_stream(device_id) {
-            Ok(true) => Some(Ok(device_id)),
-            Ok(false) => None,
-            Err(error) => Some(Err(error)),
-        })
-        .collect::<Result<Vec<_>, _>>()?
+    let mut devices = input_device_ids()?
         .into_iter()
         .map(|device_id| {
             Ok(InputDevice {
@@ -67,6 +60,30 @@ pub fn input_devices() -> Result<Vec<InputDevice>, MacCaptureError> {
         .collect::<Result<Vec<_>, MacCaptureError>>()?;
     devices.sort_by(|left, right| left.uid.cmp(&right.uid));
     Ok(devices)
+}
+
+/// Resolve an input-device UID to the exact Core Audio object identifier.
+pub fn input_device_id(uid: &str) -> Result<AudioObjectID, MacCaptureError> {
+    input_device_ids()?
+        .into_iter()
+        .find(|device_id| {
+            read_string_property(*device_id, kAudioDevicePropertyDeviceUID, "device UID")
+                .is_ok_and(|candidate| candidate == uid)
+        })
+        .ok_or_else(|| {
+            MacCaptureError::CoreAudio(format!("input device UID `{uid}` was not found"))
+        })
+}
+
+fn input_device_ids() -> Result<Vec<AudioObjectID>, MacCaptureError> {
+    all_devices()?
+        .into_iter()
+        .filter_map(|device_id| match device_has_input_stream(device_id) {
+            Ok(true) => Some(Ok(device_id)),
+            Ok(false) => None,
+            Err(error) => Some(Err(error)),
+        })
+        .collect()
 }
 
 fn default_input_device() -> Result<AudioObjectID, MacCaptureError> {

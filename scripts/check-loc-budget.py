@@ -154,7 +154,9 @@ LOC_CEILINGS: dict[str, int] = {
     # Raised to 4100 for M4's user-facing macOS input-device catalog and its
     # deterministic, tab-separated rendering contract. Device enumeration
     # remains in `scrybe-capture-mac`; the CLI owns the command and presentation.
-    "scrybe-cli": 4100,
+    # Raised to 4200 for M4's UID-pinned microphone path, including the
+    # feature-gated fallback and regression coverage for explicit selectors.
+    "scrybe-cli": 4200,
     "scrybe-capture-mac": 2500,
     "scrybe-capture-linux": 2500,
     "scrybe-capture-win": 2500,
