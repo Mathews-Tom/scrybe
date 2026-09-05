@@ -253,7 +253,6 @@ impl SystemCapture {
 #[cfg(any(test, all(feature = "mic-capture", feature = "system-capture-mac")))]
 const TAP_STARTUP_ACTIVITY_WINDOW: Duration = Duration::from_millis(1_500);
 
-#[cfg(any(test, all(feature = "mic-capture", feature = "system-capture-mac")))]
 type CaptureFrameStream = Pin<Box<dyn Stream<Item = Result<AudioFrame, CaptureError>> + Send>>;
 
 #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
@@ -352,13 +351,7 @@ pub async fn run(args: Args) -> Result<()> {
     result
 }
 
-/// Drive a session under an externally-supplied stop signal. The
-/// shell driver in `scrybe-cli::shell` calls this directly, feeding
-
-fn start_registered_capture<T>(
-    registry: &CaptureRegistry,
-    capture: T,
-) -> Result<Pin<Box<dyn Stream<Item = Result<AudioFrame, CaptureError>> + Send>>>
+fn start_registered_capture<T>(registry: &CaptureRegistry, capture: T) -> Result<CaptureFrameStream>
 where
     T: AudioCapture,
 {
@@ -369,8 +362,10 @@ where
     capture.start()?;
     Ok(Box::pin(capture.frames()))
 }
-/// stop into `stop_rx` from tray and hotkey events; the public
-/// `run` entry point above wraps it with a SIGINT-only stop signal.
+
+/// Drive a session under an externally-supplied stop signal. The shell driver
+/// in `scrybe-cli::shell` calls this directly, feeding stop into `stop_rx` from
+/// tray and hotkey events; `run` above wraps it with signal handling.
 #[allow(clippy::too_many_lines)]
 pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result<()> {
     let cfg = load_or_default_config()?;
@@ -401,24 +396,7 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
     let user = std::env::var("USER").unwrap_or_else(|_| "scrybe-user".into());
     let started_at = Utc::now();
 
-    // `mic_keepalive` and `mac_keepalive` own the live capture
-    // adapters so the dedicated cpal + Core Audio Taps threads keep
-    // running for the lifetime of `run_session`. Dropping each adapter
-    // tears down its underlying stream via its `SharedState::stop_tx`
-    // channel; we keep them bound here to defer that drop until after
-    // the session writes its outputs.
-    #[cfg(feature = "mic-capture")]
-    let mut mic_capture_keepalive: Option<MicCapture> = None;
-
-    #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
-    let mut native_mic_capture_keepalive: Option<NativeMicCapture> = None;
-
     let capture_registry = CaptureRegistry::default();
-    // Only the dual-source path constructs system capture; gating on
-    // the intersection of features keeps the binding warning-free in
-    // single-feature builds.
-    #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
-    let mut system_capture_keepalive: Option<SystemCapture> = None;
 
     // System frames need their own VAD/chunker for the binary-channel
     // diarizer to attribute them as `Them:`. Set to `Some(...)` only
@@ -543,6 +521,7 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
             }
         }
     };
+    let stream = capture_liveness_watchdog(stream, capture_registry.clone());
 
     // Start hardware capture before loading Whisper. The capture adapters buffer
     // their frames while the model initializes, so the Tap liveness probe runs
@@ -550,17 +529,8 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
     let stt = match build_stt_provider(whisper_model.as_ref()) {
         Ok(stt) => stt,
         Err(error) => {
-            #[cfg(feature = "mic-capture")]
-            if let Some(capture) = mic_capture_keepalive.as_mut() {
-                let _ = capture.stop();
-            }
-            #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
-            if let Some(capture) = native_mic_capture_keepalive.as_mut() {
-                let _ = capture.stop();
-            }
-            #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
-            if let Some(capture) = system_capture_keepalive.as_mut() {
-                let _ = capture.stop();
+            if let Err(stop_error) = capture_registry.stop_all() {
+                tracing::error!(error = %stop_error, "stopping capture after STT initialization failure failed");
             }
             return Err(error);
         }
@@ -603,14 +573,11 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
         stream,
     )
     .await
-    .context("running session")?;
-
-    #[cfg(feature = "mic-capture")]
-    drop(mic_capture_keepalive);
-    #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
-    drop(native_mic_capture_keepalive);
-    #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
-    drop(system_capture_keepalive);
+    .context("running session");
+    if let Err(error) = capture_registry.stop_all() {
+        tracing::error!(error = %error, "stopping capture after session completion failed");
+    }
+    let outputs = outputs?;
 
     println!(
         "scrybe record: session {} written to {}",
@@ -624,6 +591,44 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
         println!("  audio:      {}", outputs.audio_path.display());
     }
     Ok(())
+}
+
+const CAPTURE_LIVENESS_TIMEOUT: Duration = Duration::from_secs(30);
+
+fn capture_liveness_watchdog(
+    stream: Pin<Box<dyn Stream<Item = Result<AudioFrame, CaptureError>> + Send>>,
+    capture_registry: CaptureRegistry,
+) -> Pin<Box<dyn Stream<Item = Result<AudioFrame, CaptureError>> + Send>> {
+    capture_liveness_watchdog_with_timeout(stream, capture_registry, CAPTURE_LIVENESS_TIMEOUT)
+}
+
+fn capture_liveness_watchdog_with_timeout(
+    stream: Pin<Box<dyn Stream<Item = Result<AudioFrame, CaptureError>> + Send>>,
+    capture_registry: CaptureRegistry,
+    timeout: Duration,
+) -> Pin<Box<dyn Stream<Item = Result<AudioFrame, CaptureError>> + Send>> {
+    Box::pin(stream::unfold(
+        (stream, capture_registry, false),
+        move |(mut stream, capture_registry, stopped)| async move {
+            if stopped {
+                return None;
+            }
+            match tokio::time::timeout(timeout, stream.next()).await {
+                Ok(Some(frame)) => Some((frame, (stream, capture_registry, false))),
+                Ok(None) => None,
+                Err(_) => {
+                    if let Err(error) = capture_registry.stop_all() {
+                        tracing::error!(error = %error, "stopping stalled capture failed");
+                    }
+                    let error = CaptureError::Platform(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "capture liveness watchdog expired after 30 seconds without a frame",
+                    )));
+                    Some((Err(error), (stream, capture_registry, true)))
+                }
+            }
+        },
+    ))
 }
 
 #[cfg(any(test, all(feature = "mic-capture", feature = "system-capture-mac")))]
@@ -717,8 +722,12 @@ async fn wait_for_stop(mut stop_rx: watch::Receiver<bool>) {
 fn spawn_signal_listener(stop_tx: watch::Sender<bool>) -> JoinHandle<()> {
     tokio::spawn(async move {
         #[cfg(unix)]
-        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("installing SIGTERM listener");
+        let Ok(mut sigterm) =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        else {
+            tracing::error!("installing SIGTERM listener failed");
+            return;
+        };
         let mut graceful_requested = false;
         loop {
             #[cfg(unix)]
@@ -1037,6 +1046,29 @@ const fn _ensure_event_dispatch_compiles(_event: &LifecycleEvent) {}
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+    #[tokio::test]
+    async fn test_capture_liveness_watchdog_stops_adapters_and_reports_timeout() {
+        let registry = CaptureRegistry::default();
+        let stops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed_stops = Arc::clone(&stops);
+        registry.register_stopper(move || {
+            observed_stops.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        });
+
+        let stalled = Box::pin(stream::pending::<Result<AudioFrame, CaptureError>>());
+        let mut watchdog =
+            capture_liveness_watchdog_with_timeout(stalled, registry, Duration::from_millis(10));
+
+        let error = watchdog
+            .next()
+            .await
+            .expect("watchdog error")
+            .expect_err("timeout error");
+        assert_eq!(error.to_string(), "platform API error: capture liveness watchdog expired after 30 seconds without a frame");
+        assert_eq!(stops.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(watchdog.next().await.is_none());
+    }
 
     #[test]
     fn test_consent_mode_arg_quick_maps_to_consent_mode_quick() {

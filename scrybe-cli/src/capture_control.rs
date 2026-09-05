@@ -10,16 +10,17 @@ use std::sync::{Arc, Mutex};
 
 use scrybe_core::capture::AudioCapture;
 use scrybe_core::error::CaptureError;
+type Stopper = Box<dyn FnMut() -> Result<(), CaptureError> + Send>;
 
 /// Stops every registered adapter at most once.
 #[derive(Clone, Default)]
-pub(crate) struct CaptureRegistry {
-    stoppers: Arc<Mutex<Vec<Box<dyn FnMut() -> Result<(), CaptureError> + Send>>>>,
+pub struct CaptureRegistry {
+    stoppers: Arc<Mutex<Vec<Stopper>>>,
 }
 
 impl CaptureRegistry {
     /// Retain `capture` until shutdown and return its shared owner.
-    pub(crate) fn register<T: AudioCapture>(&self, capture: T) -> Arc<Mutex<T>> {
+    pub fn register<T: AudioCapture>(&self, capture: T) -> Arc<Mutex<T>> {
         let capture = Arc::new(Mutex::new(capture));
         let stop_target = Arc::clone(&capture);
         self.register_stopper(move || {
@@ -34,14 +35,14 @@ impl CaptureRegistry {
     }
 
     /// Retain a custom capture stop operation until shutdown.
-    pub(crate) fn register_stopper(
+    pub fn register_stopper(
         &self,
         stopper: impl FnMut() -> Result<(), CaptureError> + Send + 'static,
     ) {
         let mut stoppers = self
             .stoppers
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         stoppers.push(Box::new(stopper));
     }
     /// Synchronously stop and deregister all adapters.
@@ -50,7 +51,7 @@ impl CaptureRegistry {
             let mut registered = self
                 .stoppers
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             std::mem::take(&mut *registered)
         };
         let mut first_error = None;
