@@ -346,9 +346,9 @@ impl From<ConsentModeArg> for ConsentMode {
 
 pub async fn run(args: Args) -> Result<()> {
     let (stop_tx, stop_rx) = watch::channel(false);
-    let sigint_handle = spawn_sigint_listener(stop_tx);
+    let signal_handle = spawn_signal_listener(stop_tx);
     let result = run_with_stop(args, stop_rx).await;
-    sigint_handle.abort();
+    signal_handle.abort();
     result
 }
 
@@ -720,9 +720,29 @@ async fn wait_for_stop(mut stop_rx: watch::Receiver<bool>) {
     let _ = stop_rx.wait_for(|stopped| *stopped).await;
 }
 
-fn spawn_sigint_listener(stop_tx: watch::Sender<bool>) -> JoinHandle<()> {
+/// First `SIGINT` or `SIGTERM` requests ordered shutdown. A second signal
+/// terminates immediately, leaving the independently-written journal for
+/// `scrybe repair`.
+fn spawn_signal_listener(stop_tx: watch::Sender<bool>) -> JoinHandle<()> {
     tokio::spawn(async move {
-        if tokio::signal::ctrl_c().await.is_ok() {
+        #[cfg(unix)]
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("installing SIGTERM listener");
+        let mut graceful_requested = false;
+        loop {
+            #[cfg(unix)]
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = sigterm.recv() => {}
+            }
+            #[cfg(not(unix))]
+            if tokio::signal::ctrl_c().await.is_err() {
+                return;
+            }
+            if graceful_requested {
+                std::process::exit(130);
+            }
+            graceful_requested = true;
             let _ = stop_tx.send(true);
         }
     })
