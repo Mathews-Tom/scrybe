@@ -416,13 +416,13 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
             Box::pin(synthetic_capture_stream(args.synthetic_secs).take_until(stop_future))
         }
         CaptureSourceArg::Mic => {
-            if let Some(uid) = args.input_device.as_deref() {
+            if let Some(_uid) = args.input_device.as_deref() {
                 #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
                 {
-                    let mut mic = NativeMicCapture::new(uid.to_string());
+                    let mut mic = NativeMicCapture::new(_uid.to_string());
                     if let Err(error) = mic.start() {
                         tracing::error!(
-                            input_device = uid,
+                            input_device = _uid,
                             error = %error,
                             "selected Core Audio input failed; falling back to the default input"
                         );
@@ -1463,6 +1463,7 @@ mod tests {
             system_backend: None,
             llm: Some(LlmBackendArg::Stub),
             whisper_model: None,
+            input_device: None,
         })
         .await;
         let Err(err) = result else {
