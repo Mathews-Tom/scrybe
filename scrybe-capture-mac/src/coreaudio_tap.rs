@@ -92,6 +92,8 @@ use scrybe_core::types::{AudioFrame, FrameSource};
 
 use crate::error::MacCaptureError;
 
+use crate::coreaudio::{check_status, read_string_property};
+
 /// Channel for capture frames. Held inside an `Arc<Mutex<Option<...>>>`
 /// so the IO block can detect a closed sender after `stop()` and stop
 /// pushing frames without panicking.
@@ -239,7 +241,7 @@ impl TapStream {
         let tap_guard = TapGuard(tap_id);
 
         // 3a. Read the tap's UID for the aggregate-device dictionary.
-        let tap_uid = read_object_uid(tap_id, kAudioTapPropertyUID)?;
+        let tap_uid = read_string_property(tap_id, kAudioTapPropertyUID, "tap UID")?;
 
         // 3b. Read the tap's stream format so we can advertise the
         // correct sample rate and channel count to scrybe-core.
@@ -563,38 +565,6 @@ pub(crate) unsafe fn interleaved_f32_samples(list: &AudioBufferList) -> Vec<f32>
     out
 }
 
-/// Read a CFString-valued property and return its UTF-8 form.
-fn read_object_uid(object_id: AudioObjectID, selector: u32) -> Result<String, MacCaptureError> {
-    let address = AudioObjectPropertyAddress {
-        mSelector: selector,
-        mScope: kAudioObjectPropertyScopeGlobal,
-        mElement: kAudioObjectPropertyElementMain,
-    };
-    let mut cfstring: *const objc2_core_foundation::CFString = std::ptr::null();
-    let mut size = std::mem::size_of::<*const objc2_core_foundation::CFString>() as u32;
-    let status = unsafe {
-        AudioObjectGetPropertyData(
-            object_id,
-            NonNull::from(&address),
-            0,
-            std::ptr::null(),
-            NonNull::from(&mut size),
-            NonNull::from(&mut cfstring).cast(),
-        )
-    };
-    check_status(status, "AudioObjectGetPropertyData(uid)")?;
-    if cfstring.is_null() {
-        return Err(MacCaptureError::CoreAudioTapUnsupported {
-            found: "uid CFString was null".to_string(),
-        });
-    }
-    // SAFETY: CoreAudio returned us a +1 retain count CFString for a
-    // copy property; convert via CFRetained::from_raw to take ownership
-    // and let it release on drop.
-    let cf = unsafe { CFRetained::from_raw(NonNull::new_unchecked(cfstring.cast_mut())) };
-    Ok(cf.to_string())
-}
-
 /// Read the tap's negotiated `AudioStreamBasicDescription`.
 fn read_tap_format(tap_id: AudioObjectID) -> Result<AudioStreamBasicDescription, MacCaptureError> {
     let address = AudioObjectPropertyAddress {
@@ -788,19 +758,7 @@ fn read_default_output_device_uid() -> Result<String, MacCaptureError> {
             found: "no default system output device is configured".to_string(),
         });
     }
-    read_object_uid(device_id, kAudioDevicePropertyDeviceUID)
-}
-
-/// Map an `OSStatus` into a [`MacCaptureError`]. Zero is success; every
-/// other value is rendered as a hex-encoded four-character code so a
-/// developer can grep against `OSStatus.com`.
-fn check_status(status: i32, op: &'static str) -> Result<(), MacCaptureError> {
-    if status == 0 {
-        return Ok(());
-    }
-    Err(MacCaptureError::CoreAudioTapUnsupported {
-        found: format!("{op} returned OSStatus {status:#010x}"),
-    })
+    read_string_property(device_id, kAudioDevicePropertyDeviceUID, "device UID")
 }
 
 /// Drop the channel sender so the receiver observes end-of-stream,
@@ -962,22 +920,6 @@ mod tests {
         };
 
         assert_eq!(out, vec![1.0, 10.0, 2.0, 20.0]);
-    }
-
-    #[test]
-    fn test_check_status_zero_returns_ok() {
-        assert!(check_status(0, "test").is_ok());
-    }
-
-    #[test]
-    fn test_check_status_nonzero_returns_unsupported_with_op_and_hex_code() {
-        let err = check_status(-1, "TestOp").unwrap_err();
-
-        let MacCaptureError::CoreAudioTapUnsupported { found } = err else {
-            panic!("expected CoreAudioTapUnsupported, got {err:?}");
-        };
-        assert!(found.contains("TestOp"), "missing op name: {found}");
-        assert!(found.contains("0xff"), "missing hex code: {found}");
     }
 
     /// Hardware-validation test. Requires macOS 14.4+, a logged-in

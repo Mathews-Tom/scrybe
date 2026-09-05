@@ -12,6 +12,7 @@ use anyhow::Result;
 use clap::Subcommand;
 
 pub mod bench;
+pub mod devices;
 pub mod doctor;
 pub mod init;
 pub mod list;
@@ -24,6 +25,8 @@ pub mod show;
 pub enum Command {
     /// Bootstrap config and verify environment.
     Init(init::Args),
+    /// List macOS Core Audio input devices by stable UID.
+    Devices(devices::Args),
     /// Record a session with sensible defaults: `scrybe record TITLE`.
     /// Resolves capture source, Whisper model, and LLM kind from
     /// config plus platform probes; on macOS auto-launches via the
@@ -57,6 +60,7 @@ pub async fn run(cmd: Command) -> Result<()> {
         Command::Init(a) => init::run(a).await,
         Command::Record(a) => record::run(a).await,
         Command::Rec(a) => rec::run(a).await,
+        Command::Devices(a) => devices::run(a),
         Command::List(a) => list::run(a).await,
         Command::Show(a) => show::run(a).await,
         Command::Doctor(a) => doctor::run(a).await,

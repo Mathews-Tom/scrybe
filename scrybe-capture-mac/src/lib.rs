@@ -23,6 +23,15 @@
 pub mod error;
 
 #[cfg(all(target_os = "macos", feature = "core-audio-tap"))]
+pub(crate) mod coreaudio;
+
+#[cfg(all(target_os = "macos", feature = "core-audio-tap"))]
+mod input_devices;
+
+#[cfg(all(target_os = "macos", feature = "core-audio-tap"))]
+pub use input_devices::{input_devices, InputDevice};
+
+#[cfg(all(target_os = "macos", feature = "core-audio-tap"))]
 mod coreaudio_tap;
 
 #[cfg(all(target_os = "macos", feature = "core-audio-tap"))]
