@@ -415,8 +415,8 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
         CaptureSourceArg::Synthetic => {
             Box::pin(synthetic_capture_stream(args.synthetic_secs).take_until(stop_future))
         }
-        CaptureSourceArg::Mic => {
-            if let Some(_uid) = args.input_device.as_deref() {
+        CaptureSourceArg::Mic => match args.input_device.as_deref() {
+            Some(_uid) => {
                 #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
                 {
                     let mut mic = NativeMicCapture::new(_uid.to_string());
@@ -428,10 +428,10 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
                         );
                         let mut fallback = MicCapture::new();
                         fallback.start().context(
-                            "selected Core Audio input failed and opening the default input also \
-                             failed (grant Microphone permission in System Settings → Privacy & \
-                             Security if prompted)",
-                        )?;
+                                "selected Core Audio input failed and opening the default input also \
+                                 failed (grant Microphone permission in System Settings → Privacy & \
+                                 Security if prompted)",
+                            )?;
                         let stream: Pin<Box<dyn Stream<Item = _> + Send>> =
                             Box::pin(fallback.frames().take_until(stop_future));
                         mic_capture_keepalive = Some(fallback);
@@ -447,16 +447,17 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
                 {
                     anyhow::bail!(
                         "--input-device requires a macOS build with --features \
-                         mic-capture,system-capture-mac"
+                             mic-capture,system-capture-mac"
                     );
                 }
-            } else {
+            }
+            None => {
                 #[cfg(feature = "mic-capture")]
                 {
                     let mut mic = MicCapture::new();
                     mic.start().context(
                         "opening default input device (grant Microphone permission \
-                         in System Settings → Privacy & Security if prompted)",
+                             in System Settings → Privacy & Security if prompted)",
                     )?;
                     let stream: Pin<Box<dyn Stream<Item = _> + Send>> =
                         Box::pin(mic.frames().take_until(stop_future));
@@ -466,12 +467,12 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
                 #[cfg(not(feature = "mic-capture"))]
                 {
                     anyhow::bail!(
-                        "--source mic requires the binary to be built with --features mic-capture; \
-                         this binary was built without it"
-                    );
+                            "--source mic requires the binary to be built with --features mic-capture; \
+                             this binary was built without it"
+                        );
                 }
             }
-        }
+        },
         CaptureSourceArg::MicSystem => {
             #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
             {
