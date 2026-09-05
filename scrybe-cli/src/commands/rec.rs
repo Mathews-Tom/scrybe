@@ -46,6 +46,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+
+use crate::capture_control::CaptureRegistry;
 use async_trait::async_trait;
 use chrono::Utc;
 use clap::{Args as ClapArgs, ValueEnum};
@@ -54,9 +56,8 @@ use futures::stream::{self, Stream, StreamExt};
 use scrybe_capture_mac::{MacCapture, NativeMicCapture, SckCapture};
 #[cfg(feature = "mic-capture")]
 use scrybe_capture_mic::MicCapture;
-// AudioCapture is consumed when either MicCapture is started (`mic`
-// source needs `mic-capture`) or both system adapters are started
-// with the mic.
+// AudioCapture is the registry's common bound whenever microphone capture is
+// compiled into the binary.
 #[cfg(feature = "mic-capture")]
 use scrybe_core::capture::AudioCapture;
 use scrybe_core::config::{
@@ -251,7 +252,7 @@ impl SystemCapture {
 #[cfg(any(test, all(feature = "mic-capture", feature = "system-capture-mac")))]
 const TAP_STARTUP_ACTIVITY_WINDOW: Duration = Duration::from_millis(1_500);
 
-#[cfg(any(test, all(feature = "mic-capture", feature = "system-capture-mac")))]
+#[cfg(any(test, feature = "mic-capture"))]
 type CaptureFrameStream = Pin<Box<dyn Stream<Item = Result<AudioFrame, CaptureError>> + Send>>;
 
 #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
@@ -344,16 +345,28 @@ impl From<ConsentModeArg> for ConsentMode {
 
 pub async fn run(args: Args) -> Result<()> {
     let (stop_tx, stop_rx) = watch::channel(false);
-    let sigint_handle = spawn_sigint_listener(stop_tx);
+    let signal_handle = spawn_signal_listener(stop_tx);
     let result = run_with_stop(args, stop_rx).await;
-    sigint_handle.abort();
+    signal_handle.abort();
     result
 }
 
-/// Drive a session under an externally-supplied stop signal. The
-/// shell driver in `scrybe-cli::shell` calls this directly, feeding
-/// stop into `stop_rx` from tray and hotkey events; the public
-/// `run` entry point above wraps it with a SIGINT-only stop signal.
+#[cfg(feature = "mic-capture")]
+fn start_registered_capture<T>(registry: &CaptureRegistry, capture: T) -> Result<CaptureFrameStream>
+where
+    T: AudioCapture,
+{
+    let capture = registry.register(capture);
+    let mut capture = capture
+        .lock()
+        .map_err(|_| anyhow::anyhow!("capture registry adapter mutex poisoned"))?;
+    capture.start()?;
+    Ok(Box::pin(capture.frames()))
+}
+
+/// Drive a session under an externally-supplied stop signal. The shell driver
+/// in `scrybe-cli::shell` calls this directly, feeding stop into `stop_rx` from
+/// tray and hotkey events; `run` above wraps it with signal handling.
 #[allow(clippy::too_many_lines)]
 pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result<()> {
     let cfg = load_or_default_config()?;
@@ -384,22 +397,7 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
     let user = std::env::var("USER").unwrap_or_else(|_| "scrybe-user".into());
     let started_at = Utc::now();
 
-    // `mic_keepalive` and `mac_keepalive` own the live capture
-    // adapters so the dedicated cpal + Core Audio Taps threads keep
-    // running for the lifetime of `run_session`. Dropping each adapter
-    // tears down its underlying stream via its `SharedState::stop_tx`
-    // channel; we keep them bound here to defer that drop until after
-    // the session writes its outputs.
-    #[cfg(feature = "mic-capture")]
-    let mut mic_capture_keepalive: Option<MicCapture> = None;
-
-    #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
-    let mut native_mic_capture_keepalive: Option<NativeMicCapture> = None;
-    // Only the dual-source path constructs system capture; gating on
-    // the intersection of features keeps the binding warning-free in
-    // single-feature builds.
-    #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
-    let mut system_capture_keepalive: Option<SystemCapture> = None;
+    let capture_registry = CaptureRegistry::default();
 
     // System frames need their own VAD/chunker for the binary-channel
     // diarizer to attribute them as `Them:`. Set to `Some(...)` only
@@ -409,7 +407,13 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
         CaptureSourceArg::Synthetic | CaptureSourceArg::Mic => None,
     };
 
-    let stop_future = Box::pin(wait_for_stop(stop_rx));
+    let registry_for_stop = capture_registry.clone();
+    let stop_future = Box::pin(async move {
+        wait_for_stop(stop_rx).await;
+        if let Err(error) = registry_for_stop.stop_all() {
+            tracing::error!(error = %error, "stopping registered capture failed");
+        }
+    });
     let stream: Pin<Box<dyn Stream<Item = Result<AudioFrame, CaptureError>> + Send>> = match source
     {
         CaptureSourceArg::Synthetic => {
@@ -419,29 +423,25 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
             Some(_uid) => {
                 #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
                 {
-                    let mut mic = NativeMicCapture::new(_uid.to_string());
-                    if let Err(error) = mic.start() {
-                        tracing::error!(
-                            input_device = _uid,
-                            error = %error,
-                            "selected Core Audio input failed; falling back to the default input"
-                        );
-                        let mut fallback = MicCapture::new();
-                        fallback.start().context(
-                                "selected Core Audio input failed and opening the default input also \
-                                 failed (grant Microphone permission in System Settings → Privacy & \
-                                 Security if prompted)",
-                            )?;
-                        let stream: Pin<Box<dyn Stream<Item = _> + Send>> =
-                            Box::pin(fallback.frames().take_until(stop_future));
-                        mic_capture_keepalive = Some(fallback);
-                        stream
-                    } else {
-                        let stream: Pin<Box<dyn Stream<Item = _> + Send>> =
-                            Box::pin(mic.frames().take_until(stop_future));
-                        native_mic_capture_keepalive = Some(mic);
-                        stream
-                    }
+                    let stream = match start_registered_capture(
+                        &capture_registry,
+                        NativeMicCapture::new(_uid.to_string()),
+                    ) {
+                        Ok(stream) => stream,
+                        Err(error) => {
+                            tracing::error!(
+                                input_device = _uid,
+                                error = %error,
+                                "selected Core Audio input failed; falling back to the default input"
+                            );
+                            start_registered_capture(&capture_registry, MicCapture::new()).context(
+                                "selected Core Audio input failed and opening the default input \
+                                 also failed (grant Microphone permission in System Settings → \
+                                 Privacy & Security if prompted)",
+                            )?
+                        }
+                    };
+                    Box::pin(stream.take_until(stop_future))
                 }
                 #[cfg(not(all(feature = "mic-capture", feature = "system-capture-mac")))]
                 {
@@ -454,15 +454,12 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
             None => {
                 #[cfg(feature = "mic-capture")]
                 {
-                    let mut mic = MicCapture::new();
-                    mic.start().context(
-                        "opening default input device (grant Microphone permission \
+                    let stream = start_registered_capture(&capture_registry, MicCapture::new())
+                        .context(
+                            "opening default input device (grant Microphone permission \
                              in System Settings → Privacy & Security if prompted)",
-                    )?;
-                    let stream: Pin<Box<dyn Stream<Item = _> + Send>> =
-                        Box::pin(mic.frames().take_until(stop_future));
-                    mic_capture_keepalive = Some(mic);
-                    stream
+                        )?;
+                    Box::pin(stream.take_until(stop_future))
                 }
                 #[cfg(not(feature = "mic-capture"))]
                 {
@@ -478,47 +475,42 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
             {
                 use futures::stream;
 
-                let (system_capture, system_frames, fallback_note) =
+                let (mut system_capture, system_frames, fallback_note) =
                     start_system_capture(system_backend).await?;
                 if let Some(note) = fallback_note {
                     tracing::warn!(system_backend = "sck", "{note}");
                     write_capture_diagnostic(&root, started_at, id, args.title.as_deref(), note)?;
                 }
-                let stream: Pin<Box<dyn Stream<Item = _> + Send>> = if let Some(uid) =
-                    args.input_device.as_deref()
-                {
-                    let mut mic = NativeMicCapture::new(uid.to_string());
-                    if let Err(error) = mic.start() {
-                        tracing::error!(
-                            input_device = uid,
-                            error = %error,
-                            "selected Core Audio input failed; falling back to the default input"
-                        );
-                        let mut fallback = MicCapture::new();
-                        fallback.start().context(
-                            "selected Core Audio input failed and opening the default input \
+                capture_registry.register_stopper(move || {
+                    system_capture.stop().map_err(|error| {
+                        CaptureError::Platform(Box::new(std::io::Error::other(error.to_string())))
+                    })
+                });
+                let mic_frames = if let Some(uid) = args.input_device.as_deref() {
+                    match start_registered_capture(
+                        &capture_registry,
+                        NativeMicCapture::new(uid.to_string()),
+                    ) {
+                        Ok(frames) => frames,
+                        Err(error) => {
+                            tracing::error!(
+                                input_device = uid,
+                                error = %error,
+                                "selected Core Audio input failed; falling back to the default input"
+                            );
+                            start_registered_capture(&capture_registry, MicCapture::new()).context(
+                                "selected Core Audio input failed and opening the default input \
                                  also failed",
-                        )?;
-                        let merged = stream::select(fallback.frames(), system_frames);
-                        mic_capture_keepalive = Some(fallback);
-                        Box::pin(merged.take_until(stop_future))
-                    } else {
-                        let merged = stream::select(mic.frames(), system_frames);
-                        native_mic_capture_keepalive = Some(mic);
-                        Box::pin(merged.take_until(stop_future))
+                            )?
+                        }
                     }
                 } else {
-                    let mut mic = MicCapture::new();
-                    mic.start().context(
+                    start_registered_capture(&capture_registry, MicCapture::new()).context(
                         "opening default input device (grant Microphone permission \
-                             in System Settings → Privacy & Security if prompted)",
-                    )?;
-                    let merged = stream::select(mic.frames(), system_frames);
-                    mic_capture_keepalive = Some(mic);
-                    Box::pin(merged.take_until(stop_future))
+                         in System Settings → Privacy & Security if prompted)",
+                    )?
                 };
-                system_capture_keepalive = Some(system_capture);
-                stream
+                Box::pin(stream::select(mic_frames, system_frames).take_until(stop_future))
             }
             #[cfg(not(all(feature = "mic-capture", feature = "system-capture-mac")))]
             {
@@ -530,6 +522,7 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
             }
         }
     };
+    let stream = capture_liveness_watchdog(stream, capture_registry.clone());
 
     // Start hardware capture before loading Whisper. The capture adapters buffer
     // their frames while the model initializes, so the Tap liveness probe runs
@@ -537,17 +530,8 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
     let stt = match build_stt_provider(whisper_model.as_ref()) {
         Ok(stt) => stt,
         Err(error) => {
-            #[cfg(feature = "mic-capture")]
-            if let Some(capture) = mic_capture_keepalive.as_mut() {
-                let _ = capture.stop();
-            }
-            #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
-            if let Some(capture) = native_mic_capture_keepalive.as_mut() {
-                let _ = capture.stop();
-            }
-            #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
-            if let Some(capture) = system_capture_keepalive.as_mut() {
-                let _ = capture.stop();
+            if let Err(stop_error) = capture_registry.stop_all() {
+                tracing::error!(error = %stop_error, "stopping capture after STT initialization failure failed");
             }
             return Err(error);
         }
@@ -590,14 +574,11 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
         stream,
     )
     .await
-    .context("running session")?;
-
-    #[cfg(feature = "mic-capture")]
-    drop(mic_capture_keepalive);
-    #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
-    drop(native_mic_capture_keepalive);
-    #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
-    drop(system_capture_keepalive);
+    .context("running session");
+    if let Err(error) = capture_registry.stop_all() {
+        tracing::error!(error = %error, "stopping capture after session completion failed");
+    }
+    let outputs = outputs?;
 
     println!(
         "scrybe record: session {} written to {}",
@@ -611,6 +592,44 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
         println!("  audio:      {}", outputs.audio_path.display());
     }
     Ok(())
+}
+
+const CAPTURE_LIVENESS_TIMEOUT: Duration = Duration::from_secs(30);
+
+fn capture_liveness_watchdog(
+    stream: Pin<Box<dyn Stream<Item = Result<AudioFrame, CaptureError>> + Send>>,
+    capture_registry: CaptureRegistry,
+) -> Pin<Box<dyn Stream<Item = Result<AudioFrame, CaptureError>> + Send>> {
+    capture_liveness_watchdog_with_timeout(stream, capture_registry, CAPTURE_LIVENESS_TIMEOUT)
+}
+
+fn capture_liveness_watchdog_with_timeout(
+    stream: Pin<Box<dyn Stream<Item = Result<AudioFrame, CaptureError>> + Send>>,
+    capture_registry: CaptureRegistry,
+    timeout: Duration,
+) -> Pin<Box<dyn Stream<Item = Result<AudioFrame, CaptureError>> + Send>> {
+    Box::pin(stream::unfold(
+        (stream, capture_registry, false),
+        move |(mut stream, capture_registry, stopped)| async move {
+            if stopped {
+                return None;
+            }
+            match tokio::time::timeout(timeout, stream.next()).await {
+                Ok(Some(frame)) => Some((frame, (stream, capture_registry, false))),
+                Ok(None) => None,
+                Err(_) => {
+                    if let Err(error) = capture_registry.stop_all() {
+                        tracing::error!(error = %error, "stopping stalled capture failed");
+                    }
+                    let error = CaptureError::Platform(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "capture liveness watchdog expired after 30 seconds without a frame",
+                    )));
+                    Some((Err(error), (stream, capture_registry, true)))
+                }
+            }
+        },
+    ))
 }
 
 #[cfg(any(test, all(feature = "mic-capture", feature = "system-capture-mac")))]
@@ -698,9 +717,33 @@ async fn wait_for_stop(mut stop_rx: watch::Receiver<bool>) {
     let _ = stop_rx.wait_for(|stopped| *stopped).await;
 }
 
-fn spawn_sigint_listener(stop_tx: watch::Sender<bool>) -> JoinHandle<()> {
+/// First `SIGINT` or `SIGTERM` requests ordered shutdown. A second signal
+/// terminates immediately, leaving the independently-written journal for
+/// `scrybe repair`.
+fn spawn_signal_listener(stop_tx: watch::Sender<bool>) -> JoinHandle<()> {
     tokio::spawn(async move {
-        if tokio::signal::ctrl_c().await.is_ok() {
+        #[cfg(unix)]
+        let Ok(mut sigterm) =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        else {
+            tracing::error!("installing SIGTERM listener failed");
+            return;
+        };
+        let mut graceful_requested = false;
+        loop {
+            #[cfg(unix)]
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = sigterm.recv() => {}
+            }
+            #[cfg(not(unix))]
+            if tokio::signal::ctrl_c().await.is_err() {
+                return;
+            }
+            if graceful_requested {
+                std::process::exit(130);
+            }
+            graceful_requested = true;
             let _ = stop_tx.send(true);
         }
     })
@@ -1004,6 +1047,29 @@ const fn _ensure_event_dispatch_compiles(_event: &LifecycleEvent) {}
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+    #[tokio::test]
+    async fn test_capture_liveness_watchdog_stops_adapters_and_reports_timeout() {
+        let registry = CaptureRegistry::default();
+        let stops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed_stops = Arc::clone(&stops);
+        registry.register_stopper(move || {
+            observed_stops.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        });
+
+        let stalled = Box::pin(stream::pending::<Result<AudioFrame, CaptureError>>());
+        let mut watchdog =
+            capture_liveness_watchdog_with_timeout(stalled, registry, Duration::from_millis(10));
+
+        let error = watchdog
+            .next()
+            .await
+            .expect("watchdog error")
+            .expect_err("timeout error");
+        assert_eq!(error.to_string(), "platform API error: capture liveness watchdog expired after 30 seconds without a frame");
+        assert_eq!(stops.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(watchdog.next().await.is_none());
+    }
 
     #[test]
     fn test_consent_mode_arg_quick_maps_to_consent_mode_quick() {

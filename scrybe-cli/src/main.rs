@@ -12,6 +12,7 @@ use tokio::runtime::{Builder, Runtime};
 
 #[cfg(feature = "system-capture-mac")]
 mod bundle_launcher;
+mod capture_control;
 mod commands;
 mod prompter;
 mod runtime;
