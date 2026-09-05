@@ -18,6 +18,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -28,7 +29,7 @@ use tracing::{debug, warn};
 use crate::consent::ConsentPrompter;
 use crate::context::MeetingContext;
 use crate::diarize::Diarizer;
-use crate::error::{CoreError, PipelineError};
+use crate::error::{CoreError, PipelineError, StorageError};
 use crate::hooks::{dispatch_hooks, Hook, LifecycleEvent};
 use crate::notes;
 use crate::pipeline::chunker::{ChunkBoundary, Chunker, ChunkerConfig, EmittedChunk};
@@ -230,6 +231,7 @@ struct SessionJournals {
     dir: PathBuf,
     mic: Option<JournalSlot>,
     system: Option<JournalSlot>,
+    partial_manifest_writer: Option<JoinHandle<Result<(), CoreError>>>,
 }
 
 /// A spawned writer plus the anchor fields known the moment it was
@@ -263,6 +265,7 @@ impl SessionJournals {
             dir,
             mic: None,
             system: None,
+            partial_manifest_writer: None,
         }
     }
 
@@ -290,36 +293,43 @@ impl SessionJournals {
             // session end: a process that never reaches its normal
             // `finish()` (crash, SIGKILL) still leaves a usable
             // anchor on disk for `scrybe repair` to read.
-            self.write_partial_manifest();
+            self.write_partial_manifest()?;
         }
         Ok(())
     }
 
-    /// Best-effort, fire-and-forget: runs on a detached OS thread so
-    /// its `fsync`-backed write never delays processing of the next
-    /// frame. Blocking here would widen the wall-clock gap between
-    /// capturing this source's `first_frame_epoch_ms` and the other
-    /// source's, corrupting the merge's cross-source alignment
-    /// (`pipeline::merge::interleave_stereo`'s silence-prefix math)
-    /// for no benefit — a session that completes normally overwrites
-    /// this with an authoritative manifest synchronously (see below),
-    /// and one that crashes only needs *a* recent manifest, not this
-    /// exact one.
-    fn write_partial_manifest(&self) {
+    /// Writes in the background during capture. Source transitions and
+    /// [`Self::finish`] join the prior write before starting the next one, so
+    /// `manifest.toml` never has competing replacements on Windows.
+    fn write_partial_manifest(&mut self) -> Result<(), CoreError> {
+        self.finish_partial_manifest_write()?;
         let manifest = JournalManifest {
             mic: self.mic.as_ref().map(JournalSlot::partial_anchor),
             system: self.system.as_ref().map(JournalSlot::partial_anchor),
         };
         let dir = self.dir.clone();
-        std::thread::spawn(move || {
-            let _ = crate::pipeline::journal::write_manifest(&dir, &manifest);
-        });
+        self.partial_manifest_writer = Some(std::thread::spawn(move || {
+            crate::pipeline::journal::write_manifest(&dir, &manifest)
+        }));
+        Ok(())
+    }
+
+    fn finish_partial_manifest_write(&mut self) -> Result<(), CoreError> {
+        let Some(writer) = self.partial_manifest_writer.take() else {
+            return Ok(());
+        };
+        writer.join().unwrap_or_else(|_| {
+            Err(CoreError::Storage(StorageError::Io(std::io::Error::other(
+                "partial journal manifest writer thread panicked",
+            ))))
+        })
     }
 
     /// Closes every spawned writer and returns the session's journal
     /// manifest: one `JournalAnchor` per source that received at
     /// least one frame, `None` for a source never used this session.
-    fn finish(self) -> Result<JournalManifest, CoreError> {
+    fn finish(mut self) -> Result<JournalManifest, CoreError> {
+        self.finish_partial_manifest_write()?;
         let mic = finish_anchor(self.mic)?;
         let system = finish_anchor(self.system)?;
         Ok(JournalManifest { mic, system })
