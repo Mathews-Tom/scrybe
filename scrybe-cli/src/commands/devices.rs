@@ -10,12 +10,15 @@
 //! accepted by M4's `--input-device` option. Display names are descriptive:
 //! duplicate names remain separate rows and cannot be used as selectors.
 
-use anyhow::{Context, Result};
+#[cfg(all(target_os = "macos", feature = "system-capture-mac"))]
+use anyhow::Context;
+use anyhow::Result;
 use clap::Args as ClapArgs;
 
 #[derive(ClapArgs, Debug)]
 pub struct Args {}
 
+#[cfg(any(test, all(target_os = "macos", feature = "system-capture-mac")))]
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct DeviceRow {
     uid: String,
@@ -23,6 +26,7 @@ struct DeviceRow {
     is_default: bool,
 }
 
+#[cfg(any(test, all(target_os = "macos", feature = "system-capture-mac")))]
 /// Render a stable, tab-separated device catalog.
 fn render_devices(mut devices: Vec<DeviceRow>) -> String {
     devices.sort_by(|left, right| left.uid.cmp(&right.uid));

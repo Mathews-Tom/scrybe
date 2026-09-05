@@ -151,7 +151,10 @@ LOC_CEILINGS: dict[str, int] = {
     # selection, independent diagnostics, and bounded Tap-to-ScreenCaptureKit
     # recovery live in CLI command handlers. This covers the committed M3 stack
     # without weakening the adapter-specific ceilings above.
-    "scrybe-cli": 4000,
+    # Raised to 4100 for M4's user-facing macOS input-device catalog and its
+    # deterministic, tab-separated rendering contract. Device enumeration
+    # remains in `scrybe-capture-mac`; the CLI owns the command and presentation.
+    "scrybe-cli": 4100,
     "scrybe-capture-mac": 2500,
     "scrybe-capture-linux": 2500,
     "scrybe-capture-win": 2500,
