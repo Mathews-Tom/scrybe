@@ -15,6 +15,9 @@ pub enum MacCaptureError {
     #[error("Core Audio Tap requires macOS 14.4 or later (found {found})")]
     CoreAudioTapUnsupported { found: String },
 
+    #[error("Core Audio error: {0}")]
+    CoreAudio(String),
+
     #[error("ScreenCaptureKit error: {0}")]
     ScreenCaptureKit(#[source] BoxError),
 
