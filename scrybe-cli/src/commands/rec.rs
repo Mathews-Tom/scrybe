@@ -46,6 +46,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+
+use crate::capture_control::CaptureRegistry;
 use async_trait::async_trait;
 use chrono::Utc;
 use clap::{Args as ClapArgs, ValueEnum};
@@ -352,6 +354,21 @@ pub async fn run(args: Args) -> Result<()> {
 
 /// Drive a session under an externally-supplied stop signal. The
 /// shell driver in `scrybe-cli::shell` calls this directly, feeding
+
+fn start_registered_capture<T>(
+    registry: &CaptureRegistry,
+    capture: T,
+) -> Result<Pin<Box<dyn Stream<Item = Result<AudioFrame, CaptureError>> + Send>>>
+where
+    T: AudioCapture,
+{
+    let capture = registry.register(capture);
+    let mut capture = capture
+        .lock()
+        .map_err(|_| anyhow::anyhow!("capture registry adapter mutex poisoned"))?;
+    capture.start()?;
+    Ok(Box::pin(capture.frames()))
+}
 /// stop into `stop_rx` from tray and hotkey events; the public
 /// `run` entry point above wraps it with a SIGINT-only stop signal.
 #[allow(clippy::too_many_lines)]
@@ -395,6 +412,8 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
 
     #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
     let mut native_mic_capture_keepalive: Option<NativeMicCapture> = None;
+
+    let capture_registry = CaptureRegistry::default();
     // Only the dual-source path constructs system capture; gating on
     // the intersection of features keeps the binding warning-free in
     // single-feature builds.
@@ -409,7 +428,13 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
         CaptureSourceArg::Synthetic | CaptureSourceArg::Mic => None,
     };
 
-    let stop_future = Box::pin(wait_for_stop(stop_rx));
+    let registry_for_stop = capture_registry.clone();
+    let stop_future = Box::pin(async move {
+        wait_for_stop(stop_rx).await;
+        if let Err(error) = registry_for_stop.stop_all() {
+            tracing::error!(error = %error, "stopping registered capture failed");
+        }
+    });
     let stream: Pin<Box<dyn Stream<Item = Result<AudioFrame, CaptureError>> + Send>> = match source
     {
         CaptureSourceArg::Synthetic => {
@@ -454,15 +479,12 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
             None => {
                 #[cfg(feature = "mic-capture")]
                 {
-                    let mut mic = MicCapture::new();
-                    mic.start().context(
-                        "opening default input device (grant Microphone permission \
+                    let stream = start_registered_capture(&capture_registry, MicCapture::new())
+                        .context(
+                            "opening default input device (grant Microphone permission \
                              in System Settings → Privacy & Security if prompted)",
-                    )?;
-                    let stream: Pin<Box<dyn Stream<Item = _> + Send>> =
-                        Box::pin(mic.frames().take_until(stop_future));
-                    mic_capture_keepalive = Some(mic);
-                    stream
+                        )?;
+                    Box::pin(stream.take_until(stop_future))
                 }
                 #[cfg(not(feature = "mic-capture"))]
                 {
