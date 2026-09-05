@@ -178,6 +178,14 @@ where
         lock_path = outputs.folder.join(crate::storage::PID_LOCK_NAME);
     }
 
+    if let Err(error) = &outcome {
+        let failure = LifecycleEvent::SessionFailed {
+            id,
+            error: Arc::new(std::io::Error::other(error.to_string())),
+        };
+        let _ = dispatch_hooks(hooks, &failure).await;
+    }
+
     // Surface lock-release failures via tracing so a stale lockfile
     // has a paper trail; the session result still takes precedence.
     if let Err(e) = release_session_lock(&lock_path) {
