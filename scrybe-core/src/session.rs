@@ -408,12 +408,19 @@ where
     // `AudioFrame::timestamp_ns` across sources).
     let encoder_config = EncoderConfig::default();
     let mut journals = SessionJournals::new(folder.join("journal"));
+    let mut terminal_capture_error = None;
 
     let mut mic_text_chunks: Vec<crate::types::TranscriptChunk> = Vec::new();
     let mut sys_text_chunks: Vec<crate::types::TranscriptChunk> = Vec::new();
 
     while let Some(frame_result) = capture_stream.next().await {
-        let frame = frame_result?;
+        let frame = match frame_result {
+            Ok(frame) => frame,
+            Err(error) => {
+                terminal_capture_error = Some(error);
+                break;
+            }
+        };
         journals.push(&frame)?;
         let mut chunks_for_stt: Vec<EmittedChunk> = Vec::new();
         let mut sink = |c: EmittedChunk| chunks_for_stt.push(c);
@@ -568,6 +575,10 @@ where
         },
     )
     .await;
+
+    if let Some(error) = terminal_capture_error {
+        return Err(CoreError::Capture(error));
+    }
 
     Ok(SessionOutputs {
         folder,
@@ -814,7 +825,7 @@ mod tests {
     use super::*;
     use crate::consent::AcceptingPrompter;
     use crate::diarize::Diarizer;
-    use crate::error::{ConsentError, LlmError, SttError};
+    use crate::error::{CaptureError, ConsentError, LlmError, SttError};
     use crate::hooks::Hook;
     use crate::pipeline::vad::EnergyVad;
     use crate::types::{AudioFrame, FrameSource, TranscriptChunk};
@@ -951,6 +962,58 @@ mod tests {
         assert!(meta.contains("stt = \"echo-stt\""));
         assert!(meta.contains("llm = \"canned-llm\""));
         assert!(meta.contains("diarizer = \"binary-channel\""));
+    }
+    #[tokio::test]
+    async fn test_run_finalizes_artifacts_before_returning_terminal_capture_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let stt = EchoStt;
+        let llm = CannedLlm;
+        let diarizer = PassThroughDiarizer;
+        let prompter = AcceptingPrompter;
+        let hooks: Vec<Box<dyn Hook>> = Vec::new();
+        let frames = stream::iter([
+            Ok(speech_frame(0, 1_600)),
+            Err(CaptureError::Platform(Box::new(std::io::Error::other(
+                "capture liveness watchdog expired",
+            )))),
+        ]);
+        let inputs = SessionInputs {
+            id: SessionId::new(),
+            started_at: dt(),
+            root: tmp.path().to_path_buf(),
+            title: Some("watchdog".into()),
+            user: "tom".into(),
+            consent_mode: ConsentMode::Quick,
+            context: MeetingContext::default(),
+            mic_vad: EnergyVad::default(),
+            system_vad: None,
+            stt: &stt,
+            llm: &llm,
+            diarizer: &diarizer,
+            prompter: &prompter,
+            hooks: &hooks,
+            chunker_config: small_chunker_config(),
+            verify_duration: false,
+        };
+
+        let error = run(inputs, frames)
+            .await
+            .expect_err("terminal capture error");
+        assert!(matches!(
+            error,
+            CoreError::Capture(CaptureError::Platform(_))
+        ));
+
+        let folder = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .find_map(Result::ok)
+            .map(|entry| entry.path())
+            .expect("finalized session folder");
+        assert!(folder.join("audio.opus").exists());
+        assert!(folder.join("transcript.md").exists());
+        assert!(folder.join("notes.md").exists());
+        assert!(folder.join("meta.toml").exists());
+        assert!(!folder.join("journal").exists());
     }
 
     #[tokio::test]
