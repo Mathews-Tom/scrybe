@@ -507,40 +507,31 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
                         CaptureError::Platform(Box::new(std::io::Error::other(error.to_string())))
                     })
                 });
-                let stream: Pin<Box<dyn Stream<Item = _> + Send>> = if let Some(uid) =
-                    args.input_device.as_deref()
-                {
-                    let mut mic = NativeMicCapture::new(uid.to_string());
-                    if let Err(error) = mic.start() {
-                        tracing::error!(
-                            input_device = uid,
-                            error = %error,
-                            "selected Core Audio input failed; falling back to the default input"
-                        );
-                        let mut fallback = MicCapture::new();
-                        fallback.start().context(
-                            "selected Core Audio input failed and opening the default input \
+                let mic_frames = if let Some(uid) = args.input_device.as_deref() {
+                    match start_registered_capture(
+                        &capture_registry,
+                        NativeMicCapture::new(uid.to_string()),
+                    ) {
+                        Ok(frames) => frames,
+                        Err(error) => {
+                            tracing::error!(
+                                input_device = uid,
+                                error = %error,
+                                "selected Core Audio input failed; falling back to the default input"
+                            );
+                            start_registered_capture(&capture_registry, MicCapture::new()).context(
+                                "selected Core Audio input failed and opening the default input \
                                  also failed",
-                        )?;
-                        let merged = stream::select(fallback.frames(), system_frames);
-                        mic_capture_keepalive = Some(fallback);
-                        Box::pin(merged.take_until(stop_future))
-                    } else {
-                        let merged = stream::select(mic.frames(), system_frames);
-                        native_mic_capture_keepalive = Some(mic);
-                        Box::pin(merged.take_until(stop_future))
+                            )?
+                        }
                     }
                 } else {
-                    let mut mic = MicCapture::new();
-                    mic.start().context(
+                    start_registered_capture(&capture_registry, MicCapture::new()).context(
                         "opening default input device (grant Microphone permission \
-                             in System Settings → Privacy & Security if prompted)",
-                    )?;
-                    let merged = stream::select(mic.frames(), system_frames);
-                    mic_capture_keepalive = Some(mic);
-                    Box::pin(merged.take_until(stop_future))
+                         in System Settings → Privacy & Security if prompted)",
+                    )?
                 };
-                stream
+                Box::pin(stream::select(mic_frames, system_frames).take_until(stop_future))
             }
             #[cfg(not(all(feature = "mic-capture", feature = "system-capture-mac")))]
             {
