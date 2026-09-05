@@ -97,7 +97,10 @@ LOC_CEILINGS: dict[str, int] = {
     # settings can resolve to ScreenCaptureKit without changing legacy Tap
     # invocations. The core ceiling keeps a 37-line margin after that contract;
     # capture implementation remains isolated in its adapter crate.
-    "scrybe-core": 10900,
+    # Raised to 11000 for M4's terminal capture-error finalization: sessions
+    # now flush the journal, merge audio, and write artifacts before exposing
+    # the original capture failure to callers.
+    "scrybe-core": 11000,
     # 2000 was the v0.5 ceiling. Raised to 2300 at v0.6 to absorb the
     # `scrybe bench` subcommand. Raised to 2500 at v1.0.1 to absorb
     # the `--source mic` and `--whisper-model` wiring on `scrybe record`
@@ -156,7 +159,9 @@ LOC_CEILINGS: dict[str, int] = {
     # remains in `scrybe-capture-mac`; the CLI owns the command and presentation.
     # Raised to 4200 for M4's UID-pinned microphone path, including the
     # feature-gated fallback and regression coverage for explicit selectors.
-    "scrybe-cli": 4200,
+    # Raised to 4300 for M4's capture registry, signal teardown, and bounded
+    # liveness watchdog. The CLI owns orchestration; adapters remain separate.
+    "scrybe-cli": 4300,
     "scrybe-capture-mac": 2500,
     "scrybe-capture-linux": 2500,
     "scrybe-capture-win": 2500,

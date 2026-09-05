@@ -8,6 +8,7 @@
 
 use std::sync::{Arc, Mutex};
 
+#[cfg(feature = "mic-capture")]
 use scrybe_core::capture::AudioCapture;
 use scrybe_core::error::CaptureError;
 type Stopper = Box<dyn FnMut() -> Result<(), CaptureError> + Send>;
@@ -20,6 +21,7 @@ pub struct CaptureRegistry {
 
 impl CaptureRegistry {
     /// Retain `capture` until shutdown and return its shared owner.
+    #[cfg(feature = "mic-capture")]
     pub fn register<T: AudioCapture>(&self, capture: T) -> Arc<Mutex<T>> {
         let capture = Arc::new(Mutex::new(capture));
         let stop_target = Arc::clone(&capture);
@@ -35,6 +37,7 @@ impl CaptureRegistry {
     }
 
     /// Retain a custom capture stop operation until shutdown.
+    #[cfg(any(test, feature = "mic-capture"))]
     pub fn register_stopper(
         &self,
         stopper: impl FnMut() -> Result<(), CaptureError> + Send + 'static,

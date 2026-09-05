@@ -56,9 +56,8 @@ use futures::stream::{self, Stream, StreamExt};
 use scrybe_capture_mac::{MacCapture, NativeMicCapture, SckCapture};
 #[cfg(feature = "mic-capture")]
 use scrybe_capture_mic::MicCapture;
-// AudioCapture is consumed when either MicCapture is started (`mic`
-// source needs `mic-capture`) or both system adapters are started
-// with the mic.
+// AudioCapture is the registry's common bound whenever microphone capture is
+// compiled into the binary.
 #[cfg(feature = "mic-capture")]
 use scrybe_core::capture::AudioCapture;
 use scrybe_core::config::{
@@ -253,6 +252,7 @@ impl SystemCapture {
 #[cfg(any(test, all(feature = "mic-capture", feature = "system-capture-mac")))]
 const TAP_STARTUP_ACTIVITY_WINDOW: Duration = Duration::from_millis(1_500);
 
+#[cfg(any(test, feature = "mic-capture"))]
 type CaptureFrameStream = Pin<Box<dyn Stream<Item = Result<AudioFrame, CaptureError>> + Send>>;
 
 #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
@@ -351,6 +351,7 @@ pub async fn run(args: Args) -> Result<()> {
     result
 }
 
+#[cfg(feature = "mic-capture")]
 fn start_registered_capture<T>(registry: &CaptureRegistry, capture: T) -> Result<CaptureFrameStream>
 where
     T: AudioCapture,
