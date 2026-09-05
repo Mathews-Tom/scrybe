@@ -17,7 +17,10 @@ The supported user path today is macOS:
 - `scrybe init --profile default` writes the hermetic synthetic profile used by CI and cross-platform smoke tests.
 - `scrybe record` creates a session folder with `audio.opus`, `transcript.md`, `notes.md`, and `meta.toml`.
 - `--source synthetic` runs the hermetic smoke path used by CI.
-- `--source mic` records the default microphone when the binary is built with `mic-capture`.
+- `--source mic` records the default microphone when the binary is built with `mic-capture`; `--input-device <uid>` pins it to a macOS Core Audio device UID.
+- `scrybe devices` lists macOS input-device UIDs and identifies the current default.
+  Use its `uid` value with `scrybe rec --input-device <uid>` to prevent an
+  OS default-device change from silently changing the recording source.
 - `--source mic+system` records microphone plus macOS system audio through ScreenCaptureKit when built with `mic-capture,system-capture-mac` on macOS 13+. It requires the broader **Screen & System Audio Recording** permission.
 - `--whisper-model <PATH>` enables local whisper.cpp transcription when built with `whisper-local`.
 - `--llm openai-compat` enables real notes through Ollama, vLLM, OpenAI, Groq, Together, or any compatible `/chat/completions` endpoint when built with `llm-openai-compat`.
@@ -83,6 +86,20 @@ scrybe show <session-id>
 ```
 
 The ergonomic `scrybe record TITLE` resolves capture source, system-audio backend, Whisper model, and LLM kind from your config and platform probes. ScreenCaptureKit runs directly from the invoking terminal; the legacy `tap` backend auto-launches through the `.app` bundle so its Audio Capture TCC grant binds correctly. Use `scrybe rec --title TITLE --source … --system-backend … --whisper-model … --llm …` when you need explicit flag control (CI, debugging, alternate hardware setups).
+
+Select a microphone explicitly:
+
+```sh
+scrybe devices
+scrybe rec --title "client-call" --source mic --input-device <uid>
+```
+
+The first `Ctrl-C` or `SIGTERM` stops capture and finalizes available audio,
+transcript, notes, and metadata. A second signal exits immediately; use
+`scrybe repair <session-folder>` only after an abrupt process death leaves a
+`journal/` directory. A live capture stream that yields no frame for 30 seconds
+is stopped through the same ordered finalization path and the command returns a
+capture error after writing the available artifacts.
 
 For cloud or hosted-compatible LLMs, configure `[llm]` with a base URL, model, and an environment-variable name for the API key. Secrets stay in the environment, not in `config.toml`.
 
