@@ -26,13 +26,19 @@ pub mod error;
 pub(crate) mod coreaudio;
 
 #[cfg(all(target_os = "macos", feature = "core-audio-tap"))]
-mod input_devices;
+pub(crate) mod input_devices;
 
 #[cfg(all(target_os = "macos", feature = "core-audio-tap"))]
 pub use input_devices::{input_devices, InputDevice};
 
 #[cfg(all(target_os = "macos", feature = "core-audio-tap"))]
-mod coreaudio_tap;
+pub(crate) mod coreaudio_tap;
+
+#[cfg(all(target_os = "macos", feature = "core-audio-tap"))]
+mod native_mic;
+
+#[cfg(all(target_os = "macos", feature = "core-audio-tap"))]
+pub use native_mic::NativeMicCapture;
 
 #[cfg(all(target_os = "macos", feature = "core-audio-tap"))]
 pub mod probe_chime;

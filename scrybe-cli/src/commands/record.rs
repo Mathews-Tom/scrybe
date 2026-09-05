@@ -52,6 +52,10 @@ pub struct Args {
     #[arg(long, value_enum)]
     pub source: Option<CaptureSourceArg>,
 
+    /// Exact macOS Core Audio input-device UID from `scrybe devices`.
+    #[arg(long)]
+    pub input_device: Option<String>,
+
     /// Override the `sck` or `tap` system-audio adapter.
     #[arg(long, value_enum)]
     pub system_backend: Option<super::rec::SystemBackendArg>,
@@ -119,6 +123,7 @@ struct Resolved {
     whisper_model: Option<PathBuf>,
     llm: LlmBackendArg,
     root: Option<PathBuf>,
+    input_device: Option<String>,
 }
 
 impl Resolved {
@@ -133,6 +138,7 @@ impl Resolved {
             system_backend: Some(self.system_backend),
             whisper_model: self.whisper_model,
             llm: Some(self.llm),
+            input_device: self.input_device,
             shell: false,
         }
     }
@@ -162,6 +168,7 @@ fn resolve(cfg: &Config, args: &Args) -> Resolved {
         system_backend,
         whisper_model,
         llm,
+        input_device: args.input_device.clone(),
         root: args.root.clone(),
     }
 }
@@ -230,6 +237,10 @@ fn build_rec_argv(resolved: &Resolved) -> Vec<String> {
     }
     argv.push("--system-backend".to_string());
     argv.push(system_backend_arg_to_str(resolved.system_backend).to_string());
+    if let Some(input_device) = &resolved.input_device {
+        argv.push("--input-device".to_string());
+        argv.push(input_device.clone());
+    }
     if let Some(root) = &resolved.root {
         argv.push("--root".to_string());
         argv.push(root.to_string_lossy().into_owned());
@@ -296,6 +307,7 @@ mod tests {
         Args {
             title: title.to_string(),
             source: None,
+            input_device: None,
             system_backend: None,
             whisper_model: None,
             llm: None,
@@ -330,6 +342,7 @@ mod tests {
             whisper_model: None,
             llm: LlmBackendArg::Stub,
             root: None,
+            input_device: None,
         };
         let mut args = args_with_title("t");
         args.no_bundle = true;
@@ -345,6 +358,7 @@ mod tests {
             whisper_model: None,
             llm: LlmBackendArg::Stub,
             root: None,
+            input_device: None,
         };
         let args = args_with_title("t");
         assert!(!should_use_bundle(&resolved, &args));
@@ -382,6 +396,7 @@ mod tests {
             whisper_model: Some(PathBuf::from("/m.bin")),
             llm: LlmBackendArg::OpenAiCompat,
             root: None,
+            input_device: None,
         };
         let argv = build_rec_argv(&resolved);
         assert_eq!(argv[0], "--title");
