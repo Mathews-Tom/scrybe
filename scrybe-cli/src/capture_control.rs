@@ -22,21 +22,28 @@ impl CaptureRegistry {
     pub(crate) fn register<T: AudioCapture>(&self, capture: T) -> Arc<Mutex<T>> {
         let capture = Arc::new(Mutex::new(capture));
         let stop_target = Arc::clone(&capture);
-        let mut stoppers = self
-            .stoppers
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        stoppers.push(Box::new(move || {
+        self.register_stopper(move || {
             let mut capture = stop_target.lock().map_err(|_| {
                 CaptureError::Platform(Box::new(std::io::Error::other(
                     "capture registry adapter mutex poisoned",
                 )))
             })?;
             capture.stop()
-        }));
+        });
         capture
     }
 
+    /// Retain a custom capture stop operation until shutdown.
+    pub(crate) fn register_stopper(
+        &self,
+        stopper: impl FnMut() -> Result<(), CaptureError> + Send + 'static,
+    ) {
+        let mut stoppers = self
+            .stoppers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        stoppers.push(Box::new(stopper));
+    }
     /// Synchronously stop and deregister all adapters.
     pub(crate) fn stop_all(&self) -> Result<(), CaptureError> {
         let mut stoppers = {

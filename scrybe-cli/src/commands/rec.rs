@@ -444,29 +444,25 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
             Some(_uid) => {
                 #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
                 {
-                    let mut mic = NativeMicCapture::new(_uid.to_string());
-                    if let Err(error) = mic.start() {
-                        tracing::error!(
-                            input_device = _uid,
-                            error = %error,
-                            "selected Core Audio input failed; falling back to the default input"
-                        );
-                        let mut fallback = MicCapture::new();
-                        fallback.start().context(
-                                "selected Core Audio input failed and opening the default input also \
-                                 failed (grant Microphone permission in System Settings → Privacy & \
-                                 Security if prompted)",
-                            )?;
-                        let stream: Pin<Box<dyn Stream<Item = _> + Send>> =
-                            Box::pin(fallback.frames().take_until(stop_future));
-                        mic_capture_keepalive = Some(fallback);
-                        stream
-                    } else {
-                        let stream: Pin<Box<dyn Stream<Item = _> + Send>> =
-                            Box::pin(mic.frames().take_until(stop_future));
-                        native_mic_capture_keepalive = Some(mic);
-                        stream
-                    }
+                    let stream = match start_registered_capture(
+                        &capture_registry,
+                        NativeMicCapture::new(_uid.to_string()),
+                    ) {
+                        Ok(stream) => stream,
+                        Err(error) => {
+                            tracing::error!(
+                                input_device = _uid,
+                                error = %error,
+                                "selected Core Audio input failed; falling back to the default input"
+                            );
+                            start_registered_capture(&capture_registry, MicCapture::new()).context(
+                                "selected Core Audio input failed and opening the default input \
+                                 also failed (grant Microphone permission in System Settings → \
+                                 Privacy & Security if prompted)",
+                            )?
+                        }
+                    };
+                    Box::pin(stream.take_until(stop_future))
                 }
                 #[cfg(not(all(feature = "mic-capture", feature = "system-capture-mac")))]
                 {
@@ -500,12 +496,17 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
             {
                 use futures::stream;
 
-                let (system_capture, system_frames, fallback_note) =
+                let (mut system_capture, system_frames, fallback_note) =
                     start_system_capture(system_backend).await?;
                 if let Some(note) = fallback_note {
                     tracing::warn!(system_backend = "sck", "{note}");
                     write_capture_diagnostic(&root, started_at, id, args.title.as_deref(), note)?;
                 }
+                capture_registry.register_stopper(move || {
+                    system_capture.stop().map_err(|error| {
+                        CaptureError::Platform(Box::new(std::io::Error::other(error.to_string())))
+                    })
+                });
                 let stream: Pin<Box<dyn Stream<Item = _> + Send>> = if let Some(uid) =
                     args.input_device.as_deref()
                 {
@@ -539,7 +540,6 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
                     mic_capture_keepalive = Some(mic);
                     Box::pin(merged.take_until(stop_future))
                 };
-                system_capture_keepalive = Some(system_capture);
                 stream
             }
             #[cfg(not(all(feature = "mic-capture", feature = "system-capture-mac")))]
