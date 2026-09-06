@@ -20,13 +20,10 @@ hook-git = ["dep:git2"]
 # BLAS depending on platform). Off by default so the workspace builds
 # without C++ toolchain; scrybe-cli enables it via its own feature flag.
 whisper-local = ["dep:whisper-rs"]
-# Enables ParakeetLocalProvider via sherpa-rs (links sherpa-onnx C++
-# runtime). Off by default so the workspace builds without an ONNX C++
-# toolchain; scrybe-cli enables it on opt-in. When the feature is
-# disabled the type still exists but transcribe() returns
-# SttError::ModelNotLoaded. The live binding lands as a v0.4.x
-# follow-up tracked in `.docs/development-plan.md` §10.2.
-parakeet-local = []
+# Enables `SherpaStreamingProvider` through the official `sherpa-onnx`
+# binding. Opt-in only: the workspace `.cargo/config.toml` requires a
+# pre-provisioned native runtime and fails before sherpa-onnx can download one.
+stt-sherpa = ["dep:sherpa-onnx"]
 # OpenAI-compatible STT and LLM providers (Groq, OpenAI, Together,
 # vLLM, …). Pulls in `reqwest` with rustls-only TLS; the
 # `egress-audit` CI lane stays green only on the default-feature graph.
@@ -82,6 +79,7 @@ tracing.workspace = true
 ulid.workspace = true
 url = { workspace = true, optional = true }
 whisper-rs = { version = "0.13", optional = true, default-features = false }
+sherpa-onnx = { version = "=1.13.7", optional = true }
 # Opus + Ogg deps for the `encoder-opus` feature. Both are local-only
 # (no network surface), so they do not perturb the `egress-audit` CI
 # lane; only pulled in when the consumer enables `encoder-opus`. The

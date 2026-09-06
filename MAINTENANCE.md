@@ -24,7 +24,7 @@ What the freeze meant in practice while it held:
 - No new platform adapters. The four `AudioCapture` implementations (`scrybe-capture-{mac,linux,win,android}`) were the v1.0 set; iOS, BSD, ChromeOS, embedded targets were out of scope for the freeze window.
 - No new extension seams. The five traits (`AudioCapture`, `ContextProvider`, `SttProvider`, `LlmProvider`, `Hook`, `Diarizer`) were the v1.0 set; a sixth seam needed a tracked issue with two real downstream call sites and a minor-version cycle to land.
 - No new top-level CLI subcommands. The Tier-2 set in `system-design.md` §12.2 (`init`, `record`, `list`, `show`, `doctor`, `bench`) was what v1.0 maintained.
-- No new optional feature flags on `scrybe-core`. The set committed at v1.0 (`hook-git`, `whisper-local`, `parakeet-local`, `openai-compat`, `context-ics`, `hook-webhook`, `hook-tantivy`, `diarize-pyannote`, `encoder-opus`) was what v1.0 supported.
+- No unplanned optional feature flags on `scrybe-core`. The historical v1.0 set was `hook-git`, `whisper-local`, `parakeet-local`, `openai-compat`, `context-ics`, `hook-webhook`, `hook-tantivy`, `diarize-pyannote`, and `encoder-opus`; changes now follow the authoritative post-v1.0 development plan rather than the retired freeze.
 
 What was **in** scope during the freeze — this stays true now, unchanged:
 
@@ -110,6 +110,6 @@ Contributions land via pull request with the conventional-commit format document
 scrybe is a solo-maintainer project. The bus factor is one. Two structural mitigations:
 
 1. **Apache-2.0 license.** §3 of the license grants a perpetual patent licence; §4 enforces attribution and modification notices on derivative works; §6 protects the project name. A fork can keep the project alive without the maintainer's continued involvement.
-2. **Self-contained architecture.** The four traits + filesystem-as-database design means a fork can replace the maintainer's chosen providers (whisper-rs, ollama, sherpa-rs) with their own without touching `scrybe-core`. The architecture is the artifact; the maintainer is replaceable.
+2. **Self-contained architecture.** The four traits + filesystem-as-database design means a fork can replace the maintainer's chosen providers (whisper-rs, Ollama, sherpa-onnx) with their own without touching `scrybe-core`. The architecture is the artifact; the maintainer is replaceable.
 
 If the maintainer goes silent for >90 days without a public note, downstream users should expect to fork. That's the design.

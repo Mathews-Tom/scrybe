@@ -36,7 +36,7 @@ These users are all currently taking notes by hand, or not at all. Every one of 
 Three things that weren't true two years ago:
 
 1. **Native OS APIs solve system-audio capture without a virtual driver on every platform we care about.** macOS ScreenCaptureKit (since macOS 13), Windows WASAPI per-process loopback (since Win10 build 2004), PipeWire on Linux, Android's `AudioPlaybackCapture` (since Android 10). The "you need to install BlackHole or VB-Cable" era is over.
-2. **Local Whisper is genuinely good now.** Whisper-large-v3 on M-series Apple Silicon hits ~5x realtime with Metal. For most languages, it's usable for production note-taking. Parakeet is even faster.
+2. **Local Whisper is genuinely good now.** Whisper-large-v3 on M-series Apple Silicon hits ~5x realtime with Metal. For most languages, it is usable for production note-taking. The opt-in streaming Zipformer path provides growing local English hypotheses; its performance claim remains benchmark-gated.
 3. **The OSS shelf is crowded but skewed.** Two Rust meeting-notetakers matter: Meetily (Tauri + SQLite, mac+win) and `fastrepl/anarlog` (formerly Hyprnote, mac-only, recently active). Both ship local-first capture, but neither runs on Linux or Android, and neither offers a courtesy-notification step that posts into the meeting chat at start. The unoccupied lane is **cross-platform (mac+win+linux+android) + filesystem-only + courtesy-notification by default**, not "the only OSS option."
 
 ## What makes this different from the existing OSS options
@@ -113,7 +113,7 @@ The plan is staged honestly:
 | **v0.1** | macOS only (Core Audio Taps primary, ScreenCaptureKit fallback). CLI: `scrybe init / record / stop / list / show / doctor`. Local whisper + Ollama. Folder-on-disk storage. Mandatory consent step. | 4 |
 | **v0.2** | Add OpenAI-compatible STT/LLM. Channel-split diarization (binary `Me`/`Them`). `.ics` calendar context. Webhook hook. | 3 |
 | **v0.3** | Add Linux (PipeWire + Pulse fallback). | 3 |
-| **v0.4** | Add Windows (WASAPI per-process loopback). Optional Parakeet via `sherpa-rs`. | 3 |
+| **v0.4** | Add Windows (WASAPI per-process loopback). Optional local STT seam; the planned streaming Zipformer implementation uses `sherpa-onnx`. | 3 |
 | **v0.5** | Add Android (MediaProjection + Compose UI). Neural diarizer (`pyannote-onnx`) for in-room and multi-party. | 5 |
 | **v0.6** | Hooks complete (git, webhook, indexer). Multilingual regression corpus. Bench gates. | 2 |
 | **v0.9-rc** | Reproducible builds, packaging (Homebrew, Scoop, AUR, Flatpak, F-Droid). Unsigned binaries on macOS / Windows with documented Gatekeeper / SmartScreen workarounds. | 2 |

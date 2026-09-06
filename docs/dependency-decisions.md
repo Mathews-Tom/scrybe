@@ -54,7 +54,7 @@ Indirect (transitive) dependencies inherit the same rules but are vetted lazily:
 |---|---|---|---|---|---|
 | `whisper-rs` | `0.16` | MIT OR Apache-2.0 | **codeberg.org/tazz4843/whisper-rs** | Whisper.cpp Rust bindings | Primary host moved off GitHub; the GitHub mirror is archived. We pin a known-good commit and **vendor the source** under `vendor/whisper-rs/` so a Codeberg outage does not block release. Track Codeberg release feed manually. |
 | `voice_activity_detector` | `0.2` | MIT | github.com/nkeenan38/voice_activity_detector | Silero v5 VAD via ONNX runtime | Replaces `webrtc-vad-rs` (last release 2019, dead). Active 2025-08. ~1 ms / 30 ms chunk on a single CPU thread. |
-| `sherpa-rs` | `0.6` | Apache-2.0 | github.com/thewh1teagle/sherpa-rs | Optional Parakeet TDT v2/v3 STT | Behind `--features parakeet-local`. v0.4 deliverable. English-priority; Whisper remains default for multilingual. |
+| `sherpa-onnx` | `1.13.7` | Apache-2.0 | github.com/k2-fsa/sherpa-onnx | Optional streaming Zipformer STT | Behind `--features stt-sherpa`; uses the official Rust binding and a manually provisioned native runtime. Whisper remains the default for multilingual. |
 | `ort` | `2.0` | MIT OR Apache-2.0 | github.com/pykeio/ort | ONNX runtime bindings (used transitively by `voice_activity_detector` and `pyannote-onnx`) | Direct dep declared at workspace level so we can pin the runtime version once. |
 | `pyannote-onnx` | `3.1` | MIT | github.com/pengzhendong/pyannote-onnx | Neural speaker diarization fallback | Behind `--features diarize-pyannote`. v0.5 deliverable. |
 | `opus` | `0.3` | BSD-3 | github.com/RustAudio/opus | Opus encoder for `audio.opus` | 32 kbps default per `system-design.md` §6. |

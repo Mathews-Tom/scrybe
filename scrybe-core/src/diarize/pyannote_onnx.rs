@@ -16,7 +16,7 @@
 //! `.docs/development-plan.md` §11.2. Without the `diarize-pyannote`
 //! cargo feature, calling [`PyannoteOnnxDiarizer::new_live`] returns a
 //! typed error rather than a phantom successful load — the same
-//! pattern as `WhisperLocalProvider` / `ParakeetLocalProvider`.
+//! pattern as `WhisperLocalProvider` / `SherpaStreamingProvider`.
 
 use std::path::{Path, PathBuf};
 

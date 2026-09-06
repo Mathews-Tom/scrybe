@@ -60,12 +60,15 @@ pub struct Args {
     #[arg(long, value_enum)]
     pub system_backend: Option<super::rec::SystemBackendArg>,
 
-    /// Override the Whisper model path. Defaults to the model under
-    /// `~/Library/Application Support/dev.scrybe.scrybe/models/` if
-    /// the file exists; otherwise the session errors at start time
-    /// with a setup hint.
-    #[arg(long)]
+    /// Override the Whisper model path. Defaults to the platform model when
+    /// one exists. Conflicts with `--sherpa-model`.
+    #[arg(long, conflicts_with = "sherpa_model")]
     pub whisper_model: Option<PathBuf>,
+
+    /// Directory containing the pinned streaming Zipformer Sherpa-ONNX model.
+    /// Conflicts with `--whisper-model`.
+    #[arg(long, conflicts_with = "whisper_model")]
+    pub sherpa_model: Option<PathBuf>,
 
     /// Override the LLM backend. Defaults to `openai-compat` if a
     /// local Ollama is reachable at `127.0.0.1:11434`, else `stub`.
@@ -121,6 +124,7 @@ struct Resolved {
     source: CaptureSourceArg,
     system_backend: super::rec::SystemBackendArg,
     whisper_model: Option<PathBuf>,
+    sherpa_model: Option<PathBuf>,
     llm: LlmBackendArg,
     root: Option<PathBuf>,
     input_device: Option<String>,
@@ -137,6 +141,7 @@ impl Resolved {
             source: Some(self.source),
             system_backend: Some(self.system_backend),
             whisper_model: self.whisper_model,
+            sherpa_model: self.sherpa_model,
             llm: Some(self.llm),
             input_device: self.input_device,
             shell: false,
@@ -155,10 +160,15 @@ fn resolve(cfg: &Config, args: &Args) -> Resolved {
                 .unwrap_or(RECORD_SYSTEM_BACKEND_SCK),
         )
     });
-    let whisper_model = args
-        .whisper_model
-        .clone()
-        .or_else(|| record_defaults::ergonomic_whisper_model(&cfg.record));
+    let sherpa_model = args.sherpa_model.clone();
+    let whisper_model = sherpa_model.as_ref().map_or_else(
+        || {
+            args.whisper_model
+                .clone()
+                .or_else(|| record_defaults::ergonomic_whisper_model(&cfg.record))
+        },
+        |_| None,
+    );
     let llm = args
         .llm
         .unwrap_or_else(|| llm_backend_arg_from_str(record_defaults::ergonomic_llm(&cfg.record)));
@@ -167,6 +177,7 @@ fn resolve(cfg: &Config, args: &Args) -> Resolved {
         source,
         system_backend,
         whisper_model,
+        sherpa_model,
         llm,
         input_device: args.input_device.clone(),
         root: args.root.clone(),
@@ -233,6 +244,10 @@ fn build_rec_argv(resolved: &Resolved) -> Vec<String> {
     argv.push(llm_backend_arg_to_str(resolved.llm).to_string());
     if let Some(model) = &resolved.whisper_model {
         argv.push("--whisper-model".to_string());
+        argv.push(model.to_string_lossy().into_owned());
+    }
+    if let Some(model) = &resolved.sherpa_model {
+        argv.push("--sherpa-model".to_string());
         argv.push(model.to_string_lossy().into_owned());
     }
     argv.push("--system-backend".to_string());
@@ -310,6 +325,7 @@ mod tests {
             input_device: None,
             system_backend: None,
             whisper_model: None,
+            sherpa_model: None,
             llm: None,
             root: None,
             no_bundle: false,
@@ -334,12 +350,29 @@ mod tests {
     }
 
     #[test]
+    fn test_resolve_explicit_sherpa_model_suppresses_whisper_default() {
+        let mut cfg = Config::default();
+        cfg.record.whisper_model = Some(PathBuf::from("/configured/whisper.bin"));
+        let mut args = args_with_title("sherpa");
+        args.sherpa_model = Some(PathBuf::from("/explicit/sherpa"));
+
+        let resolved = resolve(&cfg, &args);
+
+        assert_eq!(
+            resolved.sherpa_model,
+            Some(PathBuf::from("/explicit/sherpa"))
+        );
+        assert_eq!(resolved.whisper_model, None);
+    }
+
+    #[test]
     fn test_should_use_bundle_returns_false_when_no_bundle_set() {
         let resolved = Resolved {
             title: "t".into(),
             source: CaptureSourceArg::MicSystem,
             system_backend: super::rec::SystemBackendArg::Sck,
             whisper_model: None,
+            sherpa_model: None,
             llm: LlmBackendArg::Stub,
             root: None,
             input_device: None,
@@ -356,6 +389,7 @@ mod tests {
             source: CaptureSourceArg::Mic,
             system_backend: super::rec::SystemBackendArg::Sck,
             whisper_model: None,
+            sherpa_model: None,
             llm: LlmBackendArg::Stub,
             root: None,
             input_device: None,
@@ -394,6 +428,7 @@ mod tests {
             source: CaptureSourceArg::MicSystem,
             system_backend: super::rec::SystemBackendArg::Sck,
             whisper_model: Some(PathBuf::from("/m.bin")),
+            sherpa_model: None,
             llm: LlmBackendArg::OpenAiCompat,
             root: None,
             input_device: None,

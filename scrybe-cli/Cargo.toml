@@ -19,6 +19,7 @@ doc = false
 default = []
 hook-git = ["scrybe-core/hook-git"]
 whisper-local = ["scrybe-core/whisper-local"]
+stt-sherpa = ["scrybe-core/stt-sherpa"]
 # Enables the live cpal binding in `scrybe-capture-mic` so
 # `scrybe record --mic` opens the default input device. Off by default
 # so the cpal transitive dependency tree (CoreAudio / ALSA / WASAPI

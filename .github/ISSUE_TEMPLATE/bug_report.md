@@ -34,7 +34,7 @@ characteristics if relevant (sample rate, channel count, source).
 - OS and version (e.g. macOS 14.6.1, Ubuntu 24.04, Windows 11 24H2): 
 - Architecture (arm64, x86_64): 
 - Install method (cargo install, Homebrew, AUR, MSI, F-Droid, source): 
-- STT provider (`whisper-local`, `openai-compat <host>`, `parakeet-local`): 
+- STT provider (`whisper-local`, `openai-compat <host>`, `sherpa-streaming`):
 - LLM provider (`ollama`, `openai-compat <host>`, none): 
 - Capture adapter (`mac-coreaudio-tap`, `mac-screencapturekit`,
   `linux-pipewire`, `linux-pulse`, `win-wasapi`, `android`): 

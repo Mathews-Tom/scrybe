@@ -8,7 +8,7 @@
 //!
 //! Defaults match `docs/system-design.md` §8.2: 3 attempts, 500 ms
 //! initial backoff, 8 s ceiling. Local providers (whisper.cpp,
-//! `sherpa-rs`) are deterministic and skip the helper entirely.
+//! `sherpa-onnx`) are deterministic and skip the helper entirely.
 
 use std::future::Future;
 use std::time::Duration;

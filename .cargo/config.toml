@@ -1,0 +1,4 @@
+[env]
+# `sherpa-onnx-sys` otherwise downloads a native archive during feature builds.
+# An explicit user or CI value overrides this sentinel because force is false.
+SHERPA_ONNX_LIB_DIR = { value = "__scrybe_requires_explicit_sherpa_runtime__", force = false }
