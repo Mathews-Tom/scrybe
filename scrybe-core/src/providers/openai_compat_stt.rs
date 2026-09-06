@@ -150,6 +150,7 @@ impl OpenAiCompatSttProvider {
                 start_ms: u64::try_from(chunk.start.as_millis()).unwrap_or(u64::MAX),
                 duration_ms: u64::try_from(chunk.duration.as_millis()).unwrap_or(u64::MAX),
                 language: body.language,
+                tokens: Vec::new(),
             });
         }
 

@@ -104,8 +104,10 @@ LOC_CEILINGS: dict[str, int] = {
     # Raised to 11200 for M5's opt-in `SherpaStreamingProvider`: the pinned
     # artifact validator, OnlineRecognizer construction, and isolated
     # blocking decode retain Whisper selection while keeping the native runtime
-    # out of the default build.
-    "scrybe-core": 11200,
+    # out of the default build. Raised to 12500 for M5's partial
+    # transcripts/token timings: persistent per-source streaming state,
+    # stateful normalization, token conversion, and recovery-safe WAL records.
+    "scrybe-core": 12500,
     # 2000 was the v0.5 ceiling. Raised to 2300 at v0.6 to absorb the
     # `scrybe bench` subcommand. Raised to 2500 at v1.0.1 to absorb
     # the `--source mic` and `--whisper-model` wiring on `scrybe record`

@@ -36,6 +36,86 @@ impl From<ResampleError> for PipelineError {
         }
     }
 }
+/// Half-width of the Hann-windowed sinc kernel, in input samples.
+/// Shared by the stateless [`resample_linear`] and the stateful
+/// [`StreamingResampler`] so the two cannot drift apart.
+const FILTER_RADIUS: isize = 5;
+/// Kernel cutoff as a fraction of the target Nyquist frequency.
+const CUTOFF_SCALE: f64 = 0.9;
+
+/// One sample of a buffer whose element 0 has absolute index `base`.
+///
+/// `None` for an index outside the retained window: before the first
+/// input sample, or past the newest one. Both callers treat a missing
+/// tap as a zero-weight tap, which is what makes the streaming path's
+/// partial windows agree with the stateless path's edge clamping.
+fn sample_at(base: u64, buffer: &[f32], index: isize) -> Option<f32> {
+    if index < 0 {
+        return None;
+    }
+    #[allow(clippy::cast_sign_loss)]
+    let index = index as u64;
+    if index < base {
+        return None;
+    }
+    #[allow(clippy::cast_possible_truncation)]
+    buffer.get((index - base) as usize).copied()
+}
+
+/// Hann-windowed sinc low-pass output at fractional input position
+/// `center`, normalized by the realized tap gain.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::suboptimal_flops
+)]
+fn fir_sample(center: f64, cutoff: f64, base: u64, buffer: &[f32], fallback: f32) -> f32 {
+    let center_index = center.floor() as isize;
+    let mut weighted_sum = 0.0_f64;
+    let mut gain = 0.0_f64;
+
+    for index in (center_index - FILTER_RADIUS)..=(center_index + FILTER_RADIUS) {
+        let Some(sample) = sample_at(base, buffer, index) else {
+            continue;
+        };
+        let distance = center - (index as f64);
+        let window =
+            0.5 + 0.5 * (std::f64::consts::PI * distance / (FILTER_RADIUS + 1) as f64).cos();
+        let scaled_distance = 2.0 * cutoff * distance;
+        let sinc = if scaled_distance.abs() < f64::EPSILON {
+            1.0
+        } else {
+            (std::f64::consts::PI * scaled_distance).sin()
+                / (std::f64::consts::PI * scaled_distance)
+        };
+        let coefficient = 2.0 * cutoff * sinc * window;
+        weighted_sum += f64::from(sample) * coefficient;
+        gain += coefficient;
+    }
+
+    if gain.abs() < f64::EPSILON {
+        fallback
+    } else {
+        (weighted_sum / gain) as f32
+    }
+}
+
+/// Linear interpolation at fractional input position `pos`, used for
+/// upsampling and near-equal rates where there is no alias to reject.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::suboptimal_flops
+)]
+fn linear_sample(pos: f64, base: u64, buffer: &[f32], fallback: f32) -> f32 {
+    let lo = pos.floor() as isize;
+    let frac = pos - (lo as f64);
+    match (sample_at(base, buffer, lo), sample_at(base, buffer, lo + 1)) {
+        (Some(a), Some(b)) => (f64::from(a) * (1.0 - frac) + f64::from(b) * frac) as f32,
+        (Some(a), None) => a,
+        _ => fallback,
+    }
+}
 
 /// Resample a mono buffer from `source_rate` to `target_rate`.
 ///
@@ -84,66 +164,165 @@ pub fn resample_linear(
     let mut out = Vec::with_capacity(out_len);
 
     if step > 1.0 {
-        const FILTER_RADIUS: isize = 5;
-        const CUTOFF_SCALE: f64 = 0.9;
         let cutoff = 0.5 / step * CUTOFF_SCALE;
-
+        let fallback = samples[src_len - 1];
         for i in 0..out_len {
-            let center = (i as f64) * step;
-            let center_index = center.floor() as isize;
-            let mut weighted_sum = 0.0_f64;
-            let mut gain = 0.0_f64;
-
-            for index in (center_index - FILTER_RADIUS)..=(center_index + FILTER_RADIUS) {
-                if index < 0 {
-                    continue;
-                }
-                let source_index = index as usize;
-                if source_index >= src_len {
-                    continue;
-                }
-
-                let distance = center - (index as f64);
-                let window = 0.5
-                    + 0.5 * (std::f64::consts::PI * distance / (FILTER_RADIUS + 1) as f64).cos();
-                let scaled_distance = 2.0 * cutoff * distance;
-                let sinc = if scaled_distance.abs() < f64::EPSILON {
-                    1.0
-                } else {
-                    (std::f64::consts::PI * scaled_distance).sin()
-                        / (std::f64::consts::PI * scaled_distance)
-                };
-                let coefficient = 2.0 * cutoff * sinc * window;
-                weighted_sum += f64::from(samples[source_index]) * coefficient;
-                gain += coefficient;
-            }
-
-            if gain.abs() < f64::EPSILON {
-                out.push(samples.last().copied().unwrap_or(0.0));
-            } else {
-                out.push((weighted_sum / gain) as f32);
-            }
+            out.push(fir_sample((i as f64) * step, cutoff, 0, samples, fallback));
         }
     } else {
         // Upsampling or near-equal: linear interpolation between
         // adjacent input samples is correct (no aliasing direction to
         // guard against).
+        let fallback = samples[src_len - 1];
         for i in 0..out_len {
-            let src_pos = (i as f64) * step;
-            let lo = src_pos.floor() as usize;
-            let hi = lo + 1;
-            let frac = src_pos - (lo as f64);
-            if hi >= src_len {
-                out.push(samples[src_len - 1]);
-            } else {
-                let a = f64::from(samples[lo]);
-                let b = f64::from(samples[hi]);
-                let mixed = (a * (1.0 - frac) + b * frac) as f32;
-                out.push(mixed);
-            }
+            out.push(linear_sample((i as f64) * step, 0, samples, fallback));
         }
     }
     Ok(out)
+}
+
+/// Stateful mono resampler for a continuously arriving frame stream.
+///
+/// Calling [`resample_linear`] once per capture frame is wrong for the
+/// live path: the FIR kernel needs five input samples of context on
+/// both sides of every output sample. Independent per-frame calls clamp
+/// that window at each frame edge — a periodic
+/// distortion at the frame rate. This type keeps the kernel context
+/// across pushes, so feeding a stream in arbitrary frame sizes and
+/// then calling [`Self::finish`] yields exactly what
+/// [`resample_linear`] would have produced over the concatenated
+/// input.
+///
+/// It deliberately withholds output samples whose kernel window is not
+/// yet fully covered by the audio received so far; those samples are
+/// emitted by a later push (or by `finish`, which clamps the tail the
+/// same way the stateless path does).
+pub struct StreamingResampler {
+    /// Input samples consumed per output sample.
+    step: f64,
+    /// Output samples produced per input sample.
+    ratio: f64,
+    /// Kernel cutoff; unused on the linear path.
+    cutoff: f64,
+    /// Retained input window. `buffer[0]` has absolute index `base`.
+    buffer: Vec<f32>,
+    base: u64,
+    /// Total input samples pushed so far.
+    consumed: u64,
+    /// Next output-sample index to emit.
+    next_out: u64,
+    /// Equal rates need no conversion at all.
+    passthrough: bool,
+}
+
+impl StreamingResampler {
+    /// Create a resampler from `source_rate` to `target_rate`.
+    ///
+    /// # Errors
+    ///
+    /// `ResampleError::Unsupported` when either rate is zero.
+    pub fn new(source_rate: u32, target_rate: u32) -> Result<Self, ResampleError> {
+        if source_rate == 0 {
+            return Err(ResampleError::Unsupported(source_rate));
+        }
+        if target_rate == 0 {
+            return Err(ResampleError::Unsupported(target_rate));
+        }
+        let step = f64::from(source_rate) / f64::from(target_rate);
+        Ok(Self {
+            step,
+            ratio: f64::from(target_rate) / f64::from(source_rate),
+            cutoff: 0.5 / step * CUTOFF_SCALE,
+            buffer: Vec::new(),
+            base: 0,
+            consumed: 0,
+            next_out: 0,
+            passthrough: source_rate == target_rate,
+        })
+    }
+
+    /// Feed the next contiguous block of mono input and return every
+    /// output sample whose kernel window is now fully covered.
+    pub fn push(&mut self, samples: &[f32]) -> Vec<f32> {
+        if self.passthrough {
+            self.consumed = self.consumed.saturating_add(samples.len() as u64);
+            return samples.to_vec();
+        }
+        self.buffer.extend_from_slice(samples);
+        self.consumed = self.consumed.saturating_add(samples.len() as u64);
+        let ready = self.emit(self.consumed);
+        self.trim();
+        ready
+    }
+
+    /// Drain the tail: emit the remaining output samples of the stream,
+    /// clamping the kernel at the final input sample exactly as the
+    /// stateless path does.
+    pub fn finish(&mut self) -> Vec<f32> {
+        if self.passthrough {
+            return Vec::new();
+        }
+        let tail = self.emit(u64::MAX);
+        self.buffer.clear();
+        self.base = self.consumed;
+        tail
+    }
+
+    /// Emit output samples while every kernel tap index is `< available`
+    /// and the stream's total output length has not been reached.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss,
+        clippy::cast_possible_wrap
+    )]
+    fn emit(&mut self, available: u64) -> Vec<f32> {
+        let total_out = ((self.consumed as f64) * self.ratio).round() as u64;
+        let fallback = self.buffer.last().copied().unwrap_or(0.0);
+        let mut out = Vec::new();
+        while self.next_out < total_out {
+            let position = (self.next_out as f64) * self.step;
+            let highest_tap = if self.step > 1.0 {
+                position.floor() as i64 + FILTER_RADIUS as i64
+            } else {
+                position.floor() as i64 + 1
+            };
+            if highest_tap >= 0 && (highest_tap as u64) >= available {
+                break;
+            }
+            let sample = if self.step > 1.0 {
+                fir_sample(position, self.cutoff, self.base, &self.buffer, fallback)
+            } else {
+                linear_sample(position, self.base, &self.buffer, fallback)
+            };
+            out.push(sample);
+            self.next_out += 1;
+        }
+        out
+    }
+
+    /// Drop input samples no future output sample can reference.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss
+    )]
+    fn trim(&mut self) {
+        let position = (self.next_out as f64) * self.step;
+        let lowest_tap = if self.step > 1.0 {
+            position.floor() as i64 - FILTER_RADIUS as i64
+        } else {
+            position.floor() as i64
+        };
+        let keep_from = u64::try_from(lowest_tap).unwrap_or(0).max(self.base);
+        let drop_count = usize::try_from(keep_from - self.base).unwrap_or(0);
+        if drop_count == 0 {
+            return;
+        }
+        let drop_count = drop_count.min(self.buffer.len());
+        self.buffer.drain(..drop_count);
+        self.base += drop_count as u64;
+    }
 }
 
 #[cfg(test)]

@@ -185,6 +185,7 @@ mod tests {
             start_ms,
             duration_ms: 1_000,
             language: None,
+            tokens: Vec::new(),
         }
     }
 
@@ -308,6 +309,7 @@ mod tests {
             start_ms: 0,
             duration_ms: 1_000,
             language: None,
+            tokens: Vec::new(),
         };
 
         let result = BinaryChannelDiarizer

@@ -75,6 +75,7 @@ use scrybe_core::pipeline::vad::EnergyVad;
 use scrybe_core::providers::openai_compat_llm::OpenAiCompatLlmProvider;
 #[cfg(feature = "stt-sherpa")]
 use scrybe_core::providers::sherpa_streaming::{SherpaStreamingConfig, SherpaStreamingProvider};
+use scrybe_core::providers::streaming::StreamingSttProvider;
 #[cfg(feature = "whisper-local")]
 use scrybe_core::providers::whisper_local::{WhisperLocalConfig, WhisperLocalProvider};
 use scrybe_core::providers::{LlmProvider, SttProvider};
@@ -545,6 +546,7 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
             return Err(error);
         }
     };
+    let streaming_stt = stt.streaming();
 
     let outputs = run_session(
         SessionInputs {
@@ -560,6 +562,7 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
             },
             mic_vad: EnergyVad::default(),
             system_vad,
+            streaming_stt,
             stt: &stt,
             llm: &llm,
             diarizer: &diarizer,
@@ -846,6 +849,23 @@ enum CliStt {
     Whisper(WhisperLocalProvider),
 }
 
+impl CliStt {
+    /// Streaming capability of the selected provider, when it has one.
+    ///
+    /// Only the Sherpa provider decodes incrementally; the stub and
+    /// whisper.cpp remain batch-only and take the unchanged
+    /// `SttProvider` path.
+    fn streaming(&self) -> Option<&dyn StreamingSttProvider> {
+        match self {
+            #[cfg(feature = "stt-sherpa")]
+            Self::Sherpa(provider) => Some(provider),
+            #[cfg(feature = "whisper-local")]
+            Self::Whisper(_) => None,
+            Self::Stub(_) => None,
+        }
+    }
+}
+
 #[async_trait]
 impl SttProvider for CliStt {
     async fn transcribe(&self, chunk: AudioChunk) -> Result<TranscriptChunk, SttError> {
@@ -862,7 +882,7 @@ impl SttProvider for CliStt {
         match self {
             Self::Stub(s) => s.name(),
             #[cfg(feature = "stt-sherpa")]
-            Self::Sherpa(provider) => provider.name(),
+            Self::Sherpa(provider) => SttProvider::name(provider),
             #[cfg(feature = "whisper-local")]
             Self::Whisper(provider) => provider.name(),
         }
@@ -943,6 +963,7 @@ impl SttProvider for StubLocalStt {
             start_ms: u64::try_from(chunk.start.as_millis()).unwrap_or(0),
             duration_ms: u64::try_from(chunk.duration.as_millis()).unwrap_or(0),
             language: None,
+            tokens: Vec::new(),
         })
     }
 
@@ -1203,6 +1224,7 @@ mod tests {
             start_ms: 0,
             duration_ms: 1_000,
             language: None,
+            tokens: Vec::new(),
         }];
         let sys = vec![TranscriptChunk {
             text: "hello".into(),
@@ -1210,6 +1232,7 @@ mod tests {
             start_ms: 0,
             duration_ms: 1_000,
             language: None,
+            tokens: Vec::new(),
         }];
 
         let result = BinaryChannelDiarizer
@@ -1597,6 +1620,14 @@ mod tests {
     fn test_build_stt_provider_returns_stub_when_no_model_path_supplied() {
         let stt = build_stt_provider(SttModel::Stub).expect("stub branch must succeed");
         assert_eq!(stt.name(), "stub-local-stt");
+    }
+
+    #[test]
+    fn test_stub_provider_exposes_no_streaming_capability() {
+        // The batch path must stay selected for providers that cannot
+        // decode incrementally; only Sherpa answers this call.
+        let stt = build_stt_provider(SttModel::Stub).expect("stub branch must succeed");
+        assert!(stt.streaming().is_none());
     }
 
     #[cfg(not(feature = "whisper-local"))]

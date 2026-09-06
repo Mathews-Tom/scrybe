@@ -16,6 +16,7 @@ pub mod chunker;
 pub mod encoder;
 pub mod journal;
 pub mod merge;
+pub mod normalize;
 pub mod resample;
 pub mod vad;
 
@@ -23,5 +24,6 @@ pub use chunker::{ChunkSink, Chunker, ChunkerConfig, EmittedChunk};
 pub use encoder::{Encoder, EncoderConfig, NullEncoder};
 pub use journal::{JournalAnchor, JournalManifest, JournalSummary, JournalWriter};
 pub use merge::{merge_journal, MergeReport};
-pub use resample::{resample_linear, ResampleError};
+pub use normalize::{downmix_to_mono, validate_frame_format, SourceNormalizer, STT_SAMPLE_RATE};
+pub use resample::{resample_linear, ResampleError, StreamingResampler};
 pub use vad::{EnergyVad, Vad, VadDecision};

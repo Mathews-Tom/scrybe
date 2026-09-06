@@ -319,6 +319,7 @@ mod tests {
             start_ms,
             duration_ms,
             language: None,
+            tokens: Vec::new(),
         }
     }
 

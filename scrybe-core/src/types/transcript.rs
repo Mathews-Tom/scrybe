@@ -28,6 +28,23 @@ pub struct AudioChunk {
     pub duration: Duration,
 }
 
+/// One recognized token and the moment it was spoken, measured from
+/// session start.
+///
+/// Streaming providers report token timestamps relative to the current
+/// recognition stream; the provider converts them to session-absolute
+/// offsets before constructing a [`TranscriptChunk`] so downstream
+/// consumers (M6's echo-dedup skew window, `scrybe show`) never need to
+/// know where a stream segment began.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TokenTiming {
+    /// Token text exactly as the model emitted it, including any
+    /// sub-word marker.
+    pub token: String,
+    /// Offset from session start, in milliseconds.
+    pub timestamp_ms: u64,
+}
+
 /// Transcript text returned by an `SttProvider`. Speaker is unset until
 /// the `Diarizer` populates it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -37,6 +54,12 @@ pub struct TranscriptChunk {
     pub start_ms: u64,
     pub duration_ms: u64,
     pub language: Option<String>,
+    /// Per-token timings when the provider produces them. Serde-defaulted
+    /// and skipped when empty: every session folder and WAL line written
+    /// before this field existed still deserializes, and batch providers
+    /// that emit no timings write no extra bytes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tokens: Vec<TokenTiming>,
 }
 
 /// Coarse speaker label as seen on the transcript. Multi-party meetings
@@ -119,12 +142,53 @@ mod tests {
             start_ms: 3_000,
             duration_ms: 1_800,
             language: Some("en".into()),
+            tokens: Vec::new(),
         };
 
         let encoded = serde_json::to_string(&original).unwrap();
         let decoded: TranscriptChunk = serde_json::from_str(&encoded).unwrap();
 
         assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn test_transcript_chunk_round_trips_token_timings() {
+        let original = TranscriptChunk {
+            text: "hello there".into(),
+            source: FrameSource::System,
+            start_ms: 12_000,
+            duration_ms: 900,
+            language: Some("en".into()),
+            tokens: vec![
+                TokenTiming {
+                    token: "▁hello".into(),
+                    timestamp_ms: 12_080,
+                },
+                TokenTiming {
+                    token: "▁there".into(),
+                    timestamp_ms: 12_520,
+                },
+            ],
+        };
+
+        let encoded = serde_json::to_string(&original).unwrap();
+        let decoded: TranscriptChunk = serde_json::from_str(&encoded).unwrap();
+
+        assert_eq!(decoded, original);
+        assert!(encoded.contains("\"timestamp_ms\":12080"));
+    }
+
+    #[test]
+    fn test_transcript_chunk_without_tokens_field_deserializes_and_stays_absent() {
+        // A session written before token timings existed must still load,
+        // and a provider that emits none must not add bytes to the WAL.
+        let decoded: TranscriptChunk = serde_json::from_str(
+            r#"{"text":"legacy","source":"mic","start_ms":0,"duration_ms":1000,"language":null}"#,
+        )
+        .unwrap();
+
+        assert_eq!(decoded.tokens, Vec::new());
+        assert!(!serde_json::to_string(&decoded).unwrap().contains("tokens"));
     }
 
     #[test]
@@ -135,6 +199,7 @@ mod tests {
             start_ms: 5_000,
             duration_ms: 1_200,
             language: None,
+            tokens: Vec::new(),
         };
 
         let attributed = AttributedChunk {

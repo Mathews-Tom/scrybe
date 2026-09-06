@@ -16,4 +16,4 @@ pub use audio::{AudioFrame, Capabilities, FrameSource, PermissionModel};
 pub use consent::{ConsentAttestation, ConsentMode};
 pub use language::Language;
 pub use session::SessionId;
-pub use transcript::{AttributedChunk, AudioChunk, SpeakerLabel, TranscriptChunk};
+pub use transcript::{AttributedChunk, AudioChunk, SpeakerLabel, TokenTiming, TranscriptChunk};
