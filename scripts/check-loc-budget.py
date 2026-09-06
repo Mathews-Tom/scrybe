@@ -99,8 +99,9 @@ LOC_CEILINGS: dict[str, int] = {
     # capture implementation remains isolated in its adapter crate.
     # Raised to 11000 for M4's terminal capture-error finalization: sessions
     # now flush the journal, merge audio, and write artifacts before exposing
-    # the original capture failure to callers.
-    "scrybe-core": 11000,
+    # the original capture failure to callers. Raised to 11050 for the M5 STT
+    # boundary validation and its consumer-observable regression tests.
+    "scrybe-core": 11050,
     # 2000 was the v0.5 ceiling. Raised to 2300 at v0.6 to absorb the
     # `scrybe bench` subcommand. Raised to 2500 at v1.0.1 to absorb
     # the `--source mic` and `--whisper-model` wiring on `scrybe record`

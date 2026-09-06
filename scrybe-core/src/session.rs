@@ -671,26 +671,37 @@ const fn target_kind(target: StoreTarget) -> &'static str {
 }
 
 fn build_audio_chunk(chunk: &EmittedChunk) -> Result<AudioChunk, CoreError> {
-    if chunk.frames.is_empty() {
+    let Some(first_frame) = chunk.frames.first() else {
         return Err(CoreError::Pipeline(PipelineError::EmptyChunk));
+    };
+    let source_rate = first_frame.sample_rate;
+    let channels = first_frame.channels;
+    for (index, frame) in chunk.frames.iter().enumerate() {
+        if source_rate == 0
+            || channels == 0
+            || frame.sample_rate != source_rate
+            || frame.channels != channels
+        {
+            return Err(CoreError::Pipeline(PipelineError::InvalidFrame(format!(
+                "STT chunk frame {index} has {} channels at {} Hz; expected nonzero uniform {channels} channels at {source_rate} Hz",
+                frame.channels, frame.sample_rate
+            ))));
+        }
     }
-    let source_rate = chunk.frames[0].sample_rate;
-    let channels = chunk.frames[0].channels.max(1);
     let mut interleaved: Vec<f32> =
-        Vec::with_capacity(chunk.frames.iter().map(|f| f.samples.len()).sum());
+        Vec::with_capacity(chunk.frames.iter().map(|frame| frame.samples.len()).sum());
     for frame in &chunk.frames {
         interleaved.extend_from_slice(&frame.samples);
     }
-    let mono: Vec<f32> = if channels == 1 {
+    let mono = if channels == 1 {
         interleaved
     } else {
         downmix_to_mono(&interleaved, channels)
     };
     let resampled = resample_linear(&mono, source_rate, STT_SAMPLE_RATE)
-        .map_err(|e| CoreError::Pipeline(e.into()))?;
-    let samples: Arc<[f32]> = Arc::from(resampled);
+        .map_err(|error| CoreError::Pipeline(error.into()))?;
     Ok(AudioChunk {
-        samples,
+        samples: Arc::from(resampled),
         source: chunk.source,
         start: chunk.start,
         duration: chunk.duration,
@@ -913,6 +924,43 @@ mod tests {
             timestamp_ns,
             source: FrameSource::Mic,
         }
+    }
+
+    fn emitted_chunk(frames: Vec<AudioFrame>) -> EmittedChunk {
+        EmittedChunk {
+            frames,
+            start: Duration::ZERO,
+            duration: Duration::ZERO,
+            source: FrameSource::Mic,
+            ended_on: ChunkBoundary::EndOfStream,
+        }
+    }
+
+    #[test]
+    fn test_build_audio_chunk_rejects_inconsistent_frame_formats() {
+        let error = build_audio_chunk(&emitted_chunk(vec![
+            AudioFrame::from_slice(&[0.0_f32; 48], 1, 48_000, 0, FrameSource::Mic),
+            AudioFrame::from_slice(&[0.0_f32; 48], 2, 48_000, 1_000_000, FrameSource::Mic),
+        ]))
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("frame 1 has 2 channels"));
+    }
+
+    #[test]
+    fn test_build_audio_chunk_normalizes_stereo_48khz_to_mono_16khz() {
+        let samples: Vec<f32> = (0..480).flat_map(|_| [0.25_f32, 0.75_f32]).collect();
+        let audio = build_audio_chunk(&emitted_chunk(vec![AudioFrame::from_slice(
+            &samples,
+            2,
+            48_000,
+            0,
+            FrameSource::Mic,
+        )]))
+        .unwrap();
+
+        assert_eq!(audio.samples.len(), 160);
     }
 
     const fn small_chunker_config() -> ChunkerConfig {
