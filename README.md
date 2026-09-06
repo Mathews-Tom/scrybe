@@ -7,7 +7,7 @@
 
 scrybe is an open-source meeting transcription tool built around one constraint: the meeting artifacts belong on the user's machine as ordinary files. It captures audio locally, transcribes it with either local Whisper or a user-configured OpenAI-compatible provider, generates Markdown notes, and writes everything under `~/scrybe/`.
 
-Current release: `v1.2.0`.
+Current release: `v1.2.1`.
 
 ## What Works Today
 
