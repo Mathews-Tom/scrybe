@@ -4,6 +4,38 @@ All notable changes to scrybe are documented here. The format follows [Keep a Ch
 
 ## [Unreleased]
 
+## [1.2.1] — 2026-09-06
+
+This release completes the macOS capture-liveness train. A dead or wrong input device now produces an observable failure path instead of a silently empty recording, and shutdown coordinates capture teardown with durable journal finalization.
+
+### Added
+
+- `scrybe devices` lists macOS input devices by stable Core Audio UID and marks the current default device.
+- `scrybe rec --input-device <uid>` pins microphone capture to the specified native Core Audio device; duplicate display names remain unambiguous.
+- Capture adapters register process-wide teardown handles so normal completion and signal handling stop each live capture path exactly once.
+- Capture liveness reports stalled streams, performs a bounded same-device recovery attempt, and escalates a microphone failure to the current default input.
+
+### Changed
+
+- The first `SIGINT` or `SIGTERM` stops capture before draining transcription and finalizing session artifacts. A second signal skips the drain so an interrupted session remains recoverable with `scrybe repair`.
+- The release workspace moves from `1.2.0` to `1.2.1`; internal path-dependency pins move with it.
+
+### Security
+
+- Device selection consumes the opaque Core Audio UID directly and never falls back to ambiguous display-name matching.
+- Default-feature builds remain free of network-provider dependencies.
+
+### Known limitations
+
+- Device enumeration and UID-pinned capture are macOS-only. Linux and Windows device-selection surfaces remain unavailable.
+
+### Workspace
+
+- 8 crates. Publish posture unchanged: `scrybe` is the crates.io placeholder; distribution uses cargo-dist release artifacts.
+
+[1.2.1]: https://github.com/Mathews-Tom/scrybe/releases/tag/v1.2.1
+
+
 ## [1.2.0] — 2026-09-06
 
 This release completes the ScreenCaptureKit macOS system-audio capture train: terminal-invoked capture now defaults to ScreenCaptureKit, while the legacy Core Audio Tap backend remains an explicit recovery path.
