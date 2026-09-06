@@ -4,6 +4,39 @@ All notable changes to scrybe are documented here. The format follows [Keep a Ch
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-09-06
+
+This release completes the ScreenCaptureKit macOS system-audio capture train: terminal-invoked capture now defaults to ScreenCaptureKit, while the legacy Core Audio Tap backend remains an explicit recovery path.
+
+### Added
+
+- `scrybe-capture-mac` gains the optional `system-capture-sck` feature and `SckCapture`, an `AudioCapture` adapter for ScreenCaptureKit system audio on macOS 13+.
+- `[record].system_backend = "sck" | "tap"` and `scrybe rec --system-backend <sck|tap>` select the macOS system-audio backend; the command-line flag overrides configuration.
+- `scrybe doctor` reports backend availability and the distinct permission states for ScreenCaptureKit and Core Audio Tap.
+- Core Audio Tap startup emits a bounded diagnostic and falls back once to ScreenCaptureKit when startup fails or its first 1.5 seconds contain only silence.
+
+### Changed
+
+- The macOS `mic+system` default is ScreenCaptureKit. Bundle relaunch remains limited to the legacy `tap` path so the invoking terminal owns the Screen & System Audio Recording permission flow.
+- The release workspace moves from `1.1.0` to `1.2.0`; internal path-dependency pins move with it.
+
+### Security
+
+- ScreenCaptureKit requires macOS Screen & System Audio Recording permission. The narrower Audio Capture permission remains sufficient only for the explicit legacy Tap backend.
+- Default-feature builds remain free of network-provider dependencies.
+
+### Known limitations
+
+- ScreenCaptureKit needs the broader Screen & System Audio Recording grant. Users who decline that scope can select the legacy Tap backend on macOS 14.4+, subject to its Audio Capture permission and bundle requirement.
+- Linux and Windows system-audio capture remain unimplemented.
+
+### Workspace
+
+- 8 crates. Publish posture unchanged: `scrybe` is the crates.io placeholder; distribution uses cargo-dist release artifacts.
+
+[1.2.0]: https://github.com/Mathews-Tom/scrybe/releases/tag/v1.2.0
+
+
 ## [1.1.0] — 2026-09-04
 
 Closes M2 (`.docs/DEVELOPMENT_PLAN.md` §6) — the structural gate of the post-v1.0 plan. Fixes defect D1 (audio durability: a crash or `SIGKILL` mid-session used to lose the entire recording; it now loses at most the still-open journal segment and is always recoverable) and finishes defect D2 (`AudioFrame::timestamp_ns` is documented and structurally unused across sources — the code path that used to compare timestamps across sources no longer exists). Captured audio now reaches disk independently of the encode path: each source writes raw PCM to its own rotating `journal/<source>-<seq>.f32` segments on a dedicated thread during capture, and a single offline merge at session end (or via the new `scrybe repair` after a crash) resamples, epoch-aligns, interleaves, and encodes once — replacing the `StereoInterleaver` ring-buffer push/drain/encode-as-you-go path this milestone deletes.
