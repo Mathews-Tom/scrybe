@@ -33,7 +33,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-26, windows-latest]
+        include:
+          - os: ubuntu-latest
+            sherpa_archive: sherpa-onnx-v1.13.7-linux-x64-static-lib.tar.bz2
+            sherpa_dir: sherpa-onnx-v1.13.7-linux-x64-static-lib
+            sherpa_sha256: d1be7a69ac2b30120058d8302e624239a3064085383cfa47994a14fdc44c32d6
+          - os: macos-26
+            sherpa_archive: sherpa-onnx-v1.13.7-osx-arm64-static-lib.tar.bz2
+            sherpa_dir: sherpa-onnx-v1.13.7-osx-arm64-static-lib
+            sherpa_sha256: 126daa2e8c09a4c5d54dc985722c43bd22f598adc56445905b377454b1b27e38
+          - os: windows-latest
+            sherpa_archive: sherpa-onnx-v1.13.7-win-x64-static-MT-Release-lib.tar.bz2
+            sherpa_dir: sherpa-onnx-v1.13.7-win-x64-static-MT-Release-lib
+            sherpa_sha256: 04734146fb3a21a297604c586ea826346dbb167c19b9ccc79c1f85d39f490395
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -41,10 +53,83 @@ jobs:
           toolchain: 1.95.0
           components: clippy
       - uses: Swatinem/rust-cache@v2
+      # The application and ordinary builds never download a native runtime:
+      # .cargo/config.toml fails closed unless this job explicitly sets the
+      # directory. CI fetches only the pinned upstream release asset and checks
+      # GitHub's release SHA-256 before extraction.
+      - name: provision Sherpa runtime (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/${{ matrix.sherpa_archive }}"
+          for attempt in 1 2 3; do
+            if curl --fail --location --output "$archive" "https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.7/${{ matrix.sherpa_archive }}"; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+            sleep "$attempt"
+          done
+          echo "${{ matrix.sherpa_sha256 }}  $archive" | sha256sum --check
+          tar -xjf "$archive" -C "$RUNNER_TEMP"
+          runtime_dir="$RUNNER_TEMP/${{ matrix.sherpa_dir }}/lib"
+          test -d "$runtime_dir"
+          echo "SHERPA_ONNX_LIB_DIR=$runtime_dir" >> "$GITHUB_ENV"
+      - name: provision Sherpa runtime (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/${{ matrix.sherpa_archive }}"
+          for attempt in 1 2 3; do
+            if curl --fail --location --output "$archive" "https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.7/${{ matrix.sherpa_archive }}"; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+            sleep "$attempt"
+          done
+          echo "${{ matrix.sherpa_sha256 }}  $archive" | shasum -a 256 --check
+          tar -xjf "$archive" -C "$RUNNER_TEMP"
+          runtime_dir="$RUNNER_TEMP/${{ matrix.sherpa_dir }}/lib"
+          test -d "$runtime_dir"
+          echo "SHERPA_ONNX_LIB_DIR=$runtime_dir" >> "$GITHUB_ENV"
+      - name: provision Sherpa runtime (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP '${{ matrix.sherpa_archive }}'
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            try {
+              Invoke-WebRequest -Uri "https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.7/${{ matrix.sherpa_archive }}" -OutFile $archive -ErrorAction Stop
+              break
+            } catch {
+              if ($attempt -eq 3) {
+                throw
+              }
+              Start-Sleep -Seconds $attempt
+            }
+          }
+          if ((Get-FileHash -Algorithm SHA256 $archive).Hash -ne '${{ matrix.sherpa_sha256 }}'.ToUpperInvariant()) {
+            throw "Sherpa runtime checksum mismatch"
+          }
+          tar -xjf $archive -C $env:RUNNER_TEMP
+          $runtimeDir = Join-Path $env:RUNNER_TEMP '${{ matrix.sherpa_dir }}\lib'
+          if (-not (Test-Path -PathType Container $runtimeDir)) {
+            throw "Sherpa runtime library directory missing: $runtimeDir"
+          }
+          "SHERPA_ONNX_LIB_DIR=$runtimeDir" >> $env:GITHUB_ENV
       - name: cargo check
         run: cargo check --workspace --all-targets
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: cargo check (Sherpa streaming provider)
+        run: cargo check --workspace --all-targets --features stt-sherpa
+      - name: cargo clippy (Sherpa streaming provider)
+        run: cargo clippy --workspace --all-targets --features stt-sherpa -- -D warnings
       - name: cargo check (mac core-audio-tap feature)
         if: matrix.os == 'macos-26'
         run: cargo check -p scrybe-capture-mac --features core-audio-tap --all-targets
@@ -53,6 +138,8 @@ jobs:
         run: cargo clippy -p scrybe-capture-mac --features core-audio-tap --all-targets -- -D warnings
       - name: cargo test (lib, bin, integration, examples)
         run: cargo test --workspace --all-targets
+      - name: cargo test (Sherpa streaming provider)
+        run: cargo test --workspace --all-targets --features stt-sherpa
       - name: cargo test (mac core-audio-tap feature, ignored hardware tests skipped)
         if: matrix.os == 'macos-26'
         run: cargo test -p scrybe-capture-mac --features core-audio-tap --all-targets
