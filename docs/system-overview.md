@@ -104,7 +104,7 @@ Everything that could plausibly need to vary between users or future versions fi
 |---|---|---|
 | `AudioCapture` | Platform-specific audio source | `mac` (Core Audio Taps + ScreenCaptureKit fallback), `win` (WASAPI loopback), `linux` (PipeWire + Pulse fallback), `android` (MediaProjection) |
 | `ContextProvider` | Pre-call context: title, attendees, language hint, prior notes | `cli`, `ics-file` |
-| `SttProvider` / `LlmProvider` | Transcription and summarization backends | `whisper-local`, `openai-compat`; optional `parakeet-local` via `sherpa-rs` |
+| `SttProvider` / `LlmProvider` | Transcription and summarization backends | `whisper-local`, `openai-compat`; optional `sherpa-streaming` via `sherpa-onnx` |
 | `Diarizer` | Speaker attribution strategy | `binary-channel` (default, v0.1), `pyannote-onnx` (v0.5, multi-party) |
 | `Hook` | Post-event subscribers: async, errors surfaced via `LifecycleEvent::HookFailed` | webhook, git, tantivy indexer (each behind cargo features) |
 
@@ -147,7 +147,7 @@ This is the window. The successful OSS project is climbing the SaaS ladder; the 
 | Risk | Probability | Severity | Mitigation |
 |---|---|---|---|
 | macOS Screen Recording permission UX kills first-run conversion | Low (with Core Audio Taps) / High (ScreenCaptureKit fallback) | Medium | Default to Core Audio Taps on macOS 14.4+ (no screen-recording permission, no orange dot). ScreenCaptureKit is the fallback for 13.0–14.3 only |
-| Whisper accuracy below user expectations for non-English | Medium | Medium | Default to `whisper-large-v3-turbo` not `tiny`; opt-in `large-v3` for max accuracy; ship Parakeet (via `sherpa-rs`) in v0.4; document cloud STT for hard languages |
+| Whisper accuracy below user expectations for non-English | Medium | Medium | Keep Whisper as the multilingual default; offer opt-in streaming Zipformer through `sherpa-onnx` for the pinned English model; document cloud STT for hard languages |
 | Local LLM summary quality below GPT-4 expectations | High | Medium | Default to recommending OpenAI-compat with the user's BYO key on ≤ 16 GB systems; local-only path explicitly "ok" not "great" |
 | Apple deprecates Core Audio Taps / ScreenCaptureKit | Low | High | Same risk all competitors carry; vendor `screencapturekit-rs` and ship a `coreaudio-tap-rs` binding (none exists today; writing one is a useful side artifact) |
 | Google tightens MediaProjection on Android 16+ | Medium | Medium | Already a moving target; track AOSP; degrade gracefully to mic-only |

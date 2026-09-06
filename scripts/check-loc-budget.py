@@ -101,7 +101,11 @@ LOC_CEILINGS: dict[str, int] = {
     # now flush the journal, merge audio, and write artifacts before exposing
     # the original capture failure to callers. Raised to 11050 for the M5 STT
     # boundary validation and its consumer-observable regression tests.
-    "scrybe-core": 11050,
+    # Raised to 11200 for M5's opt-in `SherpaStreamingProvider`: the pinned
+    # artifact validator, OnlineRecognizer construction, and isolated
+    # blocking decode retain Whisper selection while keeping the native runtime
+    # out of the default build.
+    "scrybe-core": 11200,
     # 2000 was the v0.5 ceiling. Raised to 2300 at v0.6 to absorb the
     # `scrybe bench` subcommand. Raised to 2500 at v1.0.1 to absorb
     # the `--source mic` and `--whisper-model` wiring on `scrybe record`
@@ -162,7 +166,10 @@ LOC_CEILINGS: dict[str, int] = {
     # feature-gated fallback and regression coverage for explicit selectors.
     # Raised to 4300 for M4's capture registry, signal teardown, and bounded
     # liveness watchdog. The CLI owns orchestration; adapters remain separate.
-    "scrybe-cli": 4300,
+    # Raised to 4450 for M5's explicit `--sherpa-model` selector and matching
+    # ergonomic forwarding. Both paths reject a missing feature instead of
+    # silently substituting the stub provider.
+    "scrybe-cli": 4450,
     "scrybe-capture-mac": 2500,
     "scrybe-capture-linux": 2500,
     "scrybe-capture-win": 2500,

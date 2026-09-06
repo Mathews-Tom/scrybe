@@ -14,8 +14,8 @@ use crate::types::{AudioChunk, TranscriptChunk};
 /// Tier-2 trait.
 ///
 /// Implementations: `WhisperLocalProvider` (whisper.cpp via `whisper-rs`),
-/// `OpenAiCompatSttProvider` (Groq, `OpenAI`, vLLM, `together.ai`), and an
-/// optional `ParakeetLocalProvider` behind `--features parakeet-local`.
+/// `OpenAiCompatSttProvider` (Groq, `OpenAI`, vLLM, `together.ai`), and
+/// `SherpaStreamingProvider` behind `--features stt-sherpa`.
 #[async_trait]
 pub trait SttProvider: Send + Sync {
     /// Transcribe a single chunk. Implementations honor their own

@@ -42,5 +42,5 @@ and why those approaches do not solve the problem.
 ## Anything else
 
 Prior art from competitors (Meetily, anarlog, Granola), upstream
-issues from `whisper-rs` / `sherpa-rs`, or relevant OS-API
+issues from `whisper-rs` / `sherpa-onnx`, or relevant OS-API
 documentation that informs the design.

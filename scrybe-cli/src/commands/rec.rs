@@ -73,6 +73,8 @@ use scrybe_core::pipeline::chunker::ChunkerConfig;
 use scrybe_core::pipeline::vad::EnergyVad;
 #[cfg(feature = "llm-openai-compat")]
 use scrybe_core::providers::openai_compat_llm::OpenAiCompatLlmProvider;
+#[cfg(feature = "stt-sherpa")]
+use scrybe_core::providers::sherpa_streaming::{SherpaStreamingConfig, SherpaStreamingProvider};
 #[cfg(feature = "whisper-local")]
 use scrybe_core::providers::whisper_local::{WhisperLocalConfig, WhisperLocalProvider};
 use scrybe_core::providers::{LlmProvider, SttProvider};
@@ -142,15 +144,18 @@ pub struct Args {
     #[arg(long, value_enum)]
     pub system_backend: Option<SystemBackendArg>,
 
-    /// Path to a whisper.cpp model (`.bin` or `.gguf`). When set AND
-    /// the binary is built with `--features whisper-local`, the STT
-    /// provider becomes `WhisperLocalProvider` against these weights.
-    /// Without the feature, an explicit path errors at start time
-    /// rather than silently falling back to the stub. `*.partial`
-    /// paths are rejected per the existing
-    /// `WhisperLocalProvider::new` contract.
-    #[arg(long)]
+    /// Path to a whisper.cpp model (`.bin` or `.gguf`). When set and
+    /// `whisper-local` is compiled, transcription uses `WhisperLocalProvider`.
+    /// An explicit path without that feature errors at start time rather than
+    /// silently falling back to the stub.
+    #[arg(long, conflicts_with = "sherpa_model")]
     pub whisper_model: Option<PathBuf>,
+
+    /// Directory containing the pinned streaming Zipformer Sherpa-ONNX model.
+    /// Requires `stt-sherpa`; without it, an explicit path errors at start
+    /// time rather than silently falling back to the stub.
+    #[arg(long, conflicts_with = "whisper_model")]
+    pub sherpa_model: Option<PathBuf>,
 
     /// Language-model backend for the `notes.md` summary step. `stub`
     /// (default) returns a fixed templated body so CI smoke tests stay
@@ -382,7 +387,11 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
     let prompter = TtyPrompter::new(auto_accept);
 
     let source = resolve_capture_source(args.source, &cfg.record)?;
-    let whisper_model = resolve_whisper_model(args.whisper_model.as_ref(), &cfg.record);
+    let stt_model = resolve_stt_model(
+        args.whisper_model.as_ref(),
+        args.sherpa_model.as_ref(),
+        &cfg.record,
+    );
     let llm_backend = resolve_llm_backend(args.llm, &cfg.record)?;
     let consent_mode = args.consent.map_or(cfg.consent.default_mode, Into::into);
 
@@ -524,10 +533,10 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
     };
     let stream = capture_liveness_watchdog(stream, capture_registry.clone());
 
-    // Start hardware capture before loading Whisper. The capture adapters buffer
-    // their frames while the model initializes, so the Tap liveness probe runs
-    // during startup instead of delaying the recording surface behind model I/O.
-    let stt = match build_stt_provider(whisper_model.as_ref()) {
+    // Start hardware capture before loading the selected STT model. The capture
+    // adapters buffer their frames while the model initializes, so the Tap
+    // liveness probe runs during startup instead of delaying recording.
+    let stt = match build_stt_provider(stt_model) {
         Ok(stt) => stt,
         Err(error) => {
             if let Err(stop_error) = capture_registry.stop_all() {
@@ -703,10 +712,26 @@ fn resolve_llm_backend(
     }
 }
 
-fn resolve_whisper_model(explicit: Option<&PathBuf>, cfg: &RecordConfig) -> Option<PathBuf> {
-    explicit
-        .cloned()
-        .or_else(|| cfg.whisper_model.as_ref().map(|p| expand_root(p.as_path())))
+enum SttModel {
+    Stub,
+    Whisper(PathBuf),
+    Sherpa(PathBuf),
+}
+
+fn resolve_stt_model(
+    whisper_model: Option<&PathBuf>,
+    sherpa_model: Option<&PathBuf>,
+    cfg: &RecordConfig,
+) -> SttModel {
+    if let Some(path) = sherpa_model {
+        return SttModel::Sherpa(path.clone());
+    }
+    if let Some(path) = whisper_model {
+        return SttModel::Whisper(path.clone());
+    }
+    cfg.whisper_model.as_ref().map_or(SttModel::Stub, |path| {
+        SttModel::Whisper(expand_root(path.as_path()))
+    })
 }
 
 /// Future that completes the first time `stop_rx` flips to `true`,
@@ -815,6 +840,8 @@ fn synthetic_frame_delay() -> Duration {
 /// relaxation in `scrybe-core` for this v1.0.x patch.
 enum CliStt {
     Stub(StubLocalStt),
+    #[cfg(feature = "stt-sherpa")]
+    Sherpa(SherpaStreamingProvider),
     #[cfg(feature = "whisper-local")]
     Whisper(WhisperLocalProvider),
 }
@@ -824,38 +851,36 @@ impl SttProvider for CliStt {
     async fn transcribe(&self, chunk: AudioChunk) -> Result<TranscriptChunk, SttError> {
         match self {
             Self::Stub(s) => s.transcribe(chunk).await,
+            #[cfg(feature = "stt-sherpa")]
+            Self::Sherpa(provider) => provider.transcribe(chunk).await,
             #[cfg(feature = "whisper-local")]
-            Self::Whisper(s) => s.transcribe(chunk).await,
+            Self::Whisper(provider) => provider.transcribe(chunk).await,
         }
     }
 
     fn name(&self) -> &str {
         match self {
             Self::Stub(s) => s.name(),
+            #[cfg(feature = "stt-sherpa")]
+            Self::Sherpa(provider) => provider.name(),
             #[cfg(feature = "whisper-local")]
-            Self::Whisper(s) => s.name(),
+            Self::Whisper(provider) => provider.name(),
         }
     }
 }
 
-/// Construct the STT provider from the `--whisper-model` flag.
+/// Construct the STT provider selected by the model flags.
 ///
-/// - `Some(path)` + `--features whisper-local` → real
-///   `WhisperLocalProvider` against the supplied weights.
-/// - `Some(path)` + no `whisper-local` feature → hard error so the
-///   user does not silently get the stub when they asked for real
-///   transcription.
-/// - `None` → `StubLocalStt` so the synthetic-source CI smoke path
-///   stays hermetic.
+/// An explicit model always requires its matching feature. The stub remains
+/// the default only when no model has been requested or configured.
 #[allow(unused_variables)]
-fn build_stt_provider(whisper_model: Option<&PathBuf>) -> Result<CliStt> {
-    match whisper_model {
-        None => Ok(CliStt::Stub(StubLocalStt::new())),
-        Some(path) => {
+fn build_stt_provider(model: SttModel) -> Result<CliStt> {
+    match model {
+        SttModel::Stub => Ok(CliStt::Stub(StubLocalStt::new())),
+        SttModel::Whisper(path) => {
             #[cfg(feature = "whisper-local")]
             {
-                let cfg = WhisperLocalConfig::new(path.clone());
-                let provider = WhisperLocalProvider::new(cfg)
+                let provider = WhisperLocalProvider::new(WhisperLocalConfig::new(path.clone()))
                     .with_context(|| format!("loading whisper.cpp model at {}", path.display()))?;
                 Ok(CliStt::Whisper(provider))
             }
@@ -864,6 +889,25 @@ fn build_stt_provider(whisper_model: Option<&PathBuf>) -> Result<CliStt> {
                 anyhow::bail!(
                     "--whisper-model {} provided but binary built without --features whisper-local; \
                      rebuild with `cargo install --features whisper-local,...` or remove the flag",
+                    path.display()
+                );
+            }
+        }
+        SttModel::Sherpa(path) => {
+            #[cfg(feature = "stt-sherpa")]
+            {
+                let provider =
+                    SherpaStreamingProvider::new(SherpaStreamingConfig::new(path.clone()))
+                        .with_context(|| {
+                            format!("loading streaming Sherpa-ONNX model at {}", path.display())
+                        })?;
+                Ok(CliStt::Sherpa(provider))
+            }
+            #[cfg(not(feature = "stt-sherpa"))]
+            {
+                anyhow::bail!(
+                    "--sherpa-model {} provided but binary built without --features stt-sherpa; \
+                     rebuild with `cargo install --features stt-sherpa,...` or remove the flag",
                     path.display()
                 );
             }
@@ -1213,6 +1257,7 @@ mod tests {
             llm: Some(LlmBackendArg::Stub),
             input_device: None,
             whisper_model: None,
+            sherpa_model: None,
         })
         .await
         .unwrap();
@@ -1285,6 +1330,7 @@ mod tests {
             llm: Some(LlmBackendArg::Stub),
             input_device: None,
             whisper_model: None,
+            sherpa_model: None,
         })
         .await;
 
@@ -1349,6 +1395,7 @@ mod tests {
             llm: Some(LlmBackendArg::Stub),
             input_device: None,
             whisper_model: None,
+            sherpa_model: None,
         })
         .await
         .unwrap();
@@ -1530,6 +1577,7 @@ mod tests {
             system_backend: None,
             llm: Some(LlmBackendArg::Stub),
             whisper_model: None,
+            sherpa_model: None,
             input_device: None,
         })
         .await;
@@ -1547,44 +1595,65 @@ mod tests {
 
     #[test]
     fn test_build_stt_provider_returns_stub_when_no_model_path_supplied() {
-        let stt = build_stt_provider(None).expect("stub branch must succeed");
+        let stt = build_stt_provider(SttModel::Stub).expect("stub branch must succeed");
         assert_eq!(stt.name(), "stub-local-stt");
     }
 
     #[cfg(not(feature = "whisper-local"))]
     #[test]
-    fn test_build_stt_provider_errors_when_model_supplied_without_feature() {
-        let path = std::path::PathBuf::from("/tmp/no-such-model.bin");
-        let result = build_stt_provider(Some(&path));
+    fn test_build_stt_provider_errors_when_whisper_model_supplied_without_feature() {
+        let result = build_stt_provider(SttModel::Whisper(PathBuf::from("/tmp/no-such-model.bin")));
         let Err(err) = result else {
             panic!("flag without feature must error rather than silently stub");
         };
-        let msg = format!("{err:?}");
+        let message = format!("{err:?}");
         assert!(
-            msg.contains("--whisper-model") && msg.contains("--features whisper-local"),
-            "error must name both the flag and the missing feature; got: {msg}"
+            message.contains("--whisper-model") && message.contains("--features whisper-local"),
+            "error must name both the flag and the missing feature; got: {message}"
+        );
+    }
+
+    #[cfg(not(feature = "stt-sherpa"))]
+    #[test]
+    fn test_build_stt_provider_errors_when_sherpa_model_supplied_without_feature() {
+        let result = build_stt_provider(SttModel::Sherpa(PathBuf::from("/tmp/no-such-model")));
+        let Err(err) = result else {
+            panic!("flag without feature must error rather than silently stub");
+        };
+        let message = format!("{err:?}");
+        assert!(
+            message.contains("--sherpa-model") && message.contains("--features stt-sherpa"),
+            "error must name both the flag and the missing feature; got: {message}"
+        );
+    }
+
+    #[test]
+    fn test_explicit_sherpa_model_overrides_configured_whisper_model() {
+        let config = RecordConfig {
+            whisper_model: Some(PathBuf::from("/models/whisper.bin")),
+            ..RecordConfig::default()
+        };
+        let model = resolve_stt_model(None, Some(&PathBuf::from("/models/sherpa")), &config);
+
+        assert!(
+            matches!(model, SttModel::Sherpa(path) if path.as_path() == std::path::Path::new("/models/sherpa"))
         );
     }
 
     #[cfg(feature = "whisper-local")]
     #[test]
-    fn test_build_stt_provider_rejects_partial_model_path() {
-        // `WhisperLocalProvider::new` rejects `*.partial` paths up-front
-        // (see scrybe-core::providers::whisper_local). The CLI surfaces
-        // this as a `loading whisper.cpp model at <path>` context-chained
-        // error so the user sees both the offending path and the
-        // underlying contract violation.
+    fn test_build_stt_provider_rejects_partial_whisper_model_path() {
         let dir = tempfile::tempdir().unwrap();
         let partial = dir.path().join("ggml-tiny.bin.partial");
         std::fs::write(&partial, b"unfinished download").unwrap();
-        let result = build_stt_provider(Some(&partial));
+        let result = build_stt_provider(SttModel::Whisper(partial));
         let Err(err) = result else {
             panic!("partial paths must be rejected at construction");
         };
-        let msg = format!("{err:?}");
+        let message = format!("{err:?}");
         assert!(
-            msg.contains("loading whisper.cpp model"),
-            "context chain must mention the loading step; got: {msg}"
+            message.contains("loading whisper.cpp model"),
+            "context chain must mention the loading step; got: {message}"
         );
     }
 
