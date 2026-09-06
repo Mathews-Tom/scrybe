@@ -37,6 +37,23 @@ use crate::types::AttributedChunk;
 /// File name used for the WAL inside each session folder.
 pub const TRANSCRIPT_PARTIAL_LOG_NAME: &str = "transcript.partial.jsonl";
 
+/// What a WAL line describes.
+///
+/// Serde-defaulted to [`Self::Final`]: every line written before this
+/// field existed is a completed chunk, which is exactly the recovery
+/// semantics those files already had.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TranscriptRecordKind {
+    /// A completed chunk that belongs in `transcript.md`.
+    #[default]
+    Final,
+    /// A growing streaming hypothesis, written while recording so a
+    /// crash leaves evidence of in-flight speech. Never rendered into
+    /// `transcript.md`.
+    Partial,
+}
+
 /// One line in the WAL. The shape is stable inside the v0.x train —
 /// `scrybe doctor` reads any prior session's file for recovery.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -50,7 +67,16 @@ pub struct TranscriptPartialRecord {
     /// always records the flush state observed at the time of the WAL
     /// append; a process crash between the markdown append and the WAL
     /// mark is the exact case the recovery scanner repairs.
+    ///
+    /// Partial records are written with `true` on purpose: an older
+    /// binary reading a newer session file does not know the `kind`
+    /// field, and this is what stops it from replaying a partial
+    /// hypothesis into `transcript.md`.
     pub flushed_to_transcript: bool,
+    /// Record class. Absent in files written before streaming partials
+    /// existed, where every line was final.
+    #[serde(default)]
+    pub kind: TranscriptRecordKind,
     pub chunk: AttributedChunk,
 }
 
@@ -103,6 +129,7 @@ impl TranscriptPartialLog {
         let record = TranscriptPartialRecord {
             seq,
             flushed_to_transcript: false,
+            kind: TranscriptRecordKind::Final,
             chunk,
         };
         self.write_line(&record)?;
@@ -121,9 +148,34 @@ impl TranscriptPartialLog {
         let record = TranscriptPartialRecord {
             seq,
             flushed_to_transcript: true,
+            kind: TranscriptRecordKind::Final,
             chunk,
         };
         self.write_line(&record)
+    }
+
+    /// Append one streaming hypothesis.
+    ///
+    /// Tagged [`TranscriptRecordKind::Partial`] and marked flushed so no
+    /// recovery reader — including one built before partials existed —
+    /// can replay a hypothesis into `transcript.md`. The record exists
+    /// so a crashed session still shows what was being said when it
+    /// died.
+    ///
+    /// # Errors
+    ///
+    /// `StorageError::Io` for filesystem failures.
+    pub fn append_partial(&mut self, chunk: AttributedChunk) -> Result<u64, StorageError> {
+        let seq = self.next_seq;
+        let record = TranscriptPartialRecord {
+            seq,
+            flushed_to_transcript: true,
+            kind: TranscriptRecordKind::Partial,
+            chunk,
+        };
+        self.write_line(&record)?;
+        self.next_seq = seq.saturating_add(1);
+        Ok(seq)
     }
 
     fn write_line(&self, record: &TranscriptPartialRecord) -> Result<(), StorageError> {
@@ -148,6 +200,10 @@ pub struct RecoveryReport {
     /// Lines that failed to deserialize. The presence of any malformed
     /// line is logged but does not abort recovery.
     pub malformed_line_count: u64,
+    /// Streaming hypotheses seen in the WAL. Reported for triage only:
+    /// recovery never renders them, and they are neither flushed nor
+    /// orphaned work.
+    pub partial_record_count: u64,
 }
 
 /// Read the WAL at `session_folder/transcript.partial.jsonl` and return
@@ -194,10 +250,17 @@ pub fn scan_recovery(session_folder: &Path) -> Result<RecoveryReport, StorageErr
     };
 
     for record in latest_per_seq.into_values() {
-        if record.flushed_to_transcript {
-            report.flushed_seqs.push(record.seq);
-        } else {
-            report.orphans.push(record);
+        match record.kind {
+            // A hypothesis is not pending work: the audio it came from
+            // was either finalized (and its final record replayed like
+            // any other) or lost with the crashed session.
+            TranscriptRecordKind::Partial => {
+                report.partial_record_count = report.partial_record_count.saturating_add(1);
+            }
+            TranscriptRecordKind::Final if record.flushed_to_transcript => {
+                report.flushed_seqs.push(record.seq);
+            }
+            TranscriptRecordKind::Final => report.orphans.push(record),
         }
     }
 
@@ -227,7 +290,7 @@ fn last_seq(text: &str) -> u64 {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::types::{FrameSource, SpeakerLabel, TranscriptChunk};
+    use crate::types::{FrameSource, SpeakerLabel, TokenTiming, TranscriptChunk};
     use pretty_assertions::assert_eq;
 
     fn chunk(text: &str, speaker: SpeakerLabel, start_ms: u64) -> AttributedChunk {
@@ -243,6 +306,7 @@ mod tests {
                 start_ms,
                 duration_ms: 1_000,
                 language: None,
+                tokens: Vec::new(),
             },
             speaker,
         }
@@ -378,5 +442,92 @@ mod tests {
 
         assert_eq!(report.malformed_line_count, 1);
         assert_eq!(report.orphans.len(), 1);
+    }
+
+    #[test]
+    fn test_append_partial_tags_record_and_marks_it_flushed() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut log = TranscriptPartialLog::open(dir.path()).unwrap();
+
+        let seq = log
+            .append_partial(chunk("growing hypo", SpeakerLabel::Me, 0))
+            .unwrap();
+
+        let line = std::fs::read_to_string(dir.path().join(TRANSCRIPT_PARTIAL_LOG_NAME)).unwrap();
+        let record: TranscriptPartialRecord = serde_json::from_str(line.trim()).unwrap();
+        assert_eq!(record.seq, seq);
+        assert_eq!(record.kind, TranscriptRecordKind::Partial);
+        // Load-bearing for older readers: they ignore `kind` and would
+        // otherwise replay the hypothesis into `transcript.md`.
+        assert!(record.flushed_to_transcript);
+    }
+
+    #[test]
+    fn test_scan_recovery_ignores_partial_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut log = TranscriptPartialLog::open(dir.path()).unwrap();
+        log.append_partial(chunk("hypo one", SpeakerLabel::Me, 0))
+            .unwrap();
+        log.append_partial(chunk("hypo one two", SpeakerLabel::Me, 0))
+            .unwrap();
+        let orphan = log
+            .append_pending(chunk("completed", SpeakerLabel::Me, 0))
+            .unwrap();
+
+        let report = scan_recovery(dir.path()).unwrap();
+
+        assert_eq!(report.partial_record_count, 2);
+        assert_eq!(report.flushed_seqs, Vec::<u64>::new());
+        assert_eq!(report.orphans.len(), 1);
+        assert_eq!(report.orphans[0].seq, orphan);
+    }
+
+    #[test]
+    fn test_scan_recovery_treats_untagged_legacy_records_as_final() {
+        // A WAL written before `kind` and `tokens` existed: an orphan
+        // must still be replayed, so the defaults cannot change.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(TRANSCRIPT_PARTIAL_LOG_NAME),
+            b"{\"seq\":1,\"flushed_to_transcript\":true,\"chunk\":{\"chunk\":{\"text\":\"done\",\"source\":\"mic\",\"start_ms\":0,\"duration_ms\":1000,\"language\":null},\"speaker\":{\"kind\":\"me\"}}}\n\
+             {\"seq\":2,\"flushed_to_transcript\":false,\"chunk\":{\"chunk\":{\"text\":\"lost\",\"source\":\"mic\",\"start_ms\":1000,\"duration_ms\":1000,\"language\":null},\"speaker\":{\"kind\":\"me\"}}}\n",
+        )
+        .unwrap();
+
+        let report = scan_recovery(dir.path()).unwrap();
+
+        assert_eq!(report.flushed_seqs, vec![1]);
+        assert_eq!(report.orphans.len(), 1);
+        assert_eq!(report.orphans[0].kind, TranscriptRecordKind::Final);
+        assert_eq!(report.orphans[0].chunk.chunk.text, "lost");
+        assert_eq!(report.orphans[0].chunk.chunk.tokens, Vec::new());
+        assert_eq!(report.partial_record_count, 0);
+    }
+
+    #[test]
+    fn test_wal_round_trips_token_timings() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut log = TranscriptPartialLog::open(dir.path()).unwrap();
+        let mut timed = chunk("hello there", SpeakerLabel::Them, 4_000);
+        timed.chunk.tokens = vec![
+            TokenTiming {
+                token: "▁hello".to_string(),
+                timestamp_ms: 4_080,
+            },
+            TokenTiming {
+                token: "▁there".to_string(),
+                timestamp_ms: 4_520,
+            },
+        ];
+
+        let seq = log.append_pending(timed.clone()).unwrap();
+        log.mark_flushed(seq, timed.clone()).unwrap();
+        let report = scan_recovery(dir.path()).unwrap();
+
+        let text = std::fs::read_to_string(dir.path().join(TRANSCRIPT_PARTIAL_LOG_NAME)).unwrap();
+        let last: TranscriptPartialRecord =
+            serde_json::from_str(text.lines().last().unwrap()).unwrap();
+        assert_eq!(last.chunk.chunk.tokens, timed.chunk.tokens);
+        assert_eq!(report.flushed_seqs, vec![seq]);
     }
 }

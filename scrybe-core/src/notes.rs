@@ -218,6 +218,7 @@ mod tests {
                 start_ms: 3_000,
                 duration_ms: 500,
                 language: None,
+                tokens: Vec::new(),
             },
             speaker: SpeakerLabel::Me,
         };
@@ -236,6 +237,7 @@ mod tests {
                 start_ms: 65_000,
                 duration_ms: 500,
                 language: None,
+                tokens: Vec::new(),
             },
             speaker: SpeakerLabel::Them,
         };
@@ -254,6 +256,7 @@ mod tests {
                 start_ms: 0,
                 duration_ms: 1_000,
                 language: None,
+                tokens: Vec::new(),
             },
             speaker: SpeakerLabel::Me,
         };

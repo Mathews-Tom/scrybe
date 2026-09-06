@@ -36,20 +36,21 @@ use crate::pipeline::chunker::{ChunkBoundary, Chunker, ChunkerConfig, EmittedChu
 use crate::pipeline::encoder::EncoderConfig;
 use crate::pipeline::journal::{JournalAnchor, JournalManifest, JournalWriter};
 use crate::pipeline::merge::merge_journal;
+use crate::pipeline::normalize::{downmix_to_mono, validate_frame_format, SourceNormalizer};
 use crate::pipeline::resample::resample_linear;
 use crate::pipeline::vad::Vad;
+use crate::providers::streaming::{StreamingStage, StreamingSttProvider};
 use crate::providers::{LlmProvider, SttProvider};
 use crate::storage::{
     acquire_session_lock, append_durable, atomic_replace, release_session_lock,
-    session_folder_name, write_stignore_template,
+    session_folder_name, write_stignore_template, TranscriptPartialLog,
 };
 use crate::types::{
     AttributedChunk, AudioChunk, AudioFrame, ConsentAttestation, ConsentMode, FrameSource,
-    SessionId, SpeakerLabel,
+    SessionId, SpeakerLabel, TranscriptChunk,
 };
 
-/// Target rate for STT input. Whisper's native rate is 16 kHz.
-pub const STT_SAMPLE_RATE: u32 = 16_000;
+pub use crate::pipeline::normalize::STT_SAMPLE_RATE;
 
 /// Inputs the orchestrator needs from the caller. The caller owns
 /// every value here so the orchestrator never touches global state.
@@ -71,6 +72,15 @@ where
     pub mic_vad: V,
     pub system_vad: Option<V>,
     pub stt: &'a S,
+    /// Optional streaming capability of the same provider, when it has
+    /// one. Supplied separately so [`SttProvider`] stays unchanged: a
+    /// provider that cannot decode incrementally passes `None` and gets
+    /// the batch path unchanged. When present, live frames are fed to
+    /// it through the per-source normalization boundary, growing
+    /// hypotheses are written to the crash-recovery WAL, and the
+    /// chunker's finalized segments come back as transcript chunks
+    /// without a second STT call.
+    pub streaming_stt: Option<&'a dyn StreamingSttProvider>,
     pub llm: &'a L,
     pub diarizer: &'a D,
     pub prompter: &'a P,
@@ -136,6 +146,7 @@ where
         mic_vad,
         system_vad,
         stt,
+        streaming_stt,
         llm,
         diarizer,
         prompter,
@@ -165,6 +176,7 @@ where
             mic_vad,
             system_vad,
             stt,
+            streaming_stt,
             llm,
             diarizer,
             hooks,
@@ -212,6 +224,7 @@ where
     mic_vad: V,
     system_vad: Option<V>,
     stt: &'a S,
+    streaming_stt: Option<&'a dyn StreamingSttProvider>,
     llm: &'a L,
     diarizer: &'a D,
     hooks: &'a [Box<dyn Hook>],
@@ -371,6 +384,7 @@ where
         mic_vad,
         system_vad,
         stt,
+        streaming_stt,
         llm,
         diarizer,
         hooks,
@@ -420,8 +434,19 @@ where
     let mut journals = SessionJournals::new(folder.join("journal"));
     let mut terminal_capture_error = None;
 
-    let mut mic_text_chunks: Vec<crate::types::TranscriptChunk> = Vec::new();
-    let mut sys_text_chunks: Vec<crate::types::TranscriptChunk> = Vec::new();
+    // Streaming providers get a per-source live boundary plus the
+    // crash-recovery WAL; the WAL file is only created for a session
+    // that can actually produce partials.
+    let mut streaming = match streaming_stt {
+        Some(provider) => Some(LiveStreaming::new(
+            provider,
+            TranscriptPartialLog::open(&folder)?,
+        )),
+        None => None,
+    };
+
+    let mut mic_text_chunks: Vec<TranscriptChunk> = Vec::new();
+    let mut sys_text_chunks: Vec<TranscriptChunk> = Vec::new();
 
     while let Some(frame_result) = capture_stream.next().await {
         let frame = match frame_result {
@@ -432,6 +457,9 @@ where
             }
         };
         journals.push(&frame)?;
+        if let Some(live) = streaming.as_mut() {
+            live.push_frame(&frame).await?;
+        }
         let mut chunks_for_stt: Vec<EmittedChunk> = Vec::new();
         let mut sink = |c: EmittedChunk| chunks_for_stt.push(c);
         match frame.source {
@@ -446,15 +474,27 @@ where
         }
 
         for chunk in chunks_for_stt {
-            if let Some(result) =
-                process_chunk(chunk, stt, &transcript_path, id, hooks, diarizer).await?
-            {
+            let outcome = match streaming.as_mut() {
+                Some(live) => {
+                    process_streaming_chunk(live, &chunk, &transcript_path, id, hooks).await?
+                }
+                None => process_chunk(chunk, stt, &transcript_path, id, hooks, diarizer).await?,
+            };
+            if let Some(result) = outcome {
                 match result.target {
                     StoreTarget::Mic => mic_text_chunks.push(result.text),
                     StoreTarget::System => sys_text_chunks.push(result.text),
                 }
             }
         }
+    }
+
+    // Capture has ended: drain each resampler's kernel tail into the
+    // recognizer before the chunker's final segments are closed, so the
+    // last segment covers every captured sample.
+    if let Some(live) = streaming.as_mut() {
+        live.flush_source(FrameSource::Mic).await?;
+        live.flush_source(FrameSource::System).await?;
     }
 
     let mut tail_for_stt: Vec<EmittedChunk> = Vec::new();
@@ -466,15 +506,22 @@ where
         }
     }
     for chunk in tail_for_stt {
-        if let Some(result) =
-            process_chunk(chunk, stt, &transcript_path, id, hooks, diarizer).await?
-        {
+        let outcome = match streaming.as_mut() {
+            Some(live) => {
+                process_streaming_chunk(live, &chunk, &transcript_path, id, hooks).await?
+            }
+            None => process_chunk(chunk, stt, &transcript_path, id, hooks, diarizer).await?,
+        };
+        if let Some(result) = outcome {
             match result.target {
                 StoreTarget::Mic => mic_text_chunks.push(result.text),
                 StoreTarget::System => sys_text_chunks.push(result.text),
             }
         }
     }
+    // No more partials after this point: the WAL is closed before the
+    // transcript is re-rendered and the folder is renamed.
+    drop(streaming);
 
     let journal_manifest = journals.finish()?;
     if journal_manifest.mic.is_some() || journal_manifest.system.is_some() {
@@ -620,10 +667,7 @@ async fn process_chunk<S: SttProvider, D: Diarizer>(
     hooks: &[Box<dyn Hook>],
     _diarizer: &D,
 ) -> Result<Option<ChunkOutcome>, CoreError> {
-    let target = match chunk.source {
-        FrameSource::System => StoreTarget::System,
-        FrameSource::Mic | FrameSource::Mixed => StoreTarget::Mic,
-    };
+    let target = store_target(chunk.source);
     let audio_chunk = match build_audio_chunk(&chunk) {
         Ok(audio) => audio,
         Err(CoreError::Pipeline(PipelineError::EmptyChunk)) => {
@@ -634,18 +678,41 @@ async fn process_chunk<S: SttProvider, D: Diarizer>(
     };
     let transcript = stt.transcribe(audio_chunk).await?;
 
-    let speaker = match chunk.source {
-        FrameSource::System => SpeakerLabel::Them,
-        FrameSource::Mic | FrameSource::Mixed => SpeakerLabel::Me,
-    };
+    emit_final_chunk(
+        transcript,
+        chunk.source,
+        chunk.ended_on,
+        transcript_path,
+        session_id,
+        hooks,
+    )
+    .await
+    .map(Some)
+}
+
+/// Render one completed transcript chunk into `transcript.md` and
+/// announce it, whichever path produced it.
+///
+/// Both the batch `SttProvider` path and the streaming provider's final
+/// update land here, so speaker attribution, the durable markdown
+/// append, and the `ChunkTranscribed` hook cannot diverge between them.
+async fn emit_final_chunk(
+    transcript: TranscriptChunk,
+    source: FrameSource,
+    ended_on: ChunkBoundary,
+    transcript_path: &std::path::Path,
+    session_id: SessionId,
+    hooks: &[Box<dyn Hook>],
+) -> Result<ChunkOutcome, CoreError> {
+    let target = store_target(source);
     let attributed = AttributedChunk {
         chunk: transcript.clone(),
-        speaker: speaker.clone(),
+        speaker: speaker_for(source),
     };
     let line = notes::render_transcript_line(&attributed);
     append_durable(transcript_path, line.as_bytes())?;
 
-    if matches!(chunk.ended_on, ChunkBoundary::EndOfStream) {
+    if matches!(ended_on, ChunkBoundary::EndOfStream) {
         debug!(target = ?target_kind(target), "final chunk emitted");
     }
     dispatch_hooks(
@@ -657,10 +724,192 @@ async fn process_chunk<S: SttProvider, D: Diarizer>(
     )
     .await;
 
-    Ok(Some(ChunkOutcome {
+    Ok(ChunkOutcome {
         text: transcript,
         target,
-    }))
+    })
+}
+
+const fn store_target(source: FrameSource) -> StoreTarget {
+    match source {
+        FrameSource::System => StoreTarget::System,
+        FrameSource::Mic | FrameSource::Mixed => StoreTarget::Mic,
+    }
+}
+
+/// Channel-derived speaker label. The `Diarizer` may refine it later;
+/// the transcript line and the WAL record use it immediately.
+const fn speaker_for(source: FrameSource) -> SpeakerLabel {
+    match source {
+        FrameSource::System => SpeakerLabel::Them,
+        FrameSource::Mic | FrameSource::Mixed => SpeakerLabel::Me,
+    }
+}
+
+/// Live streaming state for one session.
+///
+/// Owns the per-source normalization boundary (the sole live
+/// capture-to-STT conversion when a streaming provider is wired), the
+/// provider itself, and the WAL that receives growing hypotheses while
+/// recording.
+struct LiveStreaming<'a> {
+    provider: &'a dyn StreamingSttProvider,
+    wal: TranscriptPartialLog,
+    mic: SourceNormalizer,
+    system: SourceNormalizer,
+}
+
+impl<'a> LiveStreaming<'a> {
+    fn new(provider: &'a dyn StreamingSttProvider, wal: TranscriptPartialLog) -> Self {
+        Self {
+            provider,
+            wal,
+            mic: SourceNormalizer::new(FrameSource::Mic),
+            system: SourceNormalizer::new(FrameSource::System),
+        }
+    }
+
+    const fn normalizer(&mut self, source: FrameSource) -> &mut SourceNormalizer {
+        match source {
+            FrameSource::System => &mut self.system,
+            FrameSource::Mic | FrameSource::Mixed => &mut self.mic,
+        }
+    }
+
+    /// Provider-facing source key.
+    ///
+    /// The mic chunker owns segments for both `Mic` and `Mixed` frames
+    /// and labels them `Mic` (the journal writer collapses the same
+    /// pair). Feeding a provider under `Mixed` while finalizing under
+    /// `Mic` would leave that stream open forever, so both sides use
+    /// this key. Speaker attribution is unaffected: `Mixed` and `Mic`
+    /// are both `Me`.
+    const fn stream_source(source: FrameSource) -> FrameSource {
+        match source {
+            FrameSource::System => FrameSource::System,
+            FrameSource::Mic | FrameSource::Mixed => FrameSource::Mic,
+        }
+    }
+
+    /// Normalize one native capture frame and feed the recognizer.
+    async fn push_frame(&mut self, frame: &AudioFrame) -> Result<(), CoreError> {
+        let normalizer = self.normalizer(frame.source);
+        let offset = normalizer.emitted_samples();
+        let samples = normalizer.push(frame).map_err(CoreError::Pipeline)?;
+        self.accept(Self::stream_source(frame.source), samples, offset)
+            .await
+    }
+
+    /// Flush the source's resampler tail into the recognizer once its
+    /// capture has ended, so the last partial covers all captured audio.
+    async fn flush_source(&mut self, source: FrameSource) -> Result<(), CoreError> {
+        let normalizer = self.normalizer(source);
+        let offset = normalizer.emitted_samples();
+        let samples = normalizer.finish();
+        self.accept(Self::stream_source(source), samples, offset)
+            .await
+    }
+
+    async fn accept(
+        &mut self,
+        source: FrameSource,
+        samples: Vec<f32>,
+        offset_samples: u64,
+    ) -> Result<(), CoreError> {
+        if samples.is_empty() {
+            return Ok(());
+        }
+        let audio = AudioChunk {
+            start: stt_samples_duration(offset_samples),
+            duration: stt_samples_duration(samples.len() as u64),
+            samples: Arc::from(samples),
+            source,
+        };
+        let Some(update) = self.provider.accept(audio).await? else {
+            return Ok(());
+        };
+        if update.stage != StreamingStage::Partial {
+            return Err(CoreError::Stt(crate::error::SttError::Decoding(Box::new(
+                std::io::Error::other(
+                    "streaming provider returned a final update while capture was live; \
+                     the VAD chunker owns segment boundaries",
+                ),
+            ))));
+        }
+        self.wal
+            .append_partial(AttributedChunk {
+                chunk: update.chunk,
+                speaker: speaker_for(source),
+            })
+            .map_err(CoreError::Storage)?;
+        Ok(())
+    }
+
+    /// Close the segment the chunker just ended and return its
+    /// transcript. The finalized audio is never converted or
+    /// transcribed again: this replaces the batch STT call.
+    async fn finalize(&self, chunk: &EmittedChunk) -> Result<Option<TranscriptChunk>, CoreError> {
+        let Some(update) = self
+            .provider
+            .finalize(
+                Self::stream_source(chunk.source),
+                chunk.start,
+                chunk.duration,
+            )
+            .await?
+        else {
+            return Ok(None);
+        };
+        if update.stage != StreamingStage::Final {
+            return Err(CoreError::Stt(crate::error::SttError::Decoding(Box::new(
+                std::io::Error::other("streaming provider returned a partial update from finalize"),
+            ))));
+        }
+        Ok(Some(update.chunk))
+    }
+}
+
+/// Duration of `samples` at the STT rate.
+fn stt_samples_duration(samples: u64) -> Duration {
+    Duration::from_micros(samples.saturating_mul(1_000_000) / u64::from(STT_SAMPLE_RATE))
+}
+
+/// Route one chunker-emitted segment through the streaming provider.
+async fn process_streaming_chunk(
+    live: &mut LiveStreaming<'_>,
+    chunk: &EmittedChunk,
+    transcript_path: &std::path::Path,
+    session_id: SessionId,
+    hooks: &[Box<dyn Hook>],
+) -> Result<Option<ChunkOutcome>, CoreError> {
+    let Some(transcript) = live.finalize(chunk).await? else {
+        warn!(
+            target = ?target_kind(store_target(chunk.source)),
+            "no streaming segment open at chunk boundary"
+        );
+        return Ok(None);
+    };
+    let attributed = AttributedChunk {
+        chunk: transcript.clone(),
+        speaker: speaker_for(chunk.source),
+    };
+    let seq = live
+        .wal
+        .append_pending(attributed.clone())
+        .map_err(CoreError::Storage)?;
+    let outcome = emit_final_chunk(
+        transcript,
+        chunk.source,
+        chunk.ended_on,
+        transcript_path,
+        session_id,
+        hooks,
+    )
+    .await?;
+    live.wal
+        .mark_flushed(seq, attributed)
+        .map_err(CoreError::Storage)?;
+    Ok(Some(outcome))
 }
 
 const fn target_kind(target: StoreTarget) -> &'static str {
@@ -670,6 +919,13 @@ const fn target_kind(target: StoreTarget) -> &'static str {
     }
 }
 
+/// Batch boundary: convert one completed chunk to STT input.
+///
+/// Used only when no streaming capability is wired. It shares
+/// `pipeline::normalize`'s validation and downmix with the live
+/// [`SourceNormalizer`], and performs the single stateless resample
+/// this path needs — the chunk it receives is already the whole
+/// segment, so there is no kernel context to carry.
 fn build_audio_chunk(chunk: &EmittedChunk) -> Result<AudioChunk, CoreError> {
     let Some(first_frame) = chunk.frames.first() else {
         return Err(CoreError::Pipeline(PipelineError::EmptyChunk));
@@ -677,27 +933,21 @@ fn build_audio_chunk(chunk: &EmittedChunk) -> Result<AudioChunk, CoreError> {
     let source_rate = first_frame.sample_rate;
     let channels = first_frame.channels;
     for (index, frame) in chunk.frames.iter().enumerate() {
-        if source_rate == 0
-            || channels == 0
-            || frame.sample_rate != source_rate
-            || frame.channels != channels
-        {
-            return Err(CoreError::Pipeline(PipelineError::InvalidFrame(format!(
-                "STT chunk frame {index} has {} channels at {} Hz; expected nonzero uniform {channels} channels at {source_rate} Hz",
-                frame.channels, frame.sample_rate
-            ))));
-        }
+        validate_frame_format(
+            index,
+            frame.channels,
+            frame.sample_rate,
+            channels,
+            source_rate,
+        )
+        .map_err(CoreError::Pipeline)?;
     }
     let mut interleaved: Vec<f32> =
         Vec::with_capacity(chunk.frames.iter().map(|frame| frame.samples.len()).sum());
     for frame in &chunk.frames {
         interleaved.extend_from_slice(&frame.samples);
     }
-    let mono = if channels == 1 {
-        interleaved
-    } else {
-        downmix_to_mono(&interleaved, channels)
-    };
+    let mono = downmix_to_mono(&interleaved, channels);
     let resampled = resample_linear(&mono, source_rate, STT_SAMPLE_RATE)
         .map_err(|error| CoreError::Pipeline(error.into()))?;
     Ok(AudioChunk {
@@ -706,25 +956,6 @@ fn build_audio_chunk(chunk: &EmittedChunk) -> Result<AudioChunk, CoreError> {
         start: chunk.start,
         duration: chunk.duration,
     })
-}
-
-#[allow(clippy::cast_precision_loss)]
-fn downmix_to_mono(interleaved: &[f32], channels: u16) -> Vec<f32> {
-    let chans = usize::from(channels);
-    if chans == 0 {
-        return Vec::new();
-    }
-    let frames = interleaved.len() / chans;
-    let mut out = Vec::with_capacity(frames);
-    for f in 0..frames {
-        let base = f * chans;
-        let mut sum = 0.0_f32;
-        for c in 0..chans {
-            sum += interleaved[base + c];
-        }
-        out.push(sum / chans as f32);
-    }
-    out
 }
 
 #[derive(Serialize, Deserialize)]
@@ -841,6 +1072,7 @@ pub(crate) fn build_meta_toml(args: MetaArgs<'_>) -> Result<String, CoreError> {
     clippy::cast_precision_loss
 )]
 mod tests {
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
     use std::sync::Arc;
 
     use super::*;
@@ -865,6 +1097,7 @@ mod tests {
                 start_ms: u64::try_from(chunk.start.as_millis()).unwrap_or(0),
                 duration_ms: u64::try_from(chunk.duration.as_millis()).unwrap_or(0),
                 language: None,
+                tokens: Vec::new(),
             })
         }
         fn name(&self) -> &'static str {
@@ -997,6 +1230,7 @@ mod tests {
             mic_vad: EnergyVad::default(),
             system_vad: None,
             stt: &stt,
+            streaming_stt: None,
             llm: &llm,
             diarizer: &diarizer,
             prompter: &prompter,
@@ -1046,6 +1280,7 @@ mod tests {
             mic_vad: EnergyVad::default(),
             system_vad: None,
             stt: &stt,
+            streaming_stt: None,
             llm: &llm,
             diarizer: &diarizer,
             prompter: &prompter,
@@ -1096,6 +1331,7 @@ mod tests {
             mic_vad: EnergyVad::default(),
             system_vad: None,
             stt: &stt,
+            streaming_stt: None,
             llm: &llm,
             diarizer: &diarizer,
             prompter: &prompter,
@@ -1144,6 +1380,7 @@ mod tests {
             mic_vad: EnergyVad::default(),
             system_vad: None,
             stt: &stt,
+            streaming_stt: None,
             llm: &llm,
             diarizer: &diarizer,
             prompter: &prompter,
@@ -1179,6 +1416,7 @@ mod tests {
             mic_vad: EnergyVad::default(),
             system_vad: None,
             stt: &stt,
+            streaming_stt: None,
             llm: &llm,
             diarizer: &diarizer,
             prompter: &prompter,
@@ -1233,6 +1471,7 @@ mod tests {
             mic_vad: EnergyVad::default(),
             system_vad: None,
             stt: &stt,
+            streaming_stt: None,
             llm: &llm,
             diarizer: &diarizer,
             prompter: &prompter,
@@ -1289,6 +1528,7 @@ mod tests {
             mic_vad: EnergyVad::default(),
             system_vad: Some(EnergyVad::default()),
             stt: &stt,
+            streaming_stt: None,
             llm: &llm,
             diarizer: &diarizer,
             prompter: &prompter,
@@ -1341,6 +1581,7 @@ mod tests {
             mic_vad: EnergyVad::default(),
             system_vad: Some(EnergyVad::default()),
             stt: &stt,
+            streaming_stt: None,
             llm: &llm,
             diarizer: &diarizer,
             prompter: &prompter,
@@ -1410,6 +1651,7 @@ mod tests {
             mic_vad: EnergyVad::default(),
             system_vad: None,
             stt: &stt,
+            streaming_stt: None,
             llm: &llm,
             diarizer: &diarizer,
             prompter: &prompter,
@@ -1467,6 +1709,7 @@ mod tests {
             mic_vad: EnergyVad::default(),
             system_vad: None,
             stt: &stt,
+            streaming_stt: None,
             llm: &llm,
             diarizer: &diarizer,
             prompter: &prompter,
@@ -1535,6 +1778,7 @@ mod tests {
             mic_vad: EnergyVad::default(),
             system_vad: Some(EnergyVad::default()),
             stt: &stt,
+            streaming_stt: None,
             llm: &llm,
             diarizer: &diarizer,
             prompter: &prompter,
@@ -1549,10 +1793,10 @@ mod tests {
         // Decode raw f32 LE — NullEncoder writes interleaved samples
         // verbatim. Stereo means consecutive pairs are (L, R).
         assert_eq!(audio_bytes.len() % 8, 0, "byte count must be 8-aligned");
-        let pcm: Vec<f32> = audio_bytes
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-            .collect();
+        let (bytes, []) = audio_bytes.as_chunks::<4>() else {
+            panic!("byte count must be 4-aligned");
+        };
+        let pcm: Vec<f32> = bytes.iter().map(|c| f32::from_le_bytes(*c)).collect();
         assert!(!pcm.is_empty(), "expected non-empty PCM payload");
         assert_eq!(pcm.len() % 2, 0, "stereo PCM must have even sample count");
 
@@ -1569,7 +1813,7 @@ mod tests {
         // silence-prefix padding.
         let mut mic_real_seen = false;
         let mut system_real_seen = false;
-        for (i, pair) in pcm.chunks_exact(2).enumerate() {
+        for (i, pair) in pcm.as_chunks::<2>().0.iter().enumerate() {
             let l = pair[0];
             let r = pair[1];
             assert!(
@@ -1601,5 +1845,427 @@ mod tests {
         // Defensive: stereo flag without 2 channels is nonsensical and
         // the helper prefers the safe mono descriptor.
         assert_eq!(audio_layout(true, 1), "mono:mic");
+    }
+
+    #[derive(Default)]
+    struct CountingStt {
+        calls: AtomicUsize,
+    }
+
+    impl CountingStt {
+        fn calls(&self) -> usize {
+            self.calls.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait]
+    impl SttProvider for CountingStt {
+        async fn transcribe(&self, chunk: AudioChunk) -> Result<TranscriptChunk, SttError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(TranscriptChunk {
+                text: "batch".to_string(),
+                source: chunk.source,
+                start_ms: u64::try_from(chunk.start.as_millis()).unwrap_or(0),
+                duration_ms: u64::try_from(chunk.duration.as_millis()).unwrap_or(0),
+                language: None,
+                tokens: Vec::new(),
+            })
+        }
+        fn name(&self) -> &'static str {
+            "counting-stt"
+        }
+    }
+
+    /// Deterministic streaming provider: every accepted block grows the
+    /// hypothesis by one word, and `finalize` closes the segment once.
+    ///
+    /// State is a set of atomics rather than a lock: the session drives
+    /// a provider from one task, so no grouped-update guarantee is
+    /// needed, and the fake stays allocation- and lock-free.
+    #[derive(Default)]
+    struct SegmentState {
+        open: AtomicBool,
+        segment_start_ms: AtomicU64,
+        accepted_samples: AtomicU64,
+        words: AtomicUsize,
+    }
+
+    #[derive(Default)]
+    struct GrowingStreaming {
+        /// One segment per source key, `Mixed` deliberately separate so
+        /// a provider fed under `Mixed` but finalized under `Mic` fails
+        /// the mixed-source test instead of silently agreeing.
+        mic: SegmentState,
+        system: SegmentState,
+        mixed: SegmentState,
+        finals: AtomicUsize,
+        finalize_calls: AtomicUsize,
+    }
+
+    impl GrowingStreaming {
+        const fn segment(&self, source: FrameSource) -> &SegmentState {
+            match source {
+                FrameSource::Mic => &self.mic,
+                FrameSource::System => &self.system,
+                FrameSource::Mixed => &self.mixed,
+            }
+        }
+
+        fn finals(&self) -> usize {
+            self.finals.load(Ordering::SeqCst)
+        }
+
+        fn finalize_calls(&self) -> usize {
+            self.finalize_calls.load(Ordering::SeqCst)
+        }
+
+        fn timings(words: usize, segment_start_ms: u64) -> Vec<crate::types::TokenTiming> {
+            (1..=words)
+                .map(|i| crate::types::TokenTiming {
+                    token: format!("word{i}"),
+                    timestamp_ms: segment_start_ms + (i as u64) * 100,
+                })
+                .collect()
+        }
+    }
+
+    #[async_trait]
+    impl StreamingSttProvider for GrowingStreaming {
+        async fn accept(
+            &self,
+            audio: AudioChunk,
+        ) -> Result<Option<crate::providers::streaming::StreamingUpdate>, SttError> {
+            let segment = self.segment(audio.source);
+            if !segment.open.swap(true, Ordering::SeqCst) {
+                segment.segment_start_ms.store(
+                    u64::try_from(audio.start.as_millis()).unwrap_or(0),
+                    Ordering::SeqCst,
+                );
+                segment.accepted_samples.store(0, Ordering::SeqCst);
+                segment.words.store(0, Ordering::SeqCst);
+            }
+            let accepted = segment
+                .accepted_samples
+                .fetch_add(audio.samples.len() as u64, Ordering::SeqCst)
+                + audio.samples.len() as u64;
+            let words = segment.words.fetch_add(1, Ordering::SeqCst) + 1;
+            let segment_start_ms = segment.segment_start_ms.load(Ordering::SeqCst);
+            let text = (1..=words)
+                .map(|i| format!("word{i}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            Ok(Some(crate::providers::streaming::StreamingUpdate {
+                stage: StreamingStage::Partial,
+                chunk: TranscriptChunk {
+                    text,
+                    source: audio.source,
+                    start_ms: segment_start_ms,
+                    duration_ms: accepted * 1_000 / u64::from(STT_SAMPLE_RATE),
+                    language: Some("en".to_string()),
+                    tokens: Self::timings(words, segment_start_ms),
+                },
+            }))
+        }
+
+        async fn finalize(
+            &self,
+            source: FrameSource,
+            start: Duration,
+            duration: Duration,
+        ) -> Result<Option<crate::providers::streaming::StreamingUpdate>, SttError> {
+            self.finalize_calls.fetch_add(1, Ordering::SeqCst);
+            let segment = self.segment(source);
+            if !segment.open.swap(false, Ordering::SeqCst) {
+                return Ok(None);
+            }
+            self.finals.fetch_add(1, Ordering::SeqCst);
+            let words = segment.words.load(Ordering::SeqCst);
+            Ok(Some(crate::providers::streaming::StreamingUpdate {
+                stage: StreamingStage::Final,
+                chunk: TranscriptChunk {
+                    text: format!("final-{words}"),
+                    source,
+                    start_ms: u64::try_from(start.as_millis()).unwrap_or(0),
+                    duration_ms: u64::try_from(duration.as_millis()).unwrap_or(0),
+                    language: Some("en".to_string()),
+                    tokens: Self::timings(words, segment.segment_start_ms.load(Ordering::SeqCst)),
+                },
+            }))
+        }
+    }
+
+    fn wal_records(folder: &std::path::Path) -> Vec<crate::storage::TranscriptPartialRecord> {
+        let text =
+            std::fs::read_to_string(folder.join(crate::storage::TRANSCRIPT_PARTIAL_LOG_NAME))
+                .expect("streaming session must write the partial WAL");
+        text.lines()
+            .map(|line| serde_json::from_str(line).expect("WAL line must deserialize"))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn test_streaming_session_writes_growing_partials_and_finalizes_once_per_segment() {
+        let tmp = tempfile::tempdir().unwrap();
+        let stt = CountingStt::default();
+        let streaming = GrowingStreaming::default();
+        let llm = CannedLlm;
+        let diarizer = PassThroughDiarizer;
+        let prompter = AcceptingPrompter;
+        let hooks: Vec<Box<dyn Hook>> = Vec::new();
+
+        // 100 ms frames against a 300 ms max chunk: the chunker closes a
+        // segment mid-capture, so the session must show both partial
+        // growth and more than one finalization.
+        let frames = stream::iter((0..6).map(|i| Ok(speech_frame(i * 100_000_000, 1_600))));
+
+        let inputs = SessionInputs {
+            id: SessionId::new(),
+            started_at: dt(),
+            root: tmp.path().to_path_buf(),
+            title: Some("streaming".into()),
+            user: "tom".into(),
+            consent_mode: ConsentMode::Quick,
+            context: MeetingContext::default(),
+            mic_vad: EnergyVad::default(),
+            system_vad: None,
+            stt: &stt,
+            streaming_stt: Some(&streaming),
+            llm: &llm,
+            diarizer: &diarizer,
+            prompter: &prompter,
+            hooks: &hooks,
+            chunker_config: small_chunker_config(),
+            verify_duration: false,
+        };
+
+        let outputs = run(inputs, frames).await.unwrap();
+
+        // The streaming path replaces the batch call; finalized audio is
+        // never transcribed a second time.
+        assert_eq!(stt.calls(), 0);
+        assert!(streaming.finals() >= 2, "expected multiple segments");
+
+        let records = wal_records(&outputs.folder);
+        let partials: Vec<_> = records
+            .iter()
+            .filter(|record| record.kind == crate::storage::TranscriptRecordKind::Partial)
+            .collect();
+        let finals: Vec<_> = records
+            .iter()
+            .filter(|record| record.kind == crate::storage::TranscriptRecordKind::Final)
+            .collect();
+        assert!(
+            partials.len() >= 4,
+            "expected one partial per normalized block, got {}",
+            partials.len()
+        );
+        for record in &partials {
+            assert!(record.flushed_to_transcript);
+            assert_eq!(record.chunk.speaker, SpeakerLabel::Me);
+            assert!(!record.chunk.chunk.tokens.is_empty());
+        }
+        assert_eq!(
+            finals.len(),
+            streaming.finals() * 2,
+            "each final must have a pending and flushed WAL record"
+        );
+        for record in &finals {
+            assert_eq!(record.chunk.speaker, SpeakerLabel::Me);
+            assert!(!record.chunk.chunk.tokens.is_empty());
+        }
+        // Hypotheses grow inside a segment and restart at the next one.
+        for pair in partials.windows(2) {
+            if pair[0].chunk.chunk.start_ms == pair[1].chunk.chunk.start_ms {
+                assert!(
+                    pair[1]
+                        .chunk
+                        .chunk
+                        .text
+                        .starts_with(&pair[0].chunk.chunk.text),
+                    "partial {} must extend {}",
+                    pair[1].chunk.chunk.text,
+                    pair[0].chunk.chunk.text
+                );
+            }
+        }
+        assert_eq!(partials.first().unwrap().chunk.chunk.text, "word1");
+
+        // Recovery must never replay a hypothesis into transcript.md, and every
+        // final has its durable transcript append recorded.
+        let report = crate::storage::scan_recovery(&outputs.folder).unwrap();
+        assert_eq!(report.orphans, Vec::new());
+        assert_eq!(
+            report.flushed_seqs.len(),
+            streaming.finals(),
+            "every finalized segment must be marked flushed"
+        );
+        assert_eq!(
+            report.partial_record_count,
+            u64::try_from(partials.len()).unwrap()
+        );
+
+        // Final segments went through the normal transcript path with
+        // their token timings attached.
+        let transcript = std::fs::read_to_string(&outputs.transcript_path).unwrap();
+        assert!(transcript.contains("final-"), "transcript: {transcript}");
+        assert!(!transcript.contains("word1"));
+        assert_eq!(outputs.chunks.len(), streaming.finals());
+        for chunk in &outputs.chunks {
+            assert!(!chunk.chunk.tokens.is_empty());
+            assert!(chunk.chunk.tokens[0].timestamp_ms >= chunk.chunk.start_ms);
+        }
+        // Every chunker boundary asked the provider to finalize.
+        assert!(streaming.finalize_calls() >= streaming.finals());
+    }
+
+    #[tokio::test]
+    async fn test_streaming_session_finalizes_mixed_source_frames() {
+        // The mic chunker labels `Mixed` frames' segments `Mic`. If the
+        // provider were keyed by the raw frame source, that stream would
+        // never be finalized and the session would produce partials with
+        // no transcript line.
+        let tmp = tempfile::tempdir().unwrap();
+        let stt = CountingStt::default();
+        let streaming = GrowingStreaming::default();
+        let llm = CannedLlm;
+        let diarizer = PassThroughDiarizer;
+        let prompter = AcceptingPrompter;
+        let hooks: Vec<Box<dyn Hook>> = Vec::new();
+
+        let frames = stream::iter((0..4).map(|i| {
+            let samples: Vec<f32> = (0..1_600).map(|n| (n as f32 * 0.5).sin()).collect();
+            Ok(AudioFrame::from_slice(
+                &samples,
+                1,
+                16_000,
+                i * 100_000_000,
+                FrameSource::Mixed,
+            ))
+        }));
+
+        let inputs = SessionInputs {
+            id: SessionId::new(),
+            started_at: dt(),
+            root: tmp.path().to_path_buf(),
+            title: Some("mixed".into()),
+            user: "tom".into(),
+            consent_mode: ConsentMode::Quick,
+            context: MeetingContext::default(),
+            mic_vad: EnergyVad::default(),
+            system_vad: None,
+            stt: &stt,
+            streaming_stt: Some(&streaming),
+            llm: &llm,
+            diarizer: &diarizer,
+            prompter: &prompter,
+            hooks: &hooks,
+            chunker_config: small_chunker_config(),
+            verify_duration: false,
+        };
+
+        let outputs = run(inputs, frames).await.unwrap();
+
+        assert!(streaming.finals() >= 1);
+        assert_eq!(stt.calls(), 0);
+        let transcript = std::fs::read_to_string(&outputs.transcript_path).unwrap();
+        assert!(transcript.contains("final-"), "transcript: {transcript}");
+        assert!(!outputs.chunks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_batch_session_without_streaming_capability_is_unchanged() {
+        let tmp = tempfile::tempdir().unwrap();
+        let stt = CountingStt::default();
+        let llm = CannedLlm;
+        let diarizer = PassThroughDiarizer;
+        let prompter = AcceptingPrompter;
+        let hooks: Vec<Box<dyn Hook>> = Vec::new();
+
+        let frames = stream::iter((0..6).map(|i| Ok(speech_frame(i * 100_000_000, 1_600))));
+
+        let inputs = SessionInputs {
+            id: SessionId::new(),
+            started_at: dt(),
+            root: tmp.path().to_path_buf(),
+            title: Some("batch".into()),
+            user: "tom".into(),
+            consent_mode: ConsentMode::Quick,
+            context: MeetingContext::default(),
+            mic_vad: EnergyVad::default(),
+            system_vad: None,
+            stt: &stt,
+            streaming_stt: None,
+            llm: &llm,
+            diarizer: &diarizer,
+            prompter: &prompter,
+            hooks: &hooks,
+            chunker_config: small_chunker_config(),
+            verify_duration: false,
+        };
+
+        let outputs = run(inputs, frames).await.unwrap();
+
+        assert!(stt.calls() >= 2, "batch fallback must still transcribe");
+        assert!(
+            !outputs
+                .folder
+                .join(crate::storage::TRANSCRIPT_PARTIAL_LOG_NAME)
+                .exists(),
+            "a batch session produces no partials and must not create the WAL"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_streaming_session_fails_loudly_on_inconsistent_frame_format() {
+        let tmp = tempfile::tempdir().unwrap();
+        let stt = CountingStt::default();
+        let streaming = GrowingStreaming::default();
+        let llm = CannedLlm;
+        let diarizer = PassThroughDiarizer;
+        let prompter = AcceptingPrompter;
+        let hooks: Vec<Box<dyn Hook>> = Vec::new();
+
+        let frames = stream::iter(vec![
+            Ok(speech_frame(0, 1_600)),
+            Ok(AudioFrame::from_slice(
+                &[0.2_f32; 1_600],
+                2,
+                16_000,
+                100_000_000,
+                FrameSource::Mic,
+            )),
+        ]);
+
+        let inputs = SessionInputs {
+            id: SessionId::new(),
+            started_at: dt(),
+            root: tmp.path().to_path_buf(),
+            title: Some("mismatch".into()),
+            user: "tom".into(),
+            consent_mode: ConsentMode::Quick,
+            context: MeetingContext::default(),
+            mic_vad: EnergyVad::default(),
+            system_vad: None,
+            stt: &stt,
+            streaming_stt: Some(&streaming),
+            llm: &llm,
+            diarizer: &diarizer,
+            prompter: &prompter,
+            hooks: &hooks,
+            chunker_config: small_chunker_config(),
+            verify_duration: false,
+        };
+
+        let error = run(inputs, frames)
+            .await
+            .expect_err("format change must abort the session");
+
+        let CoreError::Pipeline(PipelineError::InvalidFrame(message)) = &error else {
+            panic!("expected a loud invalid-frame failure, got {error}");
+        };
+        assert!(
+            message.contains("frame 1 has 2 channels"),
+            "unexpected error: {message}"
+        );
     }
 }

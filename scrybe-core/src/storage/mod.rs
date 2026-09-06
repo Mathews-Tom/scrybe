@@ -19,5 +19,5 @@ pub use session_dir::{
 };
 pub use transcript_log::{
     scan_recovery, RecoveryReport, TranscriptPartialLog, TranscriptPartialRecord,
-    TRANSCRIPT_PARTIAL_LOG_NAME,
+    TranscriptRecordKind, TRANSCRIPT_PARTIAL_LOG_NAME,
 };

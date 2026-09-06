@@ -991,7 +991,7 @@ Notes:
     └── .stignore              # generated; tells Syncthing to ignore until pid.lock is gone
 ```
 
-`transcript.partial.jsonl` is a write-ahead log: each line is one `AttributedChunk` JSON object. When a chunk completes, scrybe (a) appends the rendered markdown line to `transcript.md` with `fdatasync`, then (b) appends the same chunk's JSON to `transcript.partial.jsonl`, then (c) on the *next* successful chunk, truncates lines for already-flushed chunks. On crash recovery, `scrybe doctor` reads `transcript.partial.jsonl` to identify any chunk that was rendered but not yet flushed and replays the markdown render. This keeps the user-visible `transcript.md` minimal and machine-recoverable simultaneously.
+`transcript.partial.jsonl` is an append-only write-ahead log. Each line records a monotonic `seq`, `flushed_to_transcript`, a `kind` (`final` or `partial`), and an `AttributedChunk` payload. For a final chunk, scrybe appends a `flushed_to_transcript = false` record, durably appends the rendered markdown line to `transcript.md`, then appends the same `seq` marked `true`. Crash recovery collapses repeated sequence numbers and identifies only final records left unflushed. A growing streaming hypothesis is tagged `kind = "partial"` and written already flushed: it preserves in-flight evidence after a crash, but neither current nor pre-streaming recovery readers may render it into `transcript.md`.
 
 #### Tests required at v0.1
 
