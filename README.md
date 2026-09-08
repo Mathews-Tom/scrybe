@@ -25,6 +25,7 @@ The supported user path today is macOS:
 - `--whisper-model <PATH>` enables local whisper.cpp transcription when built with `whisper-local`.
 - `--llm openai-compat` enables real notes through Ollama, vLLM, OpenAI, Groq, Together, or any compatible `/chat/completions` endpoint when built with `llm-openai-compat`.
 - `scrybe list`, `scrybe show <id>`, `scrybe doctor`, and `scrybe bench` are available in the CLI.
+- `scrybe bench stt --corpus <MANIFEST> --whisper-model <FILE> --sherpa-model <DIR>` compares both local providers on a checksum-validated English paired corpus when built with `whisper-local,stt-sherpa` and an explicitly provisioned native runtime. [Manual acquisition and measurement scope](INSTALL.md#optional-streaming-zipformer-and-english-paired-stt-benchmark). Whisper remains the default; the historical multilingual corpus is Whisper-only.
 
 Linux, Windows, and Android crates are present in the workspace as adapter surfaces and scaffolds. They are not the polished end-user install path yet. The project keeps those adapters in-tree so the trait contracts, config, tests, and packaging work stay cross-platform from the start.
 

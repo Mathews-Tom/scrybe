@@ -140,7 +140,10 @@ pub fn word_error_rate(reference: &str, hypothesis: &str) -> f64 {
 /// produces a single token *and* the input contains non-Latin script,
 /// fall back to character-level segmentation. This handles the
 /// no-whitespace languages in the manifest (zh, ja).
-fn tokens_for(text: &str) -> Vec<String> {
+/// `pub(super)`: reused by `testing::paired` so the ref-word-count
+/// weighting denominator shares the exact tokenizer this module's own
+/// `word_error_rate` numerator uses (no divergent normalization).
+pub(super) fn tokens_for(text: &str) -> Vec<String> {
     let lower = text.to_lowercase();
     let normalized: String = lower
         .chars()

@@ -28,9 +28,9 @@ use crate::error::SttError;
 use crate::providers::SttProvider;
 use crate::types::{AudioChunk, TranscriptChunk};
 
-/// Configuration for `WhisperLocalProvider`. The `model_path` MUST
-/// point to a verified `*.gguf` file; the loader rejects `*.partial`
-/// candidates per `system-design.md` §8.1 model-download recovery.
+/// Configuration for a local whisper.cpp-compatible GGML model.
+///
+/// The loader rejects `*.partial` candidates per `system-design.md` §8.1.
 #[derive(Clone, Debug)]
 pub struct WhisperLocalConfig {
     pub model_path: PathBuf,
@@ -167,6 +167,7 @@ async fn transcribe_impl(
             start_ms,
             duration_ms,
             language: None,
+            tokens: Vec::new(),
         })
     })
     .await

@@ -9,3 +9,4 @@
 //! sibling test crates inside this workspace.
 
 pub mod multilingual;
+pub mod paired;

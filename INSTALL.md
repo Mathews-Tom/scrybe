@@ -235,6 +235,96 @@ System audio capture (the other end of a Zoom/Teams/Meet call) on macOS goes thr
 
 ---
 
+## Optional streaming Zipformer and English paired STT benchmark
+
+Whisper remains the default STT backend. Sherpa is an explicit English-only option, not a replacement for multilingual Whisper. Build with both `whisper-local,stt-sherpa` to compare the shipped providers; neither `scrybe bench stt` nor the provider downloads models, corpora, or native libraries. The existing `scrybe bench --criterion-dir … --print` harvest mode is unchanged.
+
+### Manually provision the native runtime
+
+Before building, manually obtain and extract the matching **1.13.7 static-library archive** from the [official Sherpa release](https://github.com/k2-fsa/sherpa-onnx/releases/tag/v1.13.7). Verify the archive before extraction:
+
+| Platform | Archive | SHA-256 |
+| --- | --- | --- |
+| macOS arm64 | `sherpa-onnx-v1.13.7-osx-arm64-static-lib.tar.bz2` | `126daa2e8c09a4c5d54dc985722c43bd22f598adc56445905b377454b1b27e38` |
+| Linux x64 | `sherpa-onnx-v1.13.7-linux-x64-static-lib.tar.bz2` | `d1be7a69ac2b30120058d8302e624239a3064085383cfa47994a14fdc44c32d6` |
+| Windows x64 | `sherpa-onnx-v1.13.7-win-x64-static-MT-Release-lib.tar.bz2` | `04734146fb3a21a297604c586ea826346dbb167c19b9ccc79c1f85d39f490395` |
+
+Set `SHERPA_ONNX_LIB_DIR` to the extracted `lib` directory in both the build shell and the benchmark shell. It must contain the Sherpa C API, core, and ONNX Runtime static libraries and their companion libraries. Use `shasum -a 256` on macOS, `sha256sum` on Linux, or `Get-FileHash -Algorithm SHA256` on Windows to compare the archive digest. An absent environment variable deliberately resolves to a failing Cargo sentinel; do not remove that protection or use the dependency's downloader.
+
+### Manually acquire the pinned model
+
+Use the Apache-2.0 model [`csukuangfj/sherpa-onnx-streaming-zipformer-en-2023-06-26`](https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-en-2023-06-26/tree/672fbf1b30579d6585301139bb363f42a0ad4a24), revision **`672fbf1b30579d6585301139bb363f42a0ad4a24`**. Obtain exactly these four files, preserving filenames:
+
+| Artifact | Bytes |
+| --- | ---: |
+| `encoder-epoch-99-avg-1-chunk-16-left-128.int8.onnx` | 71,083,163 |
+| `decoder-epoch-99-avg-1-chunk-16-left-128.onnx` | 2,092,621 |
+| `joiner-epoch-99-avg-1-chunk-16-left-128.int8.onnx` | 259,335 |
+| `tokens.txt` | 5,048 |
+| **Total** | **73,440,167** |
+
+Place them under `<platform-data>/models/sherpa-onnx-streaming-zipformer-en-2023-06-26/`. Platform data is `~/Library/Application Support/dev.scrybe.scrybe/` on macOS, `$XDG_DATA_HOME/scrybe/` (normally `~/.local/share/scrybe/`) on Linux, and `%APPDATA%\scrybe\scrybe\data\` on Windows. Model placement is a convention, not discovery: the benchmark requires explicit model paths.
+
+Manual macOS acquisition commands (run intentionally; not executed by scrybe):
+
+```sh
+MODEL_DIR="$HOME/Library/Application Support/dev.scrybe.scrybe/models/sherpa-onnx-streaming-zipformer-en-2023-06-26"
+MODEL_URL="https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-en-2023-06-26/resolve/672fbf1b30579d6585301139bb363f42a0ad4a24"
+mkdir -p "$MODEL_DIR"
+for file in \
+  encoder-epoch-99-avg-1-chunk-16-left-128.int8.onnx \
+  decoder-epoch-99-avg-1-chunk-16-left-128.onnx \
+  joiner-epoch-99-avg-1-chunk-16-left-128.int8.onnx \
+  tokens.txt
+do
+  curl --fail --location "$MODEL_URL/$file" --output "$MODEL_DIR/$file.partial" &&
+    mv "$MODEL_DIR/$file.partial" "$MODEL_DIR/$file" || exit 1
+done
+```
+
+Acquire a whisper.cpp-compatible model separately using the Whisper instructions above. Keep its exact source revision and checksum with the benchmark evidence; a local filename alone does not establish model provenance.
+
+### Manually acquire and freeze an English paired corpus
+
+Use English audio for which redistribution/use rights and verbatim references are known, such as a selected subset of [LibriSpeech test-clean](https://www.openslr.org/12). Acquire audio and its source transcripts manually; record the dataset release, source URL, utterance ID, licence, and any trimming/conversion in each clip's `provenance`. Convert each selected utterance to **16 kHz, mono, signed 16-bit PCM RIFF WAV** before hashing it. The benchmark performs no conversion or acquisition. Keep the cohort fixed before inspecting either backend's results.
+
+Create `<platform-data>/bench/english-paired/MANIFEST.toml` alongside its WAV files. This is a separate strict TOML schema from the historical multilingual manifest:
+
+| Field | Requirement |
+| --- | --- |
+| `schema_version` | Top-level integer `1` |
+| `[[clips]]` | At least one entry; every entry runs on both backends |
+| `id` | Non-empty, unique clip identifier |
+| `language` | Exactly `"en"` |
+| `audio` | Non-empty relative WAV path within the corpus directory |
+| `sha256` | SHA-256 of the final WAV bytes, 64 hexadecimal characters |
+| `reference` | Non-empty verbatim transcript with scoreable words |
+| `provenance` | Non-empty source/revision/licence and preparation record |
+
+Compute each WAV's checksum after conversion (`shasum -a 256 clip.wav` on macOS). Do not use invented references or substitute synthesized speech for release evidence. The loader rejects unknown fields, duplicate IDs, non-English entries, missing provenance, checksum mismatches, and malformed/empty audio before measurement.
+
+The existing `tests/fixtures/multilingual/MANIFEST.toml` remains the **20-clip Whisper-only** corpus. It is not a paired Sherpa cohort and cannot be passed as the new manifest.
+
+### Run and interpret the paired benchmark
+
+With `SHERPA_ONNX_LIB_DIR` explicitly exported to the manually provisioned runtime:
+
+```sh
+cargo build --release -p scrybe-cli --features whisper-local,stt-sherpa
+target/release/scrybe bench stt \
+  --corpus "$HOME/Library/Application Support/dev.scrybe.scrybe/bench/english-paired/MANIFEST.toml" \
+  --whisper-model "$HOME/Library/Application Support/dev.scrybe.scrybe/models/ggml-base.en.bin" \
+  --sherpa-model "$MODEL_DIR"
+```
+
+Success prints one versioned JSON report containing both backends for every clip, hypotheses, WER, audio duration, provider-lifecycle time, and realtime factor. No partial report is emitted on a backend error or incomplete result set. Aggregate WER is reference-word-weighted, not a mean of clip percentages; aggregate realtime factor is summed provider-lifecycle seconds divided by summed audio seconds. Lower values are better; a realtime factor below `1` means the measured cold provider lifecycle completed faster than the audio duration.
+
+**Timing scope:** `measurement_scope.lifecycle` is `cold-provider-per-clip`. For every clip and backend, `provider_lifecycle_secs` starts before constructing a fresh provider and stops after its single `SttProvider::transcribe` call; `total_provider_lifecycle_secs` is its per-backend sum. Whisper's model load happens inside `transcribe`; Sherpa's recognizer initialization happens in its constructor. Both costs are therefore included under the same lifecycle. Corpus loading, checksum/format validation, and JSON aggregation remain outside every clip timer. OS filesystem caches and accelerator state can remain warm across clips, so this is provider-lifecycle cold timing, not a cold-machine startup measurement, decoder-only throughput, or live partial latency. Production provider behavior is unchanged.
+
+An English cohort does not establish multilingual quality or justify a default flip. Whisper remains selectable and remains the default regardless of these measurements. Release evidence requires a complete captured report from the manually acquired real-audio cohort; deterministic test fixtures do not satisfy that gate.
+
+---
+
 ## Real notes summaries via Ollama / OpenAI-compat
 
 `notes.md` is generated by the LLM provider at `SessionEnd`. When no

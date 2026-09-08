@@ -33,7 +33,11 @@ openai-compat = ["dep:reqwest", "dep:url"]
 context-ics = ["dep:ical"]
 # `WebhookHook` — async POST + HMAC-SHA256-signed payload to a
 # configured URL.
-hook-webhook = ["dep:reqwest", "dep:url", "dep:hmac", "dep:sha2", "dep:hex"]
+# `sha2` itself is required unconditionally (see below — it also
+# backs `testing::paired`'s checksum verification, which compiles on
+# every feature set), so it is no longer listed as a `dep:` toggle
+# here; enabling `hook-webhook` still needs the other four.
+hook-webhook = ["dep:reqwest", "dep:url", "dep:hmac", "dep:hex"]
 # `TantivyIndexerHook` — incremental local full-text index at
 # `<storage.root>/.index/`. Local-only; never source-of-truth (the
 # index is regenerable from session folders via `rebuild_all`). See
@@ -69,7 +73,11 @@ ical = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
-sha2 = { workspace = true, optional = true }
+# Required unconditionally: `hooks::webhook` uses it behind
+# `hook-webhook`, and `testing::paired` (always compiled, no feature
+# gate — see `testing/mod.rs`) uses it to verify each corpus clip's
+# audio bytes against its manifest-declared checksum.
+sha2.workspace = true
 tantivy = { workspace = true, optional = true }
 tempfile.workspace = true
 thiserror.workspace = true

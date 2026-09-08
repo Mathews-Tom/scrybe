@@ -107,7 +107,10 @@ LOC_CEILINGS: dict[str, int] = {
     # out of the default build. Raised to 12500 for M5's partial
     # transcripts/token timings: persistent per-source streaming state,
     # stateful normalization, token conversion, and recovery-safe WAL records.
-    "scrybe-core": 12500,
+    # Raised to 13000 for M5's paired STT benchmark: strict checked corpus
+    # parsing, PCM16 WAV validation, complete result-matrix aggregation, and
+    # versioned WER/provider-lifecycle reporting.
+    "scrybe-core": 13000,
     # 2000 was the v0.5 ceiling. Raised to 2300 at v0.6 to absorb the
     # `scrybe bench` subcommand. Raised to 2500 at v1.0.1 to absorb
     # the `--source mic` and `--whisper-model` wiring on `scrybe record`
@@ -170,8 +173,10 @@ LOC_CEILINGS: dict[str, int] = {
     # liveness watchdog. The CLI owns orchestration; adapters remain separate.
     # Raised to 4450 for M5's explicit `--sherpa-model` selector and matching
     # ergonomic forwarding. Both paths reject a missing feature instead of
-    # silently substituting the stub provider.
-    "scrybe-cli": 4450,
+    # silently substituting the stub provider. Raised to 4750 for M5's explicit
+    # `bench stt` mode, its fail-loud provision checks, and the unchanged
+    # Criterion-harvest dispatch.
+    "scrybe-cli": 4750,
     "scrybe-capture-mac": 2500,
     "scrybe-capture-linux": 2500,
     "scrybe-capture-win": 2500,
