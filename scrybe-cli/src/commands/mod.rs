@@ -12,6 +12,7 @@ use anyhow::Result;
 use clap::Subcommand;
 
 pub mod bench;
+mod bench_stt;
 pub mod devices;
 pub mod doctor;
 pub mod init;

@@ -1033,7 +1033,7 @@ If the user also runs Ollama with `llama3.1:8b` (~5 GB resident), recommend clou
 | RAM | < 400 MB | 1 GB |
 | APK size | < 100 MB (without model) | 250 MB |
 
-These are not aspirational; they are the build-fail thresholds. CI runs `scrybe-bench` against a fixed corpus and fails the build if any metric regresses by more than 10%.
+These are performance targets, not measurements from the English paired STT benchmark. `cargo bench -p scrybe-core` runs pipeline microbenchmarks; `scrybe bench` harvests their Criterion JSON without running inference. `scrybe bench stt --corpus <MANIFEST> --whisper-model <FILE> --sherpa-model <DIR>` instead runs both existing local STT providers on a manually acquired, checksum-validated English corpus and emits complete versioned per-clip and aggregate WER/realtime-factor JSON. See [acquisition and timing scope](../INSTALL.md#optional-streaming-zipformer-and-english-paired-stt-benchmark): each clip/backend measurement constructs a fresh provider, includes that provider's initialization plus one transcription in `provider_lifecycle_secs`, and records `cold-provider-per-clip`. It is not a decoder-only throughput, cold-machine startup, live partial-latency, RAM, or release-eligibility measurement without a captured real-audio run.
 
 ## 10. Security model
 
@@ -1093,7 +1093,7 @@ Self-hosted runners post results back via a status API (no telemetry from end-us
 
 #### Bench gate
 
-`criterion` for pipeline stages; CI fails on >10% regression vs the previous release tag. Tracked metrics: VAD throughput, resample throughput, Whisper realtime factor (per model), Opus encode realtime factor, end-to-end realtime factor, steady-state RAM.
+`criterion` covers pipeline stages. GitHub-hosted CI compiles the benchmark harness with `cargo bench --workspace --no-run` and runs bench clippy; it does not execute a real-model WER/throughput gate. `scrybe bench` harvests existing Criterion estimates. The separate English paired STT mode reports provider-call realtime factor and WER, with the timing limitations in §9; it does not assert a >10% regression threshold, measure RAM, or establish release eligibility without a captured real-audio run.
 
 No mocking framework. No DI container. Concrete types in production; mock structs in tests. The five extension traits make this trivial.
 
@@ -1165,7 +1165,7 @@ Honest list of things I haven't resolved and that would benefit from external th
 | Should the `Hook` trait be sync or async? | **Resolved: async.** §4.5 — concurrent dispatch via `join_all`, `LifecycleEvent::HookFailed` surfaces failures, no silent errors |
 | Should there be a per-session config override? | No for v1; config is global. Re-evaluate at v0.5 |
 | How do we handle very long meetings (>4 hours)? | Periodic transcript flushes + chunked LLM summarization (rolling-window summary at every hour, final consolidation at SessionEnd). Concrete design at v0.4 |
-| Should we ship streaming Zipformer alongside Whisper? | **Resolved: yes, in M5.** Optional `--features stt-sherpa` uses the official `sherpa-onnx` binding and a manually provisioned native runtime. Whisper remains the v1 default for multilingual use. |
+| Should we ship streaming Zipformer alongside Whisper? | **Resolved: optional streaming Zipformer, unchanged Whisper default.** `--features stt-sherpa` uses the official `sherpa-onnx` binding, explicitly provisioned native runtime, and pinned Apache-2.0 English model. The paired benchmark is English-only and cannot establish multilingual superiority. A complete manually acquired real-audio report remains required release evidence; deterministic contract tests are not that evidence. |
 | Multi-microphone capture for in-room meetings | Out of scope for v1. Would require microphone-array support. Real ask, deferred. Workaround at v0.5 is the `PyannoteOnnxDiarizer` on a single far-field mic |
 | Live transcription view for users who want it | Deferred to v2. Current design has no real-time WebSocket pipeline |
 | Should `MeetingContext.attendees` drive prompt-time per-name attribution? | **Resolved: yes.** When `attendees.len() >= 3` and `Diarizer = "binary-channel"`, the LLM prompt includes attendees and is instructed to map utterances to names where context allows. When `Diarizer = "pyannote-onnx"`, cluster IDs are mapped to attendee names heuristically (longest contiguous cluster → most-frequent attendee). |

@@ -4,8 +4,17 @@
 // You may obtain a copy of the License at
 //     https://www.apache.org/licenses/LICENSE-2.0
 
-//! `scrybe bench` — harvest Criterion benchmark results into a
-//! versioned JSON snapshot under `<storage_root>/.bench/<git-sha>.json`.
+//! `scrybe bench` — two independent modes under one subcommand:
+//!
+//! - `scrybe bench` (no further subcommand): harvest Criterion benchmark
+//!   results into a versioned JSON snapshot under
+//!   `<storage_root>/.bench/<git-sha>.json`.
+//! - `scrybe bench stt`: paired same-audio `whisper-local` vs `sherpa-onnx`
+//!   accuracy/latency bench over a paired-corpus manifest. See the
+//!   `bench_stt` module docs for the full contract; this file only wires
+//!   the clap subcommand and dispatches to it unchanged otherwise.
+//!
+//! ## Criterion mode
 //!
 //! Behavior is deliberately decoupled from `cargo bench`: this command
 //! does not invoke cargo. The maintainer runs
@@ -26,13 +35,21 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use anyhow::{anyhow, Context, Result};
-use clap::Args;
+use clap::{Args, Subcommand};
 use serde::{Deserialize, Serialize};
 
+use super::bench_stt;
 use scrybe_core::storage::atomic_replace;
 
 #[derive(Args, Debug, Clone)]
+#[command(args_conflicts_with_subcommands = true)]
 pub struct BenchArgs {
+    /// STT accuracy/latency bench mode. Absent (the default): `scrybe
+    /// bench` harvests Criterion results exactly as before, using the
+    /// flags below. This subcommand is purely additive.
+    #[command(subcommand)]
+    pub mode: Option<BenchMode>,
+
     /// Criterion output directory. Defaults to `<workspace>/target/criterion`.
     #[arg(long)]
     pub criterion_dir: Option<PathBuf>,
@@ -52,6 +69,16 @@ pub struct BenchArgs {
     pub print: bool,
 }
 
+/// `scrybe bench` mode selector. Only `stt` exists today; the enum
+/// exists so a future mode can land beside it without another
+/// top-level CLI surface.
+#[derive(Subcommand, Debug, Clone)]
+pub enum BenchMode {
+    /// Paired same-audio `whisper-local` vs `sherpa-onnx` accuracy/latency
+    /// bench. See the `bench_stt` module docs for the full contract.
+    Stt(bench_stt::SttArgs),
+}
+
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub struct BenchSnapshot {
     pub git_sha: String,
@@ -69,18 +96,27 @@ pub struct BenchEntry {
     pub std_dev_ns: f64,
 }
 
-/// Run the harvest.
+/// Dispatch `scrybe bench`.
+///
+/// `stt` mode delegates to [`bench_stt::run`] entirely; every other
+/// invocation (no subcommand) runs the Criterion harvest exactly as
+/// before.
 ///
 /// `async` matches the signature shape every other subcommand uses
 /// (`bench::run`, `init::run`, `record::run`, …) so the dispatcher
 /// in `commands::run` stays a flat match without per-subcommand
-/// branching. Internally the body is fully synchronous.
+/// branching. Internally the Criterion-harvest body is fully
+/// synchronous.
 ///
 /// # Errors
 ///
-/// Surfaces `anyhow::Error` for any IO, parse, or atomic-write failure.
+/// Surfaces `anyhow::Error` for any IO, parse, or atomic-write failure,
+/// or propagates [`bench_stt::run`]'s errors verbatim in `stt` mode.
 #[allow(clippy::unused_async)]
 pub async fn run(args: BenchArgs) -> Result<()> {
+    if let Some(BenchMode::Stt(stt_args)) = args.mode {
+        return bench_stt::run(stt_args).await;
+    }
     let snapshot = harvest(&args)?;
     if args.print {
         let json =
@@ -342,6 +378,7 @@ mod tests {
         // 1. Explicit arg wins regardless of env.
         std::env::set_var("SCRYBE_GIT_SHA", "from-env");
         let arg_path = resolve_git_sha(&BenchArgs {
+            mode: None,
             criterion_dir: None,
             root: None,
             git_sha: Some("from-arg".into()),
@@ -350,6 +387,7 @@ mod tests {
 
         // 2. Env wins when arg is absent.
         let env_path = resolve_git_sha(&BenchArgs {
+            mode: None,
             criterion_dir: None,
             root: None,
             git_sha: None,
@@ -359,6 +397,7 @@ mod tests {
         // 3. Falls back to "unknown" when arg and env are both absent.
         std::env::remove_var("SCRYBE_GIT_SHA");
         let unknown_path = resolve_git_sha(&BenchArgs {
+            mode: None,
             criterion_dir: None,
             root: None,
             git_sha: None,
@@ -382,6 +421,7 @@ mod tests {
 
         let root = workdir.path().join("scrybe");
         run(BenchArgs {
+            mode: None,
             criterion_dir: Some(crit),
             root: Some(root.clone()),
             git_sha: Some("abcdef".into()),
@@ -405,6 +445,7 @@ mod tests {
         let root = workdir.path().join("scrybe");
 
         run(BenchArgs {
+            mode: None,
             criterion_dir: Some(crit),
             root: Some(root.clone()),
             git_sha: Some("abcdef".into()),
