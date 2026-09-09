@@ -18,7 +18,7 @@
 
 mod accepted_final;
 
-use accepted_final::{AcceptedFinal, AcceptedFinalBoundary, SourceAnchors};
+use accepted_final::{AcceptedFinal, AcceptedFinalBoundary, Resolved, SourceAnchors};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -558,9 +558,9 @@ where
                 hooks,
             };
             if let Some(live) = streaming.as_mut() {
-                release_streaming_ready(&progressed, &persist, live).await?;
+                release_streaming_resolved(&progressed, &persist, live).await?;
             } else {
-                release_ready(&progressed, &persist).await?;
+                release_ready(&progressed.accepted, &persist).await?;
             }
         }
         if let Some(live) = streaming.as_mut() {
@@ -648,9 +648,9 @@ where
         hooks,
     };
     if let Some(live) = streaming.as_mut() {
-        release_streaming_ready(&remaining_final, &persist, live).await?;
+        release_streaming_resolved(&remaining_final, &persist, live).await?;
     } else {
-        release_ready(&remaining_final, &persist).await?;
+        release_ready(&remaining_final.accepted, &persist).await?;
     }
     // No more partials after this point: the WAL is closed before the
     // transcript is re-rendered and the folder is renamed.
@@ -850,7 +850,10 @@ async fn process_chunk<S: SttProvider, D: Diarizer>(
         record_horizon_ms,
         progress_horizon_ms,
     );
-    release_ready(&ready, &persist).await?;
+    // Batch records carry no WAL entry (`wal_seq` is always `None`),
+    // so a suppressed echo here has nothing further to reconcile: it
+    // is simply discarded, never persisted or dispatched.
+    release_ready(&ready.accepted, &persist).await?;
     Ok(Some(outcome))
 }
 
@@ -901,17 +904,30 @@ async fn release_ready(
     Ok(())
 }
 
-/// Persist each streaming record and immediately upgrade its WAL entry.
+/// Persist every accepted record and mark its WAL entry flushed, then
+/// mark every suppressed record's WAL entry suppressed instead.
 ///
-/// The flush mark follows its own durable append, not a later batch-wide
-/// pass. A crash can therefore leave at most the one record being processed
-/// ambiguous, matching the original WAL recovery contract.
-async fn release_streaming_ready(
-    ready: &[AcceptedFinal],
+/// A suppressed record was written pending the moment its segment
+/// finalized ([`process_streaming_chunk`]'s `append_pending` call),
+/// before the accepted-final boundary could decide it was a
+/// cross-channel echo. Without this second WAL append its entry
+/// would stay `flushed_to_transcript = false` forever, and crash
+/// recovery would replay the suppressed echo into `transcript.md`
+/// even though it was correctly rejected — exactly the orphan this
+/// function exists to close. A suppressed record never reaches
+/// [`persist_final`]: no durable transcript append, no
+/// `ChunkTranscribed` dispatch.
+///
+/// The flush/suppressed mark follows its own durable append, not a
+/// later batch-wide pass. A crash can therefore leave at most the
+/// one record being processed ambiguous, matching the original WAL
+/// recovery contract.
+async fn release_streaming_resolved(
+    resolved: &Resolved,
     persist: &PersistContext<'_>,
     live: &mut LiveStreaming<'_>,
 ) -> Result<(), CoreError> {
-    for record in ready {
+    for record in &resolved.accepted {
         persist_final(record, persist).await?;
         let Some(seq) = record.wal_seq else {
             continue;
@@ -922,6 +938,18 @@ async fn release_streaming_ready(
         };
         live.wal
             .mark_flushed(seq, attributed)
+            .map_err(CoreError::Storage)?;
+    }
+    for record in &resolved.suppressed {
+        let Some(seq) = record.wal_seq else {
+            continue;
+        };
+        let attributed = AttributedChunk {
+            chunk: record.transcript.clone(),
+            speaker: speaker_for(record.source),
+        };
+        live.wal
+            .mark_suppressed(seq, attributed)
             .map_err(CoreError::Storage)?;
     }
     Ok(())
@@ -1127,7 +1155,7 @@ async fn process_streaming_chunk(
         record_horizon_ms,
         progress_horizon_ms,
     );
-    release_streaming_ready(&ready, &persist, live).await?;
+    release_streaming_resolved(&ready, &persist, live).await?;
     Ok(Some(outcome))
 }
 
@@ -2214,6 +2242,67 @@ mod tests {
         }
     }
 
+    /// Deterministic streaming provider whose finalized token timing is
+    /// derived directly from `finalize`'s own `start` parameter, never
+    /// a separately tracked internal clock, so a segment's
+    /// dedup-relevant token offset from its own `start_ms` is always
+    /// exactly zero. Built for the cross-channel echo test: driving
+    /// symmetric mic/system frames through this provider produces
+    /// textually and temporally identical tokens on both sides, a
+    /// genuine echo the accepted-final boundary's dedup decision must
+    /// catch. `accept` never emits a partial update, keeping the WAL
+    /// free of hypothesis noise the test does not care about.
+    #[derive(Default)]
+    struct EchoingStreaming {
+        finals: AtomicUsize,
+    }
+
+    impl EchoingStreaming {
+        fn finals(&self) -> usize {
+            self.finals.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait]
+    impl StreamingSttProvider for EchoingStreaming {
+        async fn accept(
+            &self,
+            _audio: AudioChunk,
+        ) -> Result<Option<crate::providers::streaming::StreamingUpdate>, SttError> {
+            Ok(None)
+        }
+
+        async fn finalize(
+            &self,
+            source: FrameSource,
+            start: Duration,
+            duration: Duration,
+        ) -> Result<Option<crate::providers::streaming::StreamingUpdate>, SttError> {
+            self.finals.fetch_add(1, Ordering::SeqCst);
+            let start_ms = u64::try_from(start.as_millis()).unwrap_or(0);
+            Ok(Some(crate::providers::streaming::StreamingUpdate {
+                stage: StreamingStage::Final,
+                chunk: TranscriptChunk {
+                    text: "hello world".to_string(),
+                    source,
+                    start_ms,
+                    duration_ms: u64::try_from(duration.as_millis()).unwrap_or(0),
+                    language: Some("en".to_string()),
+                    tokens: vec![
+                        crate::types::TokenTiming {
+                            token: "hello".to_string(),
+                            timestamp_ms: start_ms,
+                        },
+                        crate::types::TokenTiming {
+                            token: "world".to_string(),
+                            timestamp_ms: start_ms + 400,
+                        },
+                    ],
+                },
+            }))
+        }
+    }
+
     fn wal_records(folder: &std::path::Path) -> Vec<crate::storage::TranscriptPartialRecord> {
         let text =
             std::fs::read_to_string(folder.join(crate::storage::TRANSCRIPT_PARTIAL_LOG_NAME))
@@ -2390,6 +2479,110 @@ mod tests {
         let transcript = std::fs::read_to_string(&outputs.transcript_path).unwrap();
         assert!(transcript.contains("final-"), "transcript: {transcript}");
         assert!(!outputs.chunks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_streaming_dedup_excludes_mic_echo_and_leaves_zero_orphans_on_recovery() {
+        // Mic and System are driven with symmetric, interleaved frames
+        // (same pattern as
+        // `test_run_dual_source_reconstructs_transcript_exactly_from_
+        // dispatched_events`), and `EchoingStreaming` finalizes the
+        // exact same tokens at the exact same anchor-aligned instant
+        // on both sides -- a genuine cross-channel echo. Every Mic
+        // segment must be dedup-suppressed: excluded from
+        // `transcript.md` and the `ChunkTranscribed` hook, its WAL
+        // entry marked suppressed rather than left an orphan, so
+        // `scan_recovery` reports zero orphans once the session ends.
+        let tmp = tempfile::tempdir().unwrap();
+        let stt = CountingStt::default();
+        let streaming = EchoingStreaming::default();
+        let llm = CannedLlm;
+        let diarizer = PassThroughDiarizer;
+        let prompter = AcceptingPrompter;
+        let recorder = RecordingHook::default();
+        let hooks: Vec<Box<dyn Hook>> = vec![Box::new(recorder.clone())];
+
+        // 100 ms frames against a 300 ms max chunk on both sources: each
+        // produces one mid-capture `MaxDuration` split plus one
+        // `EndOfStream` tail chunk -- 2 finalized segments per source,
+        // 4 total.
+        let mut interleaved: Vec<Result<AudioFrame, crate::error::CaptureError>> = Vec::new();
+        for i in 0..6 {
+            let ts = i * 100_000_000;
+            interleaved.push(Ok(stereo_speech_frame(ts, 4_800, FrameSource::Mic)));
+            interleaved.push(Ok(stereo_speech_frame(ts, 4_800, FrameSource::System)));
+        }
+        let frames = stream::iter(interleaved);
+
+        let inputs = SessionInputs {
+            id: SessionId::new(),
+            started_at: dt(),
+            root: tmp.path().to_path_buf(),
+            title: Some("dedup".into()),
+            user: "tom".into(),
+            consent_mode: ConsentMode::Quick,
+            context: MeetingContext::default(),
+            mic_vad: EnergyVad::default(),
+            system_vad: Some(EnergyVad::default()),
+            stt: &stt,
+            streaming_stt: Some(&streaming),
+            llm: &llm,
+            diarizer: &diarizer,
+            prompter: &prompter,
+            hooks: &hooks,
+            chunker_config: small_chunker_config(),
+            verify_duration: false,
+        };
+
+        let outputs = run(inputs, frames).await.unwrap();
+
+        assert_eq!(stt.calls(), 0, "streaming replaces the batch STT call");
+        assert_eq!(
+            streaming.finals(),
+            4,
+            "2 finalized segments per source: mid-capture split + tail"
+        );
+
+        // Every dispatched `ChunkTranscribed` event came from System;
+        // every Mic echo was suppressed before persistence and hook
+        // dispatch.
+        let dispatched = recorder.snapshot();
+        assert_eq!(
+            dispatched.len(),
+            2,
+            "only System's 2 segments must reach the hook"
+        );
+        assert!(
+            dispatched.iter().all(|c| c.speaker == SpeakerLabel::Them),
+            "a suppressed Mic echo must never appear in ChunkTranscribed: {dispatched:?}"
+        );
+
+        let transcript = std::fs::read_to_string(&outputs.transcript_path).unwrap();
+        assert!(
+            !transcript.contains("**Me**"),
+            "a suppressed Mic echo must never appear in transcript.md: {transcript}"
+        );
+
+        // Crash-recovery view: the suppressed Mic entries must be
+        // neither orphans (unflushed, replayable) nor flushed finals
+        // (they never reached transcript.md) -- the entire point of
+        // `TranscriptRecordKind::Suppressed`.
+        let report = crate::storage::scan_recovery(&outputs.folder).unwrap();
+        assert_eq!(
+            report.orphans,
+            Vec::<crate::storage::TranscriptPartialRecord>::new(),
+            "a dedup-suppressed echo must never be a recoverable orphan"
+        );
+        assert_eq!(
+            report.suppressed_seqs.len(),
+            2,
+            "both suppressed Mic segments must be marked suppressed, not left pending"
+        );
+        assert_eq!(
+            report.flushed_seqs.len(),
+            2,
+            "both accepted System segments must be marked flushed"
+        );
     }
 
     #[tokio::test]
