@@ -43,6 +43,9 @@ pub use native_mic::NativeMicCapture;
 #[cfg(all(target_os = "macos", feature = "core-audio-tap"))]
 pub mod probe_chime;
 
+#[cfg(all(target_os = "macos", feature = "voice-processing-io-probe"))]
+pub mod voice_processing_io_probe;
+
 #[cfg(all(target_os = "macos", feature = "system-capture-sck"))]
 pub mod screencapturekit;
 

@@ -39,6 +39,19 @@ core-audio-tap = [
 # only its 16 kHz mono audio callback.
 system-capture-sck = ["dep:screencapturekit"]
 
+# Standalone diagnostic probe for Apple's `VoiceProcessingIO` audio
+# unit (macOS's built-in AEC/NS voice-processing AudioUnit). This is
+# NOT the `[record].aec` capture feature: it does not touch
+# `NativeMicCapture`/`native_mic.rs` or any microphone stream, and it
+# changes no capture behavior, config, default, or lifecycle. It only
+# locates the `auou`/`vpio`/`appl` component, fully initializes an
+# instance to establish runtime availability, and tears it down. See
+# `voice_processing_io_probe` and
+# `examples/voice_processing_io_probe.rs`. Independent of
+# `core-audio-tap` so it can be probed without enabling the capture
+# adapter.
+voice-processing-io-probe = ["dep:objc2-audio-toolbox"]
+
 [dependencies]
 async-trait.workspace = true
 futures.workspace = true
@@ -56,11 +69,16 @@ objc2-core-audio-types = { workspace = true, optional = true }
 block2 = { workspace = true, optional = true }
 dispatch2 = { workspace = true, optional = true }
 cpal = { version = "0.15", optional = true }
+objc2-audio-toolbox = { workspace = true, optional = true }
 screencapturekit = { version = "9.0.1", features = ["macos_13_0"], optional = true }
 
 [dev-dependencies]
 pretty_assertions = "1"
 tokio = { version = "1.42", features = ["macros", "rt-multi-thread", "test-util", "time"] }
+
+[[example]]
+name = "voice_processing_io_probe"
+required-features = ["voice-processing-io-probe"]
 
 [lints]
 workspace = true
