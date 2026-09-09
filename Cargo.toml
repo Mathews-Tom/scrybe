@@ -126,6 +126,19 @@ version = "0.3"
 default-features = false
 features = ["std", "objc2"]
 
+# Bindings for a standalone, manually invocable runtime probe of
+# Apple's `VoiceProcessingIO` audio unit (`scrybe-capture-mac`,
+# feature `voice-processing-io-probe`). Diagnostic only: it locates
+# and fully initializes the component to establish availability,
+# then tears it down. It never starts audio I/O and is unrelated to
+# the `core-audio-tap` capture adapter, `NativeMicCapture`, or any
+# `[record].aec` production path. Feature-gated like the other Apple
+# bindings above, so non-macOS and default builds stay unaffected.
+[workspace.dependencies.objc2-audio-toolbox]
+version = "0.3"
+default-features = false
+features = ["std", "AudioComponent", "AUComponent"]
+
 [profile.release]
 codegen-units = 1
 lto = "thin"
