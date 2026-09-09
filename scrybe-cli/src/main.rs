@@ -72,5 +72,6 @@ fn init_tracing() {
         .with_env_filter(filter)
         .with_target(false)
         .compact()
+        .with_writer(std::io::stderr)
         .init();
 }
