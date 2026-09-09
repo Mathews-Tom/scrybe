@@ -52,6 +52,16 @@ pub enum TranscriptRecordKind {
     /// crash leaves evidence of in-flight speech. Never rendered into
     /// `transcript.md`.
     Partial,
+    /// A final chunk the accepted-final boundary rejected as a
+    /// cross-channel echo (M6 PR-2's dedup decision). Never rendered
+    /// into `transcript.md` or dispatched as `ChunkTranscribed`.
+    ///
+    /// Written with `flushed_to_transcript = true` on the same
+    /// principle as [`Self::Partial`]: a reader built before this
+    /// variant existed does not know this `kind` value, and the
+    /// flushed bit alone is what stops it from treating the pending
+    /// record this replaces as an orphan to replay.
+    Suppressed,
 }
 
 /// One line in the WAL. The shape is stable inside the v0.x train —
@@ -154,6 +164,34 @@ impl TranscriptPartialLog {
         self.write_line(&record)
     }
 
+    /// Re-append the same record as [`TranscriptRecordKind::Suppressed`]
+    /// with `flushed_to_transcript = true`.
+    ///
+    /// Called instead of [`Self::mark_flushed`] when the accepted-final
+    /// boundary rejects this record as a cross-channel echo: the chunk
+    /// was already written pending by [`Self::append_pending`] before
+    /// the boundary's dedup decision was known, so without this second
+    /// append the entry would stay `flushed_to_transcript = false`
+    /// forever and crash recovery would replay the suppressed echo
+    /// into `transcript.md`.
+    ///
+    /// # Errors
+    ///
+    /// `StorageError::Io` for filesystem failures.
+    pub fn mark_suppressed(
+        &mut self,
+        seq: u64,
+        chunk: AttributedChunk,
+    ) -> Result<(), StorageError> {
+        let record = TranscriptPartialRecord {
+            seq,
+            flushed_to_transcript: true,
+            kind: TranscriptRecordKind::Suppressed,
+            chunk,
+        };
+        self.write_line(&record)
+    }
+
     /// Append one streaming hypothesis.
     ///
     /// Tagged [`TranscriptRecordKind::Partial`] and marked flushed so no
@@ -204,6 +242,12 @@ pub struct RecoveryReport {
     /// recovery never renders them, and they are neither flushed nor
     /// orphaned work.
     pub partial_record_count: u64,
+    /// Records the accepted-final boundary rejected as a cross-channel
+    /// echo ([`TranscriptRecordKind::Suppressed`]). Reported for
+    /// triage only: recovery never renders them and they are neither
+    /// flushed final records nor orphaned work — the whole point of
+    /// this variant is that they must never be replayed.
+    pub suppressed_seqs: Vec<u64>,
 }
 
 /// Read the WAL at `session_folder/transcript.partial.jsonl` and return
@@ -257,6 +301,13 @@ pub fn scan_recovery(session_folder: &Path) -> Result<RecoveryReport, StorageErr
             TranscriptRecordKind::Partial => {
                 report.partial_record_count = report.partial_record_count.saturating_add(1);
             }
+            // A suppressed final is neither pending work nor a record
+            // that reached `transcript.md`: it is excluded from both
+            // `flushed_seqs` and `orphans`, so recovery never replays
+            // it.
+            TranscriptRecordKind::Suppressed => {
+                report.suppressed_seqs.push(record.seq);
+            }
             TranscriptRecordKind::Final if record.flushed_to_transcript => {
                 report.flushed_seqs.push(record.seq);
             }
@@ -266,6 +317,7 @@ pub fn scan_recovery(session_folder: &Path) -> Result<RecoveryReport, StorageErr
 
     report.flushed_seqs.sort_unstable();
     report.orphans.sort_by_key(|r| r.seq);
+    report.suppressed_seqs.sort_unstable();
 
     Ok(report)
 }
@@ -529,5 +581,102 @@ mod tests {
             serde_json::from_str(text.lines().last().unwrap()).unwrap();
         assert_eq!(last.chunk.chunk.tokens, timed.chunk.tokens);
         assert_eq!(report.flushed_seqs, vec![seq]);
+    }
+
+    #[test]
+    fn test_mark_suppressed_excludes_seq_from_flushed_and_orphans() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut log = TranscriptPartialLog::open(dir.path()).unwrap();
+        let echo = chunk("mic echo", SpeakerLabel::Me, 1_000);
+        let seq = log.append_pending(echo.clone()).unwrap();
+
+        // Simulates the accepted-final boundary rejecting this record
+        // as a cross-channel echo after it was already written pending.
+        log.mark_suppressed(seq, echo).unwrap();
+
+        let report = scan_recovery(dir.path()).unwrap();
+
+        assert_eq!(
+            report.orphans,
+            Vec::<TranscriptPartialRecord>::new(),
+            "a suppressed record must never be recoverable as an orphan"
+        );
+        assert_eq!(
+            report.flushed_seqs,
+            Vec::<u64>::new(),
+            "a suppressed record never reached transcript.md, so it is not a flushed final either"
+        );
+        assert_eq!(report.suppressed_seqs, vec![seq]);
+    }
+
+    #[test]
+    fn test_scan_recovery_separates_flushed_orphan_and_suppressed_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut log = TranscriptPartialLog::open(dir.path()).unwrap();
+
+        let flushed = log
+            .append_pending(chunk("kept", SpeakerLabel::Me, 0))
+            .unwrap();
+        log.mark_flushed(flushed, chunk("kept", SpeakerLabel::Me, 0))
+            .unwrap();
+
+        let orphan = log
+            .append_pending(chunk("crash before flush", SpeakerLabel::Them, 1_000))
+            .unwrap();
+
+        let suppressed = log
+            .append_pending(chunk("mic echo", SpeakerLabel::Me, 2_000))
+            .unwrap();
+        log.mark_suppressed(suppressed, chunk("mic echo", SpeakerLabel::Me, 2_000))
+            .unwrap();
+
+        let report = scan_recovery(dir.path()).unwrap();
+
+        assert_eq!(report.flushed_seqs, vec![flushed]);
+        assert_eq!(report.orphans.len(), 1);
+        assert_eq!(report.orphans[0].seq, orphan);
+        assert_eq!(report.suppressed_seqs, vec![suppressed]);
+    }
+
+    #[test]
+    fn test_scan_recovery_treats_a_reader_ignorant_of_suppressed_kind_compatibly() {
+        // Simulates a reader built before `TranscriptRecordKind::Suppressed`
+        // existed: it cannot interpret `"kind":"suppressed"`, so the
+        // second line is unparseable to it and it would fall back to
+        // the first (pending, unflushed) line alone. Compatibility
+        // depends on that fallback still not looking like recoverable
+        // work once combined with everything the reader *does*
+        // understand about this exact WAL -- proven here on the
+        // current, kind-aware reader, whose behavior is a strict
+        // superset: it must place the seq in neither `flushed_seqs`
+        // nor `orphans`.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(TRANSCRIPT_PARTIAL_LOG_NAME),
+            b"{\"seq\":1,\"flushed_to_transcript\":false,\"kind\":\"final\",\"chunk\":{\"chunk\":{\"text\":\"mic echo\",\"source\":\"mic\",\"start_ms\":0,\"duration_ms\":1000,\"language\":null},\"speaker\":{\"kind\":\"me\"}}}\n\
+             {\"seq\":1,\"flushed_to_transcript\":true,\"kind\":\"suppressed\",\"chunk\":{\"chunk\":{\"text\":\"mic echo\",\"source\":\"mic\",\"start_ms\":0,\"duration_ms\":1000,\"language\":null},\"speaker\":{\"kind\":\"me\"}}}\n",
+        )
+        .unwrap();
+
+        let report = scan_recovery(dir.path()).unwrap();
+
+        assert_eq!(report.orphans, Vec::<TranscriptPartialRecord>::new());
+        assert_eq!(report.flushed_seqs, Vec::<u64>::new());
+        assert_eq!(report.suppressed_seqs, vec![1]);
+    }
+
+    #[test]
+    fn test_mark_suppressed_round_trips_kind_and_flushed_bit() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut log = TranscriptPartialLog::open(dir.path()).unwrap();
+        let echo = chunk("mic echo", SpeakerLabel::Me, 0);
+        let seq = log.append_pending(echo.clone()).unwrap();
+        log.mark_suppressed(seq, echo).unwrap();
+
+        let text = std::fs::read_to_string(dir.path().join(TRANSCRIPT_PARTIAL_LOG_NAME)).unwrap();
+        let last: TranscriptPartialRecord =
+            serde_json::from_str(text.lines().last().unwrap()).unwrap();
+        assert_eq!(last.kind, TranscriptRecordKind::Suppressed);
+        assert!(last.flushed_to_transcript);
     }
 }
