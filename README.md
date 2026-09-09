@@ -132,7 +132,7 @@ scrybe is a Rust workspace with a small core and platform adapters:
 |---|---|
 | `scrybe` | Published placeholder crate and public package identity |
 | `scrybe-core` | Session orchestration, storage, config, providers, hooks, diarization, pipeline |
-| `scrybe-cli` | CLI binary: `init`, `record`, `list`, `show`, `doctor`, `bench` |
+| `scrybe-cli` | CLI binary: `init`, `record`, `list`, `show`, `doctor`, `bench`, `mcp` (opt-in) |
 | `scrybe-capture-mac` | macOS Core Audio Taps adapter |
 | `scrybe-capture-mic` | Cross-platform microphone adapter via `cpal` |
 | `scrybe-capture-linux` | PipeWire/Pulse adapter surface |
@@ -156,6 +156,7 @@ The Tier-1 stability contract is documented in [`docs/system-design.md`](docs/sy
 - API keys are read from named environment variables.
 - There is no account system, sync service, telemetry, hosted backend, or bot that joins calls.
 - Courtesy notification is part of the recording flow and is recorded in `meta.toml`.
+- `scrybe mcp` (feature `agent-access`, off by default) is a read-only local-agent surface over `~/scrybe/`: it exposes `list_recent_meetings`, `search_meetings`, `get_meeting`, `get_meeting_notes`, and `get_meeting_transcript` as MCP tools over stdio JSON-RPC. There is no write, delete, or mutate capability anywhere in the module, and no network listener — stdio only, reachable only by spawning it as a child process. The server refuses to start unless `[agent_access].enabled = true` is set explicitly in `config.toml`.
 
 Run the egress audit locally:
 

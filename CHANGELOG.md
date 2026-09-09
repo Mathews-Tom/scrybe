@@ -4,6 +4,16 @@ All notable changes to scrybe are documented here. The format follows [Keep a Ch
 
 ## [Unreleased]
 
+### Added
+
+- `scrybe mcp` (feature `agent-access`, off by default): a read-only local-agent access surface over `~/scrybe/`, serving `list_recent_meetings`, `search_meetings`, `get_meeting`, `get_meeting_notes`, and `get_meeting_transcript` as MCP tools over newline-delimited JSON-RPC on stdin/stdout. Every response carries a `schema_version`. An unfinished session (per the `journal/`-with-no-`audio.opus`-and-no-`meta.toml` invariant) is reported as unfinished rather than served as complete.
+- `[agent_access]` config block (`enabled`, default `false`). `scrybe mcp` refuses to start unless it is explicitly set to `true`.
+
+### Security
+
+- The `agent_access` module has no write, delete, or mutate call path: every filesystem read goes through a capability-limited `ReadOnlyFs` abstraction with no method that could create, modify, rename, or delete anything. There is no network listener — the transport is stdio only.
+- Default-feature builds remain free of the `agent-access` surface entirely; it does not compile in unless built with `--features agent-access`.
+
 ## [1.2.1] — 2026-09-06
 
 This release completes the macOS capture-liveness train. A dead or wrong input device now produces an observable failure path instead of a silently empty recording, and shutdown coordinates capture teardown with durable journal finalization.

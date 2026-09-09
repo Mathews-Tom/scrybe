@@ -20,6 +20,15 @@ default = []
 hook-git = ["scrybe-core/hook-git"]
 whisper-local = ["scrybe-core/whisper-local"]
 stt-sherpa = ["scrybe-core/stt-sherpa"]
+# `scrybe mcp`: read-only local-agent access over `~/scrybe/` (M9).
+# Off by default; forwards to `scrybe-core`'s feature of the same
+# name, which itself carries no write/delete/mutate capability
+# regardless of this flag — the feature only gates whether the stdio
+# JSON-RPC/MCP surface compiles in at all. `tokio/io-std` is the
+# existing `tokio` dependency's async stdin/stdout wrapper, enabled
+# only for this feature (mirrors `system-capture-mac`'s conditional
+# `tokio/process` below). No new dependency.
+agent-access = ["scrybe-core/agent-access", "tokio/io-std"]
 # Enables the live cpal binding in `scrybe-capture-mic` so
 # `scrybe record --mic` opens the default input device. Off by default
 # so the cpal transitive dependency tree (CoreAudio / ALSA / WASAPI

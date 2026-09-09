@@ -81,6 +81,14 @@ pub struct Config {
     /// the live `Capabilities` and `MeetingContext`.
     #[serde(default)]
     pub diarizer: DiarizerConfig,
+    /// Read-only local-agent access over the storage root (M9).
+    ///
+    /// Present in the schema on every build so a config file that
+    /// sets it still parses cleanly without the `agent-access`
+    /// feature enabled; `scrybe mcp` itself only exists behind that
+    /// feature.
+    #[serde(default)]
+    pub agent_access: AgentAccessConfig,
 }
 
 const fn default_schema_version() -> u32 {
@@ -103,6 +111,7 @@ impl Default for Config {
             windows: WindowsConfig::default(),
             android: AndroidConfig::default(),
             diarizer: DiarizerConfig::default(),
+            agent_access: AgentAccessConfig::default(),
         }
     }
 }
@@ -627,6 +636,20 @@ impl DiarizerConfig {
     }
 }
 
+/// `[agent_access]` block. Off by default.
+///
+/// `scrybe mcp` refuses to start unless a config file explicitly sets
+/// `enabled = true` (M9, `.docs/DEVELOPMENT_PLAN.md` §6, acceptance
+/// (a)). An agent that can read `~/scrybe/` is a privacy-sensitive
+/// surface even though it has no write capability — see
+/// `README.md`'s Privacy and Network Posture section.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentAccessConfig {
+    #[serde(default)]
+    pub enabled: bool,
+}
+
 impl Config {
     /// Resolve the platform-conventional config path. Honors
     /// `SCRYBE_CONFIG` for tests and air-gapped deployments.
@@ -1058,6 +1081,37 @@ default_mode = "notify"
         let c = Config::default();
 
         assert_eq!(c.linux.audio_backend, "auto");
+    }
+
+    #[test]
+    fn test_config_default_has_agent_access_disabled() {
+        let c = Config::default();
+
+        assert!(!c.agent_access.enabled);
+    }
+
+    #[test]
+    fn test_config_parses_explicit_agent_access_enabled() {
+        let toml = r"
+[agent_access]
+enabled = true
+";
+
+        let c = Config::from_toml_str(toml, &fake_path()).unwrap();
+
+        assert!(c.agent_access.enabled);
+    }
+
+    #[test]
+    fn test_config_omitting_agent_access_block_still_parses_with_disabled_default() {
+        let toml = r#"
+[stt]
+provider = "openai-compat"
+"#;
+
+        let c = Config::from_toml_str(toml, &fake_path()).unwrap();
+
+        assert!(!c.agent_access.enabled);
     }
 
     #[test]
