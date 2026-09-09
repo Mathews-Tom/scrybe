@@ -12,6 +12,13 @@ rust-version.workspace = true
 
 [features]
 default = []
+# Read-only local-agent access over `~/scrybe/` (M9,
+# `.docs/DEVELOPMENT_PLAN.md` §6). Off by default: no write/delete/mutate
+# capability exists in the `agent_access` module regardless of this
+# feature, but the stdio JSON-RPC/MCP surface itself only compiles in
+# when a consumer opts in. Adds no new dependency — built entirely on
+# `serde_json`, `toml`, and `chrono`, already unconditional deps below.
+agent-access = []
 # Enables Hook::Git via git2 / libgit2. Off by default so the workspace
 # builds without a system libgit2; enable in scrybe-cli when the user
 # turns on the [hooks.git] section in config.

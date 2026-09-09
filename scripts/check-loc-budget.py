@@ -109,8 +109,10 @@ LOC_CEILINGS: dict[str, int] = {
     # stateful normalization, token conversion, and recovery-safe WAL records.
     # Raised to 13000 for M5's paired STT benchmark: strict checked corpus
     # parsing, PCM16 WAV validation, complete result-matrix aggregation, and
-    # versioned WER/provider-lifecycle reporting.
-    "scrybe-core": 13000,
+    # versioned WER/provider-lifecycle reporting. Raised to 14250 for M9's
+    # capability-limited session reader, protocol, and behavioral proof that
+    # every served operation leaves the fixture tree unchanged.
+    "scrybe-core": 14250,
     # 2000 was the v0.5 ceiling. Raised to 2300 at v0.6 to absorb the
     # `scrybe bench` subcommand. Raised to 2500 at v1.0.1 to absorb
     # the `--source mic` and `--whisper-model` wiring on `scrybe record`
@@ -175,8 +177,9 @@ LOC_CEILINGS: dict[str, int] = {
     # ergonomic forwarding. Both paths reject a missing feature instead of
     # silently substituting the stub provider. Raised to 4750 for M5's explicit
     # `bench stt` mode, its fail-loud provision checks, and the unchanged
-    # Criterion-harvest dispatch.
-    "scrybe-cli": 4750,
+    # Criterion-harvest dispatch. Raised to 4850 for M9's default-off stdio
+    # command, config refusal, and recorded five-tool integration transcript.
+    "scrybe-cli": 4850,
     "scrybe-capture-mac": 2500,
     "scrybe-capture-linux": 2500,
     "scrybe-capture-win": 2500,

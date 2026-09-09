@@ -365,6 +365,27 @@ api_key_env = "GROQ_API_KEY"
 
 Without `--features llm-openai-compat`, `--llm openai-compat` errors at start time rather than silently falling back to the stub — same hard-error pattern as `--whisper-model` without `--features whisper-local` (v1.0.1).
 
+## Read-only local-agent access (`scrybe mcp`)
+
+`scrybe mcp` serves `list_recent_meetings`, `search_meetings`, `get_meeting`, `get_meeting_notes`, and `get_meeting_transcript` as MCP tools over newline-delimited JSON-RPC on stdin/stdout. It is off by default at two layers: the binary needs the `agent-access` build feature, and the running config needs an explicit opt-in.
+
+```sh
+cargo install --path scrybe-cli --features agent-access
+```
+
+Enable it in `config.toml`:
+
+```toml
+[agent_access]
+enabled = true
+```
+
+```sh
+scrybe mcp --root ~/scrybe
+```
+
+Without `[agent_access].enabled = true`, `scrybe mcp` exits immediately with an error rather than starting — the surface has no write, delete, or mutate capability and no network listener, but reading meeting content is still privacy-sensitive, so it stays opt-in. See `README.md`'s Privacy and Network Posture section.
+
 ---
 
 ## Why no notarization?

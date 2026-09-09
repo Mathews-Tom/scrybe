@@ -16,6 +16,8 @@
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 #![allow(clippy::module_name_repetitions)]
 
+#[cfg(feature = "agent-access")]
+pub mod agent_access;
 pub mod capture;
 pub mod config;
 pub mod consent;
