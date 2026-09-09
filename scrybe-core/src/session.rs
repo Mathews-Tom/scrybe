@@ -16,6 +16,9 @@
 //! their own implementations. Tests inject deterministic fakes through
 //! the same generic surface — no `dyn` indirection in the hot path.
 
+mod accepted_final;
+
+use accepted_final::{AcceptedFinal, AcceptedFinalBoundary, SourceAnchors};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -255,6 +258,12 @@ struct JournalSlot {
     sample_rate: u32,
     channels: u16,
     writer: JournalWriter,
+    /// Captured audio duration accumulated so far, in milliseconds,
+    /// from sample counts alone — never from `AudioFrame::timestamp_ns`
+    /// (`types::audio::AudioFrame::timestamp_ns`'s origin is
+    /// source-defined and undefined across sources). This is the
+    /// accepted-final boundary's only per-source progress signal.
+    captured_ms: u64,
 }
 
 impl JournalSlot {
@@ -282,6 +291,29 @@ impl SessionJournals {
         }
     }
 
+    /// First-frame wall-clock anchors known so far, one per source.
+    /// The accepted-final boundary's only window into this state —
+    /// never sample rate, channel count, or the writer handle.
+    fn anchors(&self) -> SourceAnchors {
+        SourceAnchors {
+            mic: self.mic.as_ref().map(|slot| slot.first_frame_epoch_ms),
+            system: self.system.as_ref().map(|slot| slot.first_frame_epoch_ms),
+        }
+    }
+
+    /// Captured audio duration for `source` so far, in milliseconds,
+    /// accumulated purely from sample counts as frames are journaled.
+    /// Combined with [`Self::anchors`]'s epoch value (never with a raw
+    /// frame timestamp), this is what the accepted-final boundary
+    /// orders records by.
+    fn elapsed_ms(&self, source: FrameSource) -> u64 {
+        let slot = match source {
+            FrameSource::System => &self.system,
+            FrameSource::Mic | FrameSource::Mixed => &self.mic,
+        };
+        slot.as_ref().map_or(0, |s| s.captured_ms)
+    }
+
     fn push(&mut self, frame: &AudioFrame) -> Result<(), CoreError> {
         let slot = match frame.source {
             FrameSource::System => &mut self.system,
@@ -296,10 +328,12 @@ impl SessionJournals {
                 sample_rate: frame.sample_rate,
                 channels: frame.channels,
                 writer,
+                captured_ms: 0,
             });
         }
-        if let Some(s) = slot.as_ref() {
+        if let Some(s) = slot.as_mut() {
             s.writer.push(Arc::clone(&frame.samples));
+            s.captured_ms = s.captured_ms.saturating_add(frame_duration_ms(frame));
         }
         if spawned_new {
             // Refresh the on-disk manifest immediately, not just at
@@ -360,6 +394,49 @@ fn finish_anchor(slot: Option<JournalSlot>) -> Result<Option<JournalAnchor>, Cor
         channels: summary.channels,
         frames_written: summary.frames_written,
     }))
+}
+
+/// Duration of one captured frame's audio, in milliseconds, from its
+/// sample count. Mirrors `pipeline::chunker`'s own sample-count-based
+/// frame duration so `SessionJournals`' accumulated total agrees with
+/// the chunker's `EmittedChunk::duration` — never derived from
+/// `AudioFrame::timestamp_ns`, whose origin is source-defined and
+/// undefined across sources.
+fn frame_duration_ms(frame: &AudioFrame) -> u64 {
+    if frame.sample_rate == 0 || frame.channels == 0 {
+        return 0;
+    }
+    let frames_per_channel = frame.samples.len() / usize::from(frame.channels);
+    let frames_per_channel = u64::try_from(frames_per_channel).unwrap_or(u64::MAX);
+    frames_per_channel.saturating_mul(1_000) / u64::from(frame.sample_rate)
+}
+
+/// The anchor-aligned wall-clock instant `elapsed_ms` (minus
+/// `back_ms`, to backdate to where a chunk began) represents for
+/// `source`, once both source anchors are known.
+///
+/// `None` while at most one anchor exists — the accepted-final
+/// boundary must stay on its immediate path until then. Built only
+/// from [`SessionJournals::anchors`] and [`SessionJournals::elapsed_ms`]
+/// (a first-frame epoch plus accumulated captured audio); never from
+/// `AudioFrame::timestamp_ns`.
+fn source_horizon(
+    anchors: SourceAnchors,
+    source: FrameSource,
+    elapsed_ms: u64,
+    back_ms: u64,
+) -> Option<i64> {
+    if !anchors.both_known() {
+        return None;
+    }
+    let anchor_ms = anchors.anchor_for(source)?;
+    let position_ms = elapsed_ms.saturating_sub(back_ms);
+    let position_ms = i64::try_from(position_ms).unwrap_or(i64::MAX);
+    Some(anchor_ms.saturating_add(position_ms))
+}
+
+fn duration_to_ms(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 #[allow(clippy::too_many_lines)]
@@ -432,6 +509,7 @@ where
     // `AudioFrame::timestamp_ns` across sources).
     let encoder_config = EncoderConfig::default();
     let mut journals = SessionJournals::new(folder.join("journal"));
+    let mut boundary = AcceptedFinalBoundary::new();
     let mut terminal_capture_error = None;
 
     // Streaming providers get a per-source live boundary plus the
@@ -457,6 +535,34 @@ where
             }
         };
         journals.push(&frame)?;
+        // Raw frame arrival is a progress signal independent of
+        // chunker finalization: without this, a held dual-source
+        // record would only ever be reconsidered when the *next*
+        // final chunk happens to arrive, which can lag well behind
+        // real captured audio (`ChunkerConfig::max_chunk`, or longer
+        // while VAD keeps calling speech). The horizon is built only
+        // from the anchor plus accumulated captured audio — never
+        // from `AudioFrame::timestamp_ns`, whose origin is undefined
+        // across sources.
+        let horizon_ms = source_horizon(
+            journals.anchors(),
+            frame.source,
+            journals.elapsed_ms(frame.source),
+            0,
+        );
+        let progressed = boundary.advance(frame.source, horizon_ms);
+        if !progressed.is_empty() {
+            let persist = PersistContext {
+                transcript_path: &transcript_path,
+                session_id: id,
+                hooks,
+            };
+            if let Some(live) = streaming.as_mut() {
+                release_streaming_ready(&progressed, &persist, live).await?;
+            } else {
+                release_ready(&progressed, &persist).await?;
+            }
+        }
         if let Some(live) = streaming.as_mut() {
             live.push_frame(&frame).await?;
         }
@@ -474,11 +580,18 @@ where
         }
 
         for chunk in chunks_for_stt {
+            let persist = PersistContext {
+                transcript_path: &transcript_path,
+                session_id: id,
+                hooks,
+            };
             let outcome = match streaming.as_mut() {
                 Some(live) => {
-                    process_streaming_chunk(live, &chunk, &transcript_path, id, hooks).await?
+                    process_streaming_chunk(live, &mut boundary, &journals, &chunk, persist).await?
                 }
-                None => process_chunk(chunk, stt, &transcript_path, id, hooks, diarizer).await?,
+                None => {
+                    process_chunk(chunk, stt, &mut boundary, &journals, persist, diarizer).await?
+                }
             };
             if let Some(result) = outcome {
                 match result.target {
@@ -506,11 +619,16 @@ where
         }
     }
     for chunk in tail_for_stt {
+        let persist = PersistContext {
+            transcript_path: &transcript_path,
+            session_id: id,
+            hooks,
+        };
         let outcome = match streaming.as_mut() {
             Some(live) => {
-                process_streaming_chunk(live, &chunk, &transcript_path, id, hooks).await?
+                process_streaming_chunk(live, &mut boundary, &journals, &chunk, persist).await?
             }
-            None => process_chunk(chunk, stt, &transcript_path, id, hooks, diarizer).await?,
+            None => process_chunk(chunk, stt, &mut boundary, &journals, persist, diarizer).await?,
         };
         if let Some(result) = outcome {
             match result.target {
@@ -518,6 +636,21 @@ where
                 StoreTarget::System => sys_text_chunks.push(result.text),
             }
         }
+    }
+
+    // Every remaining buffered final is released here, regardless of
+    // the unresolved window: a session with dual anchors must not
+    // lose a record just because its counterpart never showed up.
+    let remaining_final = boundary.finish();
+    let persist = PersistContext {
+        transcript_path: &transcript_path,
+        session_id: id,
+        hooks,
+    };
+    if let Some(live) = streaming.as_mut() {
+        release_streaming_ready(&remaining_final, &persist, live).await?;
+    } else {
+        release_ready(&remaining_final, &persist).await?;
     }
     // No more partials after this point: the WAL is closed before the
     // transcript is re-rendered and the folder is renamed.
@@ -659,12 +792,22 @@ struct ChunkOutcome {
     target: StoreTarget,
 }
 
+/// Where an accepted-final record lands once released: `transcript.md`'s
+/// path, the session it belongs to, and the hooks to notify. Bundled so
+/// `process_chunk`/`process_streaming_chunk` stay readable now that both
+/// also carry the accepted-final boundary and its anchors.
+struct PersistContext<'a> {
+    transcript_path: &'a std::path::Path,
+    session_id: SessionId,
+    hooks: &'a [Box<dyn Hook>],
+}
+
 async fn process_chunk<S: SttProvider, D: Diarizer>(
     chunk: EmittedChunk,
     stt: &S,
-    transcript_path: &std::path::Path,
-    session_id: SessionId,
-    hooks: &[Box<dyn Hook>],
+    boundary: &mut AcceptedFinalBoundary,
+    journals: &SessionJournals,
+    persist: PersistContext<'_>,
     _diarizer: &D,
 ) -> Result<Option<ChunkOutcome>, CoreError> {
     let target = store_target(chunk.source);
@@ -676,58 +819,112 @@ async fn process_chunk<S: SttProvider, D: Diarizer>(
         }
         Err(other) => return Err(other),
     };
+    let chunk_duration_ms = duration_to_ms(chunk.duration);
     let transcript = stt.transcribe(audio_chunk).await?;
 
-    emit_final_chunk(
-        transcript,
-        chunk.source,
-        chunk.ended_on,
-        transcript_path,
-        session_id,
-        hooks,
-    )
-    .await
-    .map(Some)
+    // The returned outcome reaches the diarization vectors immediately,
+    // independent of whichever accepted-final boundary decision below
+    // delays persistence and hook dispatch: diarization consumes STT
+    // output directly, never the durable transcript.
+    let outcome = ChunkOutcome {
+        text: transcript.clone(),
+        target,
+    };
+    // `record_horizon_ms` is backdated by the chunk's own
+    // (sample-count-based) duration, reflecting where this chunk's
+    // segment began; `progress_horizon_ms` is this source's current
+    // position (not backdated), folded into the release watermark's
+    // per-source minimum so a fast source alone can never release a
+    // held record from a slower sibling.
+    let anchors = journals.anchors();
+    let elapsed_ms = journals.elapsed_ms(chunk.source);
+    let record_horizon_ms = source_horizon(anchors, chunk.source, elapsed_ms, chunk_duration_ms);
+    let progress_horizon_ms = source_horizon(anchors, chunk.source, elapsed_ms, 0);
+    let ready = boundary.push(
+        AcceptedFinal {
+            transcript,
+            source: chunk.source,
+            ended_on: chunk.ended_on,
+            wal_seq: None,
+        },
+        record_horizon_ms,
+        progress_horizon_ms,
+    );
+    release_ready(&ready, &persist).await?;
+    Ok(Some(outcome))
 }
 
-/// Render one completed transcript chunk into `transcript.md` and
-/// announce it, whichever path produced it.
+/// Durably append one accepted final chunk to `transcript.md` and
+/// dispatch its `ChunkTranscribed` hook.
 ///
 /// Both the batch `SttProvider` path and the streaming provider's final
-/// update land here, so speaker attribution, the durable markdown
-/// append, and the `ChunkTranscribed` hook cannot diverge between them.
-async fn emit_final_chunk(
-    transcript: TranscriptChunk,
-    source: FrameSource,
-    ended_on: ChunkBoundary,
-    transcript_path: &std::path::Path,
-    session_id: SessionId,
-    hooks: &[Box<dyn Hook>],
-) -> Result<ChunkOutcome, CoreError> {
-    let target = store_target(source);
+/// update land here — by way of [`AcceptedFinalBoundary`] — so speaker
+/// attribution, the durable markdown append, and the `ChunkTranscribed`
+/// hook cannot diverge between them, and a record the boundary is still
+/// holding cannot reach either.
+async fn persist_final(
+    record: &AcceptedFinal,
+    persist: &PersistContext<'_>,
+) -> Result<(), CoreError> {
+    let target = store_target(record.source);
     let attributed = AttributedChunk {
-        chunk: transcript.clone(),
-        speaker: speaker_for(source),
+        chunk: record.transcript.clone(),
+        speaker: speaker_for(record.source),
     };
     let line = notes::render_transcript_line(&attributed);
-    append_durable(transcript_path, line.as_bytes())?;
+    append_durable(persist.transcript_path, line.as_bytes())?;
 
-    if matches!(ended_on, ChunkBoundary::EndOfStream) {
+    if matches!(record.ended_on, ChunkBoundary::EndOfStream) {
         debug!(target = ?target_kind(target), "final chunk emitted");
     }
     dispatch_hooks(
-        hooks,
+        persist.hooks,
         &LifecycleEvent::ChunkTranscribed {
-            id: session_id,
+            id: persist.session_id,
             chunk: attributed,
         },
     )
     .await;
 
-    Ok(ChunkOutcome {
-        text: transcript,
-        target,
-    })
+    Ok(())
+}
+
+/// Persist every record the accepted-final boundary just released, in
+/// the order it released them.
+async fn release_ready(
+    ready: &[AcceptedFinal],
+    persist: &PersistContext<'_>,
+) -> Result<(), CoreError> {
+    for record in ready {
+        persist_final(record, persist).await?;
+    }
+    Ok(())
+}
+
+/// Persist each streaming record and immediately upgrade its WAL entry.
+///
+/// The flush mark follows its own durable append, not a later batch-wide
+/// pass. A crash can therefore leave at most the one record being processed
+/// ambiguous, matching the original WAL recovery contract.
+async fn release_streaming_ready(
+    ready: &[AcceptedFinal],
+    persist: &PersistContext<'_>,
+    live: &mut LiveStreaming<'_>,
+) -> Result<(), CoreError> {
+    for record in ready {
+        persist_final(record, persist).await?;
+        let Some(seq) = record.wal_seq else {
+            continue;
+        };
+        let attributed = AttributedChunk {
+            chunk: record.transcript.clone(),
+            speaker: speaker_for(record.source),
+        };
+        live.wal
+            .mark_flushed(seq, attributed)
+            .map_err(CoreError::Storage)?;
+    }
+    Ok(())
 }
 
 const fn store_target(source: FrameSource) -> StoreTarget {
@@ -877,10 +1074,10 @@ fn stt_samples_duration(samples: u64) -> Duration {
 /// Route one chunker-emitted segment through the streaming provider.
 async fn process_streaming_chunk(
     live: &mut LiveStreaming<'_>,
+    boundary: &mut AcceptedFinalBoundary,
+    journals: &SessionJournals,
     chunk: &EmittedChunk,
-    transcript_path: &std::path::Path,
-    session_id: SessionId,
-    hooks: &[Box<dyn Hook>],
+    persist: PersistContext<'_>,
 ) -> Result<Option<ChunkOutcome>, CoreError> {
     let Some(transcript) = live.finalize(chunk).await? else {
         warn!(
@@ -889,26 +1086,48 @@ async fn process_streaming_chunk(
         );
         return Ok(None);
     };
+    let outcome = ChunkOutcome {
+        text: transcript.clone(),
+        target: store_target(chunk.source),
+    };
     let attributed = AttributedChunk {
         chunk: transcript.clone(),
         speaker: speaker_for(chunk.source),
     };
+    // Written pending immediately, before the accepted-final boundary
+    // decides whether (and when) to release this record: a crash
+    // while it is still buffered must still recover as an orphaned,
+    // unflushed WAL entry.
     let seq = live
         .wal
-        .append_pending(attributed.clone())
+        .append_pending(attributed)
         .map_err(CoreError::Storage)?;
-    let outcome = emit_final_chunk(
-        transcript,
+    // `record_horizon_ms` is backdated by the chunk's own
+    // (sample-count-based) duration, reflecting where this chunk's
+    // segment began; `progress_horizon_ms` is this source's current
+    // position (not backdated), folded into the release watermark's
+    // per-source minimum so a fast source alone can never release a
+    // held record from a slower sibling.
+    let anchors = journals.anchors();
+    let elapsed_ms = journals.elapsed_ms(chunk.source);
+    let record_horizon_ms = source_horizon(
+        anchors,
         chunk.source,
-        chunk.ended_on,
-        transcript_path,
-        session_id,
-        hooks,
-    )
-    .await?;
-    live.wal
-        .mark_flushed(seq, attributed)
-        .map_err(CoreError::Storage)?;
+        elapsed_ms,
+        duration_to_ms(chunk.duration),
+    );
+    let progress_horizon_ms = source_horizon(anchors, chunk.source, elapsed_ms, 0);
+    let ready = boundary.push(
+        AcceptedFinal {
+            transcript,
+            source: chunk.source,
+            ended_on: chunk.ended_on,
+            wal_seq: Some(seq),
+        },
+        record_horizon_ms,
+        progress_horizon_ms,
+    );
+    release_streaming_ready(&ready, &persist, live).await?;
     Ok(Some(outcome))
 }
 
@@ -1078,8 +1297,9 @@ mod tests {
     use super::*;
     use crate::consent::AcceptingPrompter;
     use crate::diarize::Diarizer;
-    use crate::error::{CaptureError, ConsentError, LlmError, SttError};
+    use crate::error::{CaptureError, ConsentError, HookError, LlmError, SttError};
     use crate::hooks::Hook;
+    use crate::notes;
     use crate::pipeline::vad::EnergyVad;
     use crate::types::{AudioFrame, FrameSource, TranscriptChunk};
     use async_trait::async_trait;
@@ -2266,6 +2486,228 @@ mod tests {
         assert!(
             message.contains("frame 1 has 2 channels"),
             "unexpected error: {message}"
+        );
+    }
+
+    /// Records every dispatched `ChunkTranscribed` payload, in
+    /// dispatch order. `Clone` shares the underlying storage, so a
+    /// clone boxed into the session's `hooks` slice and the clone kept
+    /// by the test observe the same events.
+    #[derive(Clone, Default)]
+    struct RecordingHook {
+        events: Arc<std::sync::Mutex<Vec<AttributedChunk>>>,
+    }
+
+    impl RecordingHook {
+        fn snapshot(&self) -> Vec<AttributedChunk> {
+            self.lock().clone()
+        }
+
+        // A single-threaded test driving `dispatch_hooks` never
+        // panics mid-lock; recovering the poison rather than
+        // unwrapping keeps this fixture on `std::sync::Mutex` without
+        // pulling in a new dependency for one test-only lock.
+        fn lock(&self) -> std::sync::MutexGuard<'_, Vec<AttributedChunk>> {
+            self.events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        }
+    }
+
+    #[async_trait]
+    impl Hook for RecordingHook {
+        async fn on_event(&self, event: &LifecycleEvent) -> Result<(), HookError> {
+            if let LifecycleEvent::ChunkTranscribed { chunk, .. } = event {
+                self.lock().push(chunk.clone());
+            }
+            Ok(())
+        }
+        fn name(&self) -> &'static str {
+            "recording"
+        }
+    }
+
+    #[tokio::test]
+    async fn test_run_dual_source_reconstructs_transcript_exactly_from_dispatched_events() {
+        // Both source anchors exist for this session, so every final
+        // chunk passes through the accepted-final boundary's bounded
+        // reordering buffer rather than releasing on the spot. The
+        // chunker-derived start times below are all within a few
+        // hundred milliseconds of each other — comfortably inside the
+        // boundary's unresolved window — so nothing resolves mid-
+        // capture: this exercises `AcceptedFinalBoundary::finish`'s
+        // end-of-session flush, not the immediate path.
+        let tmp = tempfile::tempdir().unwrap();
+        let stt = CountingStt::default();
+        let llm = CannedLlm;
+        let diarizer = PassThroughDiarizer;
+        let prompter = AcceptingPrompter;
+        let recorder = RecordingHook::default();
+        let hooks: Vec<Box<dyn Hook>> = vec![Box::new(recorder.clone())];
+
+        // 100 ms frames against a 300 ms max chunk on both sources: each
+        // produces one mid-capture `MaxDuration` split plus one
+        // `EndOfStream` tail chunk, so `stt.calls()` is deterministic.
+        let mut interleaved: Vec<Result<AudioFrame, crate::error::CaptureError>> = Vec::new();
+        for i in 0..6 {
+            let ts = i * 100_000_000;
+            interleaved.push(Ok(stereo_speech_frame(ts, 4_800, FrameSource::Mic)));
+            interleaved.push(Ok(stereo_speech_frame(ts, 4_800, FrameSource::System)));
+        }
+        let frames = stream::iter(interleaved);
+
+        let title = "Accepted Final Boundary";
+        let inputs = SessionInputs {
+            id: SessionId::new(),
+            started_at: dt(),
+            root: tmp.path().to_path_buf(),
+            title: Some(title.to_string()),
+            user: "tom".into(),
+            consent_mode: ConsentMode::Quick,
+            context: MeetingContext::default(),
+            mic_vad: EnergyVad::default(),
+            system_vad: Some(EnergyVad::default()),
+            stt: &stt,
+            streaming_stt: None,
+            llm: &llm,
+            diarizer: &diarizer,
+            prompter: &prompter,
+            hooks: &hooks,
+            chunker_config: small_chunker_config(),
+            verify_duration: false,
+        };
+
+        let outputs = run(inputs, frames).await.unwrap();
+
+        assert_eq!(stt.calls(), 4, "2 chunks per source: mid-capture + tail");
+
+        // Durable/hook equivalence: rendering the exact sequence the
+        // `ChunkTranscribed` hook observed reproduces `transcript.md`
+        // byte-for-byte. If the boundary had dropped, duplicated, or
+        // reordered a record relative to what it persisted, this
+        // reconstruction would diverge.
+        let dispatched = recorder.snapshot();
+        assert_eq!(
+            dispatched.len(),
+            stt.calls(),
+            "every transcribed chunk must reach the transcript exactly once"
+        );
+        let mut expected = notes::render_transcript_header(Some(title), dt(), None);
+        for chunk in &dispatched {
+            expected.push_str(&notes::render_transcript_line(chunk));
+        }
+        let actual = std::fs::read_to_string(&outputs.transcript_path).unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    #[tokio::test]
+    async fn test_run_no_system_vad_reconstructs_transcript_exactly_from_dispatched_events() {
+        // No system VAD means no system anchor ever exists, so the
+        // accepted-final boundary must stay on its immediate path for
+        // the session's entire lifetime — the same durable/hook
+        // equivalence must hold without any end-of-session flush doing
+        // the work.
+        let tmp = tempfile::tempdir().unwrap();
+        let stt = CountingStt::default();
+        let llm = CannedLlm;
+        let diarizer = PassThroughDiarizer;
+        let prompter = AcceptingPrompter;
+        let recorder = RecordingHook::default();
+        let hooks: Vec<Box<dyn Hook>> = vec![Box::new(recorder.clone())];
+
+        let frames = stream::iter((0..6).map(|i| Ok(speech_frame(i * 100_000_000, 1_600))));
+
+        let title = "Mic Only Boundary";
+        let inputs = SessionInputs {
+            id: SessionId::new(),
+            started_at: dt(),
+            root: tmp.path().to_path_buf(),
+            title: Some(title.to_string()),
+            user: "tom".into(),
+            consent_mode: ConsentMode::Quick,
+            context: MeetingContext::default(),
+            mic_vad: EnergyVad::default(),
+            system_vad: None,
+            stt: &stt,
+            streaming_stt: None,
+            llm: &llm,
+            diarizer: &diarizer,
+            prompter: &prompter,
+            hooks: &hooks,
+            chunker_config: small_chunker_config(),
+            verify_duration: false,
+        };
+
+        let outputs = run(inputs, frames).await.unwrap();
+
+        assert_eq!(stt.calls(), 2, "one mid-capture split plus one tail chunk");
+        let dispatched = recorder.snapshot();
+        assert_eq!(dispatched.len(), stt.calls());
+        let mut expected = notes::render_transcript_header(Some(title), dt(), None);
+        for chunk in &dispatched {
+            expected.push_str(&notes::render_transcript_line(chunk));
+        }
+        let actual = std::fs::read_to_string(&outputs.transcript_path).unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_frame_duration_ms_ignores_timestamp_ns_and_uses_only_sample_count() {
+        // Deliberately incomparable `timestamp_ns` values — one at 0,
+        // one ~28.5 years later — on otherwise-identical frames.
+        // `AudioFrame::timestamp_ns`'s origin is source-defined and
+        // undefined across sources, so the accepted-final boundary's
+        // per-source progress signal must never read it.
+        let normal = AudioFrame::from_slice(&[0.0_f32; 1_600], 1, 16_000, 0, FrameSource::Mic);
+        let incomparable = AudioFrame::from_slice(
+            &[0.0_f32; 1_600],
+            1,
+            16_000,
+            900_000_000_000_000_000,
+            FrameSource::System,
+        );
+
+        assert_eq!(
+            frame_duration_ms(&normal),
+            100,
+            "1_600 samples @ 16kHz = 100ms"
+        );
+        assert_eq!(
+            frame_duration_ms(&normal),
+            frame_duration_ms(&incomparable),
+            "frame duration must depend only on sample count and sample rate, \
+             never on AudioFrame::timestamp_ns"
+        );
+    }
+
+    #[test]
+    fn test_source_horizon_is_none_until_both_source_anchors_are_known() {
+        let mic_only = SourceAnchors {
+            mic: Some(1_000),
+            system: None,
+        };
+        assert_eq!(source_horizon(mic_only, FrameSource::Mic, 500, 0), None);
+
+        let dual = SourceAnchors {
+            mic: Some(1_000),
+            system: Some(500),
+        };
+        assert_eq!(source_horizon(dual, FrameSource::Mic, 500, 0), Some(1_500));
+        assert_eq!(source_horizon(dual, FrameSource::System, 200, 0), Some(700));
+    }
+
+    #[test]
+    fn test_source_horizon_backdates_by_back_ms_to_a_chunks_own_start() {
+        let dual = SourceAnchors {
+            mic: Some(1_000),
+            system: Some(1_000),
+        };
+        // 900ms captured through this chunk's end, 300ms is the
+        // chunk's own (sample-count-derived) duration -> the chunk
+        // began at elapsed 600ms.
+        assert_eq!(
+            source_horizon(dual, FrameSource::Mic, 900, 300),
+            Some(1_600)
         );
     }
 }

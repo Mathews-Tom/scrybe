@@ -111,8 +111,11 @@ LOC_CEILINGS: dict[str, int] = {
     # parsing, PCM16 WAV validation, complete result-matrix aggregation, and
     # versioned WER/provider-lifecycle reporting. Raised to 14250 for M9's
     # capability-limited session reader, protocol, and behavioral proof that
-    # every served operation leaves the fixture tree unchanged.
-    "scrybe-core": 14250,
+    # every served operation leaves the fixture tree unchanged. Raised to
+    # 14750 for M6 PR-1's accepted-final boundary: anchor-relative source
+    # progress, bounded final-chunk ordering, deferred WAL flushes, and tests
+    # that prove durable transcript and hook payloads remain identical.
+    "scrybe-core": 14750,
     # 2000 was the v0.5 ceiling. Raised to 2300 at v0.6 to absorb the
     # `scrybe bench` subcommand. Raised to 2500 at v1.0.1 to absorb
     # the `--source mic` and `--whisper-model` wiring on `scrybe record`
