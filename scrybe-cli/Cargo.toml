@@ -98,6 +98,7 @@ toml.workspace = true
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tray-icon = { version = "0.23", optional = true }
+url.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

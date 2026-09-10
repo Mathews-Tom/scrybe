@@ -17,6 +17,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::Args as ClapArgs;
 use scrybe_core::config::Config;
+use url::{Host, Url};
 
 use crate::runtime::{expand_root, load_or_default_config};
 
@@ -440,12 +441,29 @@ fn report_egress_posture(cfg: &Config, report: &mut Report) {
             |url| format!("egress to STT provider {other} at {url}"),
         ),
     };
-    let llm = match cfg.llm.provider.as_str() {
-        "ollama" | "lmstudio" => format!("no egress (local LLM at {})", cfg.llm.base_url),
-        other => format!("egress to LLM provider {other} at {}", cfg.llm.base_url),
+    let llm = if is_loopback_url(&cfg.llm.base_url) {
+        format!("no egress (local LLM at {})", cfg.llm.base_url)
+    } else {
+        format!(
+            "egress to LLM provider {} at {}",
+            cfg.llm.provider, cfg.llm.base_url
+        )
     };
     report.lines.push(format!("stt egress: {stt}"));
     report.lines.push(format!("llm egress: {llm}"));
+}
+
+fn is_loopback_url(value: &str) -> bool {
+    Url::parse(value)
+        .ok()
+        .and_then(|url| {
+            url.host().map(|host| match host {
+                Host::Domain(host) => host.eq_ignore_ascii_case("localhost"),
+                Host::Ipv4(address) => address.is_loopback(),
+                Host::Ipv6(address) => address.is_loopback(),
+            })
+        })
+        .unwrap_or(false)
 }
 
 #[cfg(unix)]
@@ -467,6 +485,30 @@ mod tests {
         assert_eq!(report.lines.len(), 2);
         assert!(report.lines[0].contains("no egress"));
         assert!(report.lines[1].contains("no egress"));
+    }
+
+    #[test]
+    fn test_report_egress_posture_openai_compat_loopback_is_local() {
+        let mut cfg = Config::default();
+        cfg.llm.provider = "openai-compat".into();
+        cfg.llm.base_url = "http://127.0.0.1:11434/v1".into();
+        let mut report = Report::default();
+
+        report_egress_posture(&cfg, &mut report);
+
+        assert!(report.lines[1].contains("no egress"));
+    }
+
+    #[test]
+    fn test_report_egress_posture_hosted_llm_remains_egress() {
+        let mut cfg = Config::default();
+        cfg.llm.provider = "openai-compat".into();
+        cfg.llm.base_url = "https://openrouter.ai/api/v1".into();
+        let mut report = Report::default();
+
+        report_egress_posture(&cfg, &mut report);
+
+        assert!(report.lines[1].contains("egress"));
     }
 
     #[test]
