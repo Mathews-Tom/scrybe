@@ -215,7 +215,7 @@ pub fn pack_segments<'a, F>(
     mut count_tokens: F,
 ) -> Vec<SegmentChunk<'a>>
 where
-    F: FnMut(&str) -> u32,
+    F: FnMut(&TranscriptSegment) -> u32,
 {
     let overlap_len = overlap_segments as usize;
     let target = u64::from(target_tokens);
@@ -226,7 +226,7 @@ where
     let mut pending_overlap: Vec<&'a TranscriptSegment> = Vec::new();
 
     for segment in segments {
-        let segment_tokens = u64::from(count_tokens(&segment.text));
+        let segment_tokens = u64::from(count_tokens(segment));
         let would_overflow = !current.is_empty() && current_tokens + segment_tokens > target;
         if would_overflow {
             let overlap = std::mem::take(&mut pending_overlap);
@@ -271,9 +271,8 @@ mod tests {
     }
 
     // Word count stands in for a real tokenizer in these pure-packer
-    // tests; PR-3 wires a `tokenizers`-backed counter.
-    fn word_count(text: &str) -> u32 {
-        u32::try_from(text.split_whitespace().count()).unwrap()
+    fn word_count(segment: &TranscriptSegment) -> u32 {
+        u32::try_from(segment.text.split_whitespace().count()).unwrap()
     }
 
     fn canonical_header() -> &'static str {

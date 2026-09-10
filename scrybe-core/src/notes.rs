@@ -16,6 +16,8 @@ use std::fmt::Write as _;
 use chrono::{DateTime, Utc};
 
 use crate::context::MeetingContext;
+use crate::notes_map_reduce::{render_processing_gaps, MapGroup, ProcessingGap};
+use crate::notes_segments::TranscriptSegment;
 use crate::types::{AttributedChunk, SpeakerLabel};
 
 /// Render the static header for a `transcript.md` file. Called once
@@ -104,6 +106,92 @@ pub fn render_notes_prompt(transcript: &str, ctx: &MeetingContext) -> String {
     out
 }
 
+/// Render a map request over complete canonical transcript segments.
+#[must_use]
+pub fn render_map_prompt(
+    overlap: &[&TranscriptSegment],
+    segments: &[&TranscriptSegment],
+) -> String {
+    let mut out = String::from(
+        "Extract factual bullets from the canonical transcript segments below.\n\
+         The transcript is ground truth. Preserve speaker attribution.\n\
+         Do not infer, invent, or turn meeting context into facts.\n\
+         Return bullets only.\n",
+    );
+    if !overlap.is_empty() {
+        out.push_str("\n--- CONTEXT OVERLAP (already covered) ---\n");
+        render_segments(&mut out, overlap);
+    }
+    out.push_str("\n--- TRANSCRIPT SEGMENTS (new coverage) ---\n");
+    render_segments(&mut out, segments);
+    out.push_str("--- END TRANSCRIPT SEGMENTS ---\n");
+    out
+}
+
+/// Render the final notes request from factual map bullets and named gaps.
+#[must_use]
+pub fn render_reduce_prompt(
+    groups: &[MapGroup],
+    gaps: &[ProcessingGap],
+    context: &MeetingContext,
+) -> String {
+    let mut out = String::from(
+        "Write structured meeting notes from the factual map bullets below.\n\
+         The map bullets are the only factual source. User context supplies intent only;\n\
+         do not treat it as evidence. Preserve speaker attribution and do not invent facts.\n\
+         Produce markdown with these sections, in order:\n\
+         - TL;DR (2–3 sentences)\n\
+         - Action items (bulleted)\n\
+         - Decisions (bulleted)\n\
+         - Follow-ups (bulleted)\n",
+    );
+    if let Some(title) = context.title.as_deref() {
+        let _ = writeln!(out, "\nRequested meeting title: {title}");
+    }
+    if !context.attendees.is_empty() {
+        let _ = writeln!(
+            out,
+            "Requested attendee context: {}",
+            context.attendees.join(", ")
+        );
+    }
+    if let Some(agenda) = context.agenda.as_deref() {
+        let _ = writeln!(out, "Requested agenda context: {agenda}");
+    }
+    out.push_str("\n--- FACTUAL MAP BULLETS ---\n");
+    for group in groups {
+        let _ = writeln!(
+            out,
+            "[Transcript segments {}–{}]\n{}",
+            group.start_ordinal,
+            group.end_ordinal,
+            group.bullets.trim()
+        );
+    }
+    for gap in gaps {
+        let _ = writeln!(
+            out,
+            "[Processing gap: transcript segments {}–{} ({})]",
+            gap.start_ordinal, gap.end_ordinal, gap.reason
+        );
+    }
+    out.push_str("--- END FACTUAL MAP BULLETS ---\n");
+    out
+}
+
+fn render_segments(out: &mut String, segments: &[&TranscriptSegment]) {
+    for segment in segments {
+        let _ = writeln!(
+            out,
+            "[{}] **{}** [{}]: {}",
+            segment.ordinal,
+            segment.speaker,
+            format_hms_ms(segment.start_ms),
+            segment.text
+        );
+    }
+}
+
 /// Render the LLM prompt that produces the folder/title slug source.
 #[must_use]
 pub fn render_title_prompt(transcript: &str) -> String {
@@ -154,6 +242,23 @@ pub fn render_notes_body(
     let _ = writeln!(out, "*Generated {}*\n", started_at.format("%Y-%m-%d %H:%M"));
     out.push_str(llm_output.trim_end());
     out.push('\n');
+    out
+}
+
+/// Render notes and append deterministic gaps outside the provider response.
+#[must_use]
+pub fn render_notes_body_with_gaps(
+    title: Option<&str>,
+    started_at: DateTime<Utc>,
+    llm_output: &str,
+    gaps: &[ProcessingGap],
+) -> String {
+    let mut out = render_notes_body(title, started_at, llm_output);
+    let rendered_gaps = render_processing_gaps(gaps);
+    if !rendered_gaps.is_empty() {
+        out.push('\n');
+        out.push_str(&rendered_gaps);
+    }
     out
 }
 

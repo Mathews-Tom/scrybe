@@ -161,6 +161,9 @@ pub enum ConfigError {
     #[error("missing required value for {key}")]
     Missing { key: String },
 
+    #[error("invalid value for {key}: {reason}")]
+    Invalid { key: String, reason: String },
+
     #[error("schema version {found} cannot be auto-migrated to {target}")]
     UnsupportedSchemaVersion { found: u32, target: u32 },
 }
@@ -193,6 +196,9 @@ pub enum PipelineError {
 
     #[error("metadata serialization failed: {0}")]
     MetaSerialize(#[source] BoxError),
+
+    #[error("canonical transcript parse failed: {reason}")]
+    NotesTranscriptParse { reason: String },
 
     #[error("generated title was empty or invalid")]
     InvalidGeneratedTitle,
