@@ -52,6 +52,15 @@ pub struct Config {
     pub stt: SttConfig,
     #[serde(default)]
     pub llm: LlmConfig,
+    /// Long-meeting notes segmentation and request-cap policy (M7,
+    /// `docs/system-design.md` companion:
+    /// `.docs/superpowers/specs/2026-09-10-long-meeting-notes-design.md`).
+    /// Serde-defaulted so a pre-M7 config file keeps parsing unchanged;
+    /// real-LLM map/reduce/title dispatch validates `tokenizer_path`
+    /// and `input_cap_tokens` itself rather than the schema forcing
+    /// every stub-only install to supply them.
+    #[serde(default)]
+    pub notes: NotesConfig,
     #[serde(default)]
     pub context: ContextConfig,
     #[serde(default)]
@@ -104,6 +113,7 @@ impl Default for Config {
             record: RecordConfig::default(),
             stt: SttConfig::default(),
             llm: LlmConfig::default(),
+            notes: NotesConfig::default(),
             context: ContextConfig::default(),
             hooks: HooksConfig::default(),
             consent: ConsentConfig::default(),
@@ -352,6 +362,71 @@ impl Default for LlmConfig {
             notes_template: default_notes_template(),
             api_key_env: None,
             retry: RetryPolicy::default(),
+        }
+    }
+}
+
+/// `[notes]` block (M7). Governs canonical-transcript segmentation and
+/// map/reduce request sizing for long-meeting notes generation.
+///
+/// `template` and the packing knobs (`target_tokens`,
+/// `overlap_segments`) carry a working default so an omitted `[notes]`
+/// table stays compatible with stub recordings, which never dispatch a
+/// real LLM request and therefore never need a cap. `tokenizer_path`
+/// and `input_cap_tokens` default to `None` deliberately — there is no
+/// safe hidden default for either: a real-LLM run needs the caller's
+/// own local `tokenizer.json` (matching `[llm].model`) and an explicit
+/// cap, and validating that requirement is a real-LLM preflight
+/// concern (M7 PR-2/PR-3), not this schema.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NotesConfig {
+    /// Named note structure. The only value PR-1 through PR-3 resolve
+    /// is `"default"`; template selection and the unknown-template
+    /// error land in PR-4.
+    #[serde(default = "default_notes_config_template")]
+    pub template: String,
+    /// Local Hugging Face `tokenizer.json` used to count prompt tokens
+    /// exactly. `None` is valid for stub recordings; a real-LLM run
+    /// requires it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokenizer_path: Option<PathBuf>,
+    /// Maximum input tokens for every map, reduce, and title request
+    /// when using a real LLM. `None` is valid for stub recordings; a
+    /// real-LLM run requires it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_cap_tokens: Option<u32>,
+    /// Preferred input size of each map chunk, in tokens. A chunk
+    /// closes at the first segment boundary that would otherwise push
+    /// it past this value; it never splits a segment.
+    #[serde(default = "default_notes_target_tokens")]
+    pub target_tokens: u32,
+    /// Whole trailing segments from a closed chunk repeated into the
+    /// following chunk for context continuity.
+    #[serde(default = "default_notes_overlap_segments")]
+    pub overlap_segments: u32,
+}
+
+fn default_notes_config_template() -> String {
+    "default".to_string()
+}
+
+const fn default_notes_target_tokens() -> u32 {
+    4_000
+}
+
+const fn default_notes_overlap_segments() -> u32 {
+    2
+}
+
+impl Default for NotesConfig {
+    fn default() -> Self {
+        Self {
+            template: default_notes_config_template(),
+            tokenizer_path: None,
+            input_cap_tokens: None,
+            target_tokens: default_notes_target_tokens(),
+            overlap_segments: default_notes_overlap_segments(),
         }
     }
 }
@@ -831,6 +906,52 @@ api_key_env = "GROQ_API_KEY"
         );
         assert_eq!(c.stt.api_key_env.as_deref(), Some("GROQ_API_KEY"));
         assert_eq!(c.llm.provider, "ollama");
+    }
+
+    #[test]
+    fn test_config_from_toml_str_omitted_notes_block_keeps_default() {
+        let toml = r#"
+schema_version = 1
+
+[stt]
+provider = "openai-compat"
+model = "whisper-large-v3"
+language = "en"
+"#;
+
+        let c = Config::from_toml_str(toml, &fake_path()).unwrap();
+
+        assert_eq!(c.notes, NotesConfig::default());
+        assert_eq!(c.notes.template, "default");
+        assert_eq!(c.notes.tokenizer_path, None);
+        assert_eq!(c.notes.input_cap_tokens, None);
+        assert_eq!(c.notes.target_tokens, 4_000);
+        assert_eq!(c.notes.overlap_segments, 2);
+    }
+
+    #[test]
+    fn test_config_from_toml_str_with_explicit_notes_block() {
+        let toml = r#"
+schema_version = 1
+
+[notes]
+template = "default"
+tokenizer_path = "~/.config/scrybe/tokenizer.json"
+input_cap_tokens = 6000
+target_tokens = 3000
+overlap_segments = 3
+"#;
+
+        let c = Config::from_toml_str(toml, &fake_path()).unwrap();
+
+        assert_eq!(c.notes.template, "default");
+        assert_eq!(
+            c.notes.tokenizer_path.as_deref(),
+            Some(Path::new("~/.config/scrybe/tokenizer.json"))
+        );
+        assert_eq!(c.notes.input_cap_tokens, Some(6_000));
+        assert_eq!(c.notes.target_tokens, 3_000);
+        assert_eq!(c.notes.overlap_segments, 3);
     }
 
     #[test]

@@ -88,6 +88,10 @@ sha2.workspace = true
 tantivy = { workspace = true, optional = true }
 tempfile.workspace = true
 thiserror.workspace = true
+# Unconditional — no feature flag. `notes_segments` (M7) must compile
+# in every normal core build; only its future real-LLM preflight path
+# (PR-2/PR-3) actually loads a tokenizer file.
+tokenizers.workspace = true
 tokio.workspace = true
 toml.workspace = true
 tracing.workspace = true

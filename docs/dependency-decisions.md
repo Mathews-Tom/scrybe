@@ -138,6 +138,12 @@ These are not Rust dependencies; they run at release time. Versions pinned in `r
 
 OS-level code-signing toolchains (Apple `codesign` / `notarytool`, Microsoft `signtool`) are intentionally absent. macOS and Windows artifacts ship unsigned through v1.0, with `INSTALL.md` documenting `xattr -dr com.apple.quarantine` (macOS) and SmartScreen "More info → Run anyway" (Windows). Rationale: vendor-tied trust dependencies are deferred until after the project has demonstrated longevity. See `.docs/development-plan.md` §13.1.
 
+### 3.9 Notes generation and local tokenization
+
+| Crate | Version | License | Host | Role | Notes |
+|---|---|---|---|---|---|
+| `tokenizers` | `=0.23.2` | Apache-2.0 | github.com/huggingface/tokenizers | Exact prompt token counting against a user-provided local `tokenizer.json` for M7 long-meeting-notes request caps (`[notes].input_cap_tokens`) | Precise pin: frequent minor releases and a deliberately narrow enabled-feature set make a floating minor risky. `default-features = false` drops `progressbar`, `onig`, and `esaxx_fast`; pure-Rust `fancy-regex` is the required pre-tokenization backend. `http` and `hf-hub` remain disabled. Scrybe never fetches, caches, or bundles a tokenizer or model vocabulary — the user points `[notes].tokenizer_path` at their own local Hugging Face `tokenizer.json`. This direct dependency requires cargo-vet review before the advisory vet lane becomes blocking. |
+
 ## 4. Vendored sources
 
 The following are pulled into `vendor/` rather than fetched from a registry:

@@ -51,6 +51,16 @@ serde_json = "1"
 sha2 = { version = "0.10", default-features = false, features = ["std"] }
 tempfile = "3"
 thiserror = "1"
+# Exact token counting against a user-provided local `tokenizer.json`
+# for M7 long-meeting notes request caps (`docs/dependency-decisions.md`
+# §3.9). Precise `=` pin — like `url` below — because this crate ships
+# frequent minor releases and its feature surface is deliberately narrow.
+# `default-features = false` drops upstream `progressbar`, `onig`, and
+# `esaxx_fast`; `fancy-regex` is the required pure-Rust tokenizer
+# pre-tokenization backend. HTTP and `hf-hub` remain disabled, so Scrybe
+# only loads a caller-supplied local `tokenizer.json`: no model download,
+# embedded vocabulary, or network route.
+tokenizers = { version = "=0.23.2", default-features = false, features = ["fancy-regex"] }
 tokio = { version = "1.42", default-features = false, features = ["fs", "io-util", "macros", "rt-multi-thread", "signal", "sync", "time"] }
 toml = "0.8"
 tracing = "0.1"
