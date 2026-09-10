@@ -4,15 +4,21 @@ All notable changes to scrybe are documented here. The format follows [Keep a Ch
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-09-11
+
+This reconciled release publishes every capability merged after v1.2.1: streaming STT, durable transcript reconciliation and echo suppression, capped map-reduce notes, a read-only local agent surface, and the local-STT comparison lane.
+
 ### Added
 
-- `scrybe mcp` (feature `agent-access`, off by default): a read-only local-agent access surface over `~/scrybe/`, serving `list_recent_meetings`, `search_meetings`, `get_meeting`, `get_meeting_notes`, and `get_meeting_transcript` as MCP tools over newline-delimited JSON-RPC on stdin/stdout. Every response carries a `schema_version`. An unfinished session (per the `journal/`-with-no-`audio.opus`-and-no-`meta.toml` invariant) is reported as unfinished rather than served as complete.
-- `[agent_access]` config block (`enabled`, default `false`). `scrybe mcp` refuses to start unless it is explicitly set to `true`.
+- Streaming Sherpa-ONNX transcription behind the opt-in `stt-sherpa` feature, including durable partial transcripts and per-token timings.
+- Conservative cross-channel echo suppression at the accepted-final boundary, plus opt-in macOS voice processing with a transactional fallback to the ordinary microphone stream.
+- Long-meeting notes over canonical transcript segments: model-matched local tokenizer caps, ordered map-reduce, deterministic processing gaps, omitted-middle compaction, and the named `[notes].template` contract.
+- `scrybe mcp` behind the default-off `[agent_access].enabled` gate, exposing read-only local session discovery and retrieval over stdio.
+- `scrybe bench` comparison support for local STT backends.
 
 ### Security
 
-- The `agent_access` module has no write, delete, or mutate call path: every filesystem read goes through a capability-limited `ReadOnlyFs` abstraction with no method that could create, modify, rename, or delete anything. There is no network listener — the transport is stdio only.
-- Default-feature builds remain free of the `agent-access` surface entirely; it does not compile in unless built with `--features agent-access`.
+- The default-feature graph remains free of network-provider dependencies. The local agent surface has no write, delete, mutate, or network-listener path.
 
 ## [1.2.1] — 2026-09-06
 
@@ -42,6 +48,8 @@ This release completes the macOS capture-liveness train. A dead or wrong input d
 ### Workspace
 
 - 8 crates. Publish posture unchanged: `scrybe` is the crates.io placeholder; distribution uses cargo-dist release artifacts.
+
+[1.3.0]: https://github.com/Mathews-Tom/scrybe/releases/tag/v1.3.0
 
 [1.2.1]: https://github.com/Mathews-Tom/scrybe/releases/tag/v1.2.1
 
