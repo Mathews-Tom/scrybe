@@ -14,7 +14,7 @@ use tokenizers::Tokenizer;
 use crate::config::NotesConfig;
 use crate::context::MeetingContext;
 use crate::error::{ConfigError, CoreError, LlmError};
-use crate::notes::{render_map_prompt, render_reduce_prompt};
+use crate::notes::{render_map_prompt, render_reduce_prompt, validate_template};
 use crate::notes_segments::SegmentChunk;
 use crate::providers::LlmProvider;
 
@@ -45,6 +45,7 @@ impl NotesRuntime {
             .ok_or_else(|| ConfigError::Missing {
                 key: "notes.input_cap_tokens".to_string(),
             })?;
+        validate_template(&config.template)?;
         validate_limits(config.target_tokens, input_cap_tokens)?;
         let tokenizer = load_tokenizer(path)?;
         Ok(Self {

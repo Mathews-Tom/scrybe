@@ -690,7 +690,14 @@ language = "auto"
 provider = "ollama"
 base_url = "http://localhost:11434/v1"
 model = "llama3.1:8b"
-notes_template = "default"
+
+[notes]
+template = "default"
+# Required for real OpenAI-compatible runs; use a local tokenizer matching [llm].model.
+tokenizer_path = "/absolute/path/to/tokenizer.json"
+input_cap_tokens = 8_192
+target_tokens = 4_000
+overlap_segments = 2
 
 [context]
 sources = ["cli", "ics"]
