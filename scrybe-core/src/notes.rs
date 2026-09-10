@@ -160,13 +160,17 @@ pub fn render_reduce_prompt(
     }
     out.push_str("\n--- FACTUAL MAP BULLETS ---\n");
     for group in groups {
-        let _ = writeln!(
-            out,
-            "[Transcript segments {}–{}]\n{}",
-            group.start_ordinal,
-            group.end_ordinal,
-            group.bullets.trim()
-        );
+        if group.start_ordinal == 0 {
+            let _ = writeln!(out, "{}", group.bullets.trim());
+        } else {
+            let _ = writeln!(
+                out,
+                "[Transcript segments {}–{}]\n{}",
+                group.start_ordinal,
+                group.end_ordinal,
+                group.bullets.trim()
+            );
+        }
     }
     for gap in gaps {
         let _ = writeln!(

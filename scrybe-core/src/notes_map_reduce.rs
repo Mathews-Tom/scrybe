@@ -212,13 +212,52 @@ where
             }),
         }
     }
-    let reduce_prompt = render_reduce_prompt(&groups, &gaps, context);
+    let (reduce_prompt, groups) = capped_reduce_prompt(groups, &gaps, context, &mut prompt_fits)
+        .map_err(CoreError::Config)?;
     let reduced_notes = provider.complete(&reduce_prompt).await?;
     Ok(MapReduceOutput {
         groups,
         gaps,
         reduced_notes,
     })
+}
+
+fn capped_reduce_prompt<F>(
+    groups: Vec<MapGroup>,
+    gaps: &[ProcessingGap],
+    context: &MeetingContext,
+    prompt_fits: &mut F,
+) -> Result<(String, Vec<MapGroup>), ConfigError>
+where
+    F: FnMut(&str) -> Result<bool, ConfigError>,
+{
+    let prompt = render_reduce_prompt(&groups, gaps, context);
+    if prompt_fits(&prompt)? {
+        return Ok((prompt, groups));
+    }
+    if groups.len() < 3 {
+        return Err(invalid(
+            "notes.input_cap_tokens",
+            "cannot fit the reduction prompt without dropping required content",
+        ));
+    }
+    let compact = vec![
+        groups[0].clone(),
+        MapGroup {
+            start_ordinal: 0,
+            end_ordinal: 0,
+            bullets: "[OMITTED MIDDLE MAP GROUPS DUE TO INPUT CAP]".to_string(),
+        },
+        groups[groups.len() - 1].clone(),
+    ];
+    let prompt = render_reduce_prompt(&compact, gaps, context);
+    if !prompt_fits(&prompt)? {
+        return Err(invalid(
+            "notes.input_cap_tokens",
+            "cannot fit required reduction scaffolding, gaps, and omitted-middle marker",
+        ));
+    }
+    Ok((prompt, compact))
 }
 
 /// Render named gaps outside the model response for durable visibility.
@@ -353,7 +392,7 @@ mod tests {
             &ReduceOnlyProvider,
             &chunks,
             &MeetingContext::default(),
-            |_| Ok(false),
+            |prompt| Ok(!prompt.contains("TRANSCRIPT SEGMENTS (new coverage)")),
         )
         .await
         .unwrap();
