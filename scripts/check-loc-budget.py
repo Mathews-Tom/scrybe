@@ -185,7 +185,10 @@ LOC_CEILINGS: dict[str, int] = {
     # Criterion-harvest dispatch. Raised to 4850 for M9's default-off stdio
     # command, config refusal, and recorded five-tool integration transcript.
     "scrybe-cli": 4850,
-    "scrybe-capture-mac": 2500,
+    # Raised to 2700 for M6's opt-in transactional VoiceProcessingIO path:
+    # explicit device/format/processing configuration, ducking suppression,
+    # RAII cleanup, and a plain-input fallback proved against forced failures.
+    "scrybe-capture-mac": 2700,
     "scrybe-capture-linux": 2500,
     "scrybe-capture-win": 2500,
     # Cross-platform mic adapter via cpal. Closes the v0.1 mic-only path

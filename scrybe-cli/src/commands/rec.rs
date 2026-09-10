@@ -435,7 +435,7 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
                 {
                     let stream = match start_registered_capture(
                         &capture_registry,
-                        NativeMicCapture::new(_uid.to_string()),
+                        NativeMicCapture::new(_uid.to_string(), cfg.record.aec),
                     ) {
                         Ok(stream) => stream,
                         Err(error) => {
@@ -499,7 +499,7 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
                 let mic_frames = if let Some(uid) = args.input_device.as_deref() {
                     match start_registered_capture(
                         &capture_registry,
-                        NativeMicCapture::new(uid.to_string()),
+                        NativeMicCapture::new(uid.to_string(), cfg.record.aec),
                     ) {
                         Ok(frames) => frames,
                         Err(error) => {

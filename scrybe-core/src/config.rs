@@ -191,6 +191,15 @@ pub struct RecordConfig {
     pub whisper_model: Option<PathBuf>,
     #[serde(default = "default_record_llm")]
     pub llm: String,
+    /// Enable macOS `VoiceProcessingIO` echo cancellation and noise
+    /// suppression when `source` constructs a native Core Audio
+    /// microphone (`mic`, `mic+system`). Ignored by the `synthetic`
+    /// source and on non-macOS builds. Off by default; if the
+    /// `VoiceProcessingIO` audio unit fails to fully initialize at
+    /// stream-start time, the ordinary microphone stream is used
+    /// instead — see `scrybe_capture_mac::NativeMicCapture::start`.
+    #[serde(default)]
+    pub aec: bool,
 }
 
 fn default_record_source() -> String {
@@ -212,6 +221,7 @@ impl Default for RecordConfig {
             system_backend: default_system_backend(),
             whisper_model: None,
             llm: default_record_llm(),
+            aec: false,
         }
     }
 }
@@ -849,6 +859,37 @@ system_backend = "tap"
             c.record.validated_system_backend(),
             Some(RECORD_SYSTEM_BACKEND_TAP)
         );
+    }
+
+    #[test]
+    fn test_config_default_has_record_aec_disabled() {
+        let c = Config::default();
+
+        assert!(!c.record.aec);
+    }
+
+    #[test]
+    fn test_config_parses_explicit_record_aec_enabled() {
+        let toml = r"
+[record]
+aec = true
+";
+
+        let c = Config::from_toml_str(toml, &fake_path()).unwrap();
+
+        assert!(c.record.aec);
+    }
+
+    #[test]
+    fn test_config_round_trip_preserves_record_aec_override() {
+        let mut original = Config::default();
+        original.record.aec = true;
+
+        let encoded = toml::to_string(&original).unwrap();
+        let decoded = Config::from_toml_str(&encoded, &fake_path()).unwrap();
+
+        assert!(decoded.record.aec);
+        assert_eq!(decoded, original);
     }
 
     #[test]
