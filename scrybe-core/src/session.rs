@@ -32,7 +32,7 @@ use tracing::{debug, warn};
 use crate::consent::ConsentPrompter;
 use crate::context::MeetingContext;
 use crate::diarize::Diarizer;
-use crate::error::{CoreError, PipelineError, StorageError};
+use crate::error::{ConfigError, CoreError, PipelineError, StorageError};
 use crate::hooks::{dispatch_hooks, Hook, LifecycleEvent};
 use crate::notes;
 use crate::notes_map_reduce::{map_reduce, NotesRuntime};
@@ -745,6 +745,17 @@ where
         existing
     } else {
         let title_prompt = notes::render_title_prompt(title_source);
+        if let Some(runtime) = notes_runtime.as_ref() {
+            if !runtime
+                .prompt_fits(&title_prompt)
+                .map_err(CoreError::Config)?
+            {
+                return Err(CoreError::Config(ConfigError::Invalid {
+                    key: "notes.input_cap_tokens".to_string(),
+                    reason: "cannot fit the title request".to_string(),
+                }));
+            }
+        }
         let raw_title = llm.complete(&title_prompt).await?;
         notes::clean_generated_title(&raw_title)
             .ok_or(CoreError::Pipeline(PipelineError::InvalidGeneratedTitle))?
