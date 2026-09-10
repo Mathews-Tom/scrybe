@@ -31,6 +31,11 @@ core-audio-tap = [
     "dep:block2",
     "dep:dispatch2",
     "dep:cpal",
+    # `NativeMicCapture`'s `[record].aec` path (`native_mic.rs`) binds
+    # a `VoiceProcessingIO` audio unit via the same `objc2-audio-toolbox`
+    # bindings the standalone probe below uses, so `core-audio-tap`
+    # pulls that dependency in too.
+    "voice-processing-io-probe",
 ]
 
 # Enables the ScreenCaptureKit system-audio adapter on macOS 13.0+.
@@ -39,17 +44,23 @@ core-audio-tap = [
 # only its 16 kHz mono audio callback.
 system-capture-sck = ["dep:screencapturekit"]
 
-# Standalone diagnostic probe for Apple's `VoiceProcessingIO` audio
-# unit (macOS's built-in AEC/NS voice-processing AudioUnit). This is
-# NOT the `[record].aec` capture feature: it does not touch
-# `NativeMicCapture`/`native_mic.rs` or any microphone stream, and it
-# changes no capture behavior, config, default, or lifecycle. It only
-# locates the `auou`/`vpio`/`appl` component, fully initializes an
-# instance to establish runtime availability, and tears it down. See
-# `voice_processing_io_probe` and
-# `examples/voice_processing_io_probe.rs`. Independent of
-# `core-audio-tap` so it can be probed without enabling the capture
-# adapter.
+# Bindings for Apple's `VoiceProcessingIO` audio unit (macOS's
+# built-in AEC/NS voice-processing AudioUnit). Two independent
+# consumers:
+#
+# - The standalone diagnostic probe (`voice_processing_io_probe`,
+#   `examples/voice_processing_io_probe.rs`): locates and fully
+#   initializes the component to establish runtime availability, then
+#   tears it down. Never starts audio I/O, never touches
+#   `NativeMicCapture`/`native_mic.rs`, and changes no capture
+#   behavior, config, default, or lifecycle.
+# - `NativeMicCapture`'s `[record].aec` production path
+#   (`native_mic.rs`), gated separately at runtime by
+#   `RecordConfig::aec` (default `false`) — see that module's
+#   `VoiceProcessingStream`. `core-audio-tap` enables this feature so
+#   that production path can build; this feature remains selectable
+#   on its own (independent of `core-audio-tap`) so the probe alone
+#   can still be built/run without the capture adapter.
 voice-processing-io-probe = ["dep:objc2-audio-toolbox"]
 
 [dependencies]
