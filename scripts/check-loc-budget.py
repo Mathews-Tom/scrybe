@@ -118,9 +118,11 @@ LOC_CEILINGS: dict[str, int] = {
     # to 15450 for M6 PR-2's exact token dedup and crash-safe suppressed WAL
     # disposition, including boundary, recovery, and dual-source stream tests.
     # Raised to 15800 for M7's canonical transcript parser, explicit `[notes]`
-    # configuration, and whole-segment packing with bounded overlap. Map-reduce
-    # orchestration, provider-cap handling, and templates remain separate slices.
-    "scrybe-core": 15800,
+    # configuration, and whole-segment packing with bounded overlap. Raised to
+    # 16300 for M7's preflighted local tokenizer, capped map dispatch,
+    # deterministic processing gaps, reduction orchestration, and title source
+    # cutover. Reduction/title cap compaction and templates remain separate.
+    "scrybe-core": 16300,
     # 2000 was the v0.5 ceiling. Raised to 2300 at v0.6 to absorb the
     # `scrybe bench` subcommand. Raised to 2500 at v1.0.1 to absorb
     # the `--source mic` and `--whisper-model` wiring on `scrybe record`

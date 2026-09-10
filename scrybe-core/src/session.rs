@@ -35,6 +35,8 @@ use crate::diarize::Diarizer;
 use crate::error::{CoreError, PipelineError, StorageError};
 use crate::hooks::{dispatch_hooks, Hook, LifecycleEvent};
 use crate::notes;
+use crate::notes_map_reduce::{map_reduce, NotesRuntime};
+use crate::notes_segments::{pack_segments, parse_canonical_transcript};
 use crate::pipeline::chunker::{ChunkBoundary, Chunker, ChunkerConfig, EmittedChunk};
 use crate::pipeline::encoder::EncoderConfig;
 use crate::pipeline::journal::{JournalAnchor, JournalManifest, JournalWriter};
@@ -117,18 +119,37 @@ pub struct SessionOutputs {
     pub chunks: Vec<AttributedChunk>,
 }
 
-/// Run a session end-to-end. The capture stream is consumed; the
-/// orchestrator returns once the stream closes (caller stops the
-/// adapter externally).
+/// Run a configuration-free session. This is the hermetic stub path used by
+/// existing library callers and tests; real LLM callers must use
+/// [`run_with_notes`] with a preflighted [`NotesRuntime`].
 ///
 /// # Errors
 ///
-/// `CoreError::Consent` if the prompter declines, `CoreError::Storage`
-/// for filesystem failures, `CoreError::Stt` / `CoreError::Llm` for
-/// provider failures that exhaust retries.
+/// Returns capture, provider, storage, or consent failure from the session.
 pub async fn run<C, V, S, L, D, P>(
     inputs: SessionInputs<'_, V, S, L, D, P>,
     capture_stream: C,
+) -> Result<SessionOutputs, CoreError>
+where
+    C: Stream<Item = Result<AudioFrame, crate::error::CaptureError>> + Send + Unpin,
+    V: Vad,
+    S: SttProvider,
+    L: LlmProvider,
+    D: Diarizer,
+    P: ConsentPrompter,
+{
+    run_with_notes(inputs, capture_stream, None).await
+}
+
+/// Run a session with the preflighted capped map-reduce notes runtime.
+///
+/// # Errors
+///
+/// Returns the same capture, provider, storage, and consent errors as [`run`].
+pub async fn run_with_notes<C, V, S, L, D, P>(
+    inputs: SessionInputs<'_, V, S, L, D, P>,
+    capture_stream: C,
+    notes_runtime: Option<NotesRuntime>,
 ) -> Result<SessionOutputs, CoreError>
 where
     C: Stream<Item = Result<AudioFrame, crate::error::CaptureError>> + Send + Unpin,
@@ -185,6 +206,7 @@ where
             hooks,
             chunker_config,
             verify_duration,
+            notes_runtime,
         },
         capture_stream,
     )
@@ -233,6 +255,7 @@ where
     hooks: &'a [Box<dyn Hook>],
     chunker_config: ChunkerConfig,
     verify_duration: bool,
+    notes_runtime: Option<NotesRuntime>,
 }
 
 /// Lazily-spawned per-source journal writers for one session. Each
@@ -467,6 +490,7 @@ where
         hooks,
         chunker_config,
         verify_duration,
+        notes_runtime,
     } = inputs;
 
     let context_arc = Arc::new(context.clone());
@@ -691,10 +715,36 @@ where
 
     let mut transcript_body =
         std::fs::read_to_string(&transcript_path).map_err(|e| CoreError::Storage(e.into()))?;
+    let map_output = if let Some(runtime) = notes_runtime.as_ref() {
+        let segments = parse_canonical_transcript(&transcript_body).map_err(|error| {
+            CoreError::Pipeline(PipelineError::NotesTranscriptParse {
+                reason: error.to_string(),
+            })
+        })?;
+        let token_counts: Vec<u32> = segments
+            .iter()
+            .map(|segment| runtime.count_tokens(&segment.text))
+            .collect::<Result<_, _>>()
+            .map_err(CoreError::Config)?;
+        let chunks = pack_segments(
+            &segments,
+            runtime.target_tokens(),
+            runtime.overlap_segments(),
+            |segment| token_counts[segment.ordinal - 1],
+        );
+        Some(map_reduce(llm, &chunks, &context, |prompt| runtime.prompt_fits(prompt)).await?)
+    } else {
+        None
+    };
+    let title_source = map_output
+        .as_ref()
+        .map_or(transcript_body.as_str(), |output| {
+            output.reduced_notes.as_str()
+        });
     let final_title = if let Some(existing) = title {
         existing
     } else {
-        let title_prompt = notes::render_title_prompt(&transcript_body);
+        let title_prompt = notes::render_title_prompt(title_source);
         let raw_title = llm.complete(&title_prompt).await?;
         notes::clean_generated_title(&raw_title)
             .ok_or(CoreError::Pipeline(PipelineError::InvalidGeneratedTitle))?
@@ -709,9 +759,18 @@ where
         transcript_body = updated;
     }
 
-    let prompt = notes::render_notes_prompt(&transcript_body, &context);
-    let llm_output = llm.complete(&prompt).await?;
-    let notes_body = notes::render_notes_body(Some(&final_title), started_at, &llm_output);
+    let notes_body = if let Some(output) = map_output {
+        notes::render_notes_body_with_gaps(
+            Some(&final_title),
+            started_at,
+            &output.reduced_notes,
+            &output.gaps,
+        )
+    } else {
+        let prompt = notes::render_notes_prompt(&transcript_body, &context);
+        let llm_output = llm.complete(&prompt).await?;
+        notes::render_notes_body(Some(&final_title), started_at, &llm_output)
+    };
     atomic_replace(&notes_path, notes_body.as_bytes())?;
 
     let ended_at = Utc::now();

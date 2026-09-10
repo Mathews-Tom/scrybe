@@ -69,6 +69,7 @@ use scrybe_core::context::MeetingContext;
 use scrybe_core::diarize::Diarizer;
 use scrybe_core::error::{CaptureError, CoreError, LlmError, SttError};
 use scrybe_core::hooks::{Hook, LifecycleEvent};
+use scrybe_core::notes_map_reduce::NotesRuntime;
 use scrybe_core::pipeline::chunker::ChunkerConfig;
 use scrybe_core::pipeline::vad::EnergyVad;
 #[cfg(feature = "llm-openai-compat")]
@@ -79,7 +80,7 @@ use scrybe_core::providers::streaming::StreamingSttProvider;
 #[cfg(feature = "whisper-local")]
 use scrybe_core::providers::whisper_local::{WhisperLocalConfig, WhisperLocalProvider};
 use scrybe_core::providers::{LlmProvider, SttProvider};
-use scrybe_core::session::{run as run_session, SessionInputs};
+use scrybe_core::session::{run_with_notes as run_session_with_notes, SessionInputs};
 #[cfg(any(test, all(feature = "mic-capture", feature = "system-capture-mac")))]
 use scrybe_core::storage::session_folder_name;
 use scrybe_core::types::{
@@ -397,6 +398,10 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
     let consent_mode = args.consent.map_or(cfg.consent.default_mode, Into::into);
 
     let llm = build_llm_provider(llm_backend, &cfg.llm)?;
+    let notes_runtime = match llm_backend {
+        LlmBackendArg::Stub => None,
+        LlmBackendArg::OpenAiCompat => Some(NotesRuntime::load(&cfg.notes)?),
+    };
     let system_backend = resolve_system_backend(args.system_backend, &cfg.record)?;
     #[cfg(not(all(feature = "mic-capture", feature = "system-capture-mac")))]
     let _ = system_backend;
@@ -548,7 +553,7 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
     };
     let streaming_stt = stt.streaming();
 
-    let outputs = run_session(
+    let outputs = run_session_with_notes(
         SessionInputs {
             id,
             started_at,
@@ -584,6 +589,7 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
             verify_duration: !matches!(source, CaptureSourceArg::Synthetic),
         },
         stream,
+        notes_runtime,
     )
     .await
     .context("running session");
