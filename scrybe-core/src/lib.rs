@@ -26,6 +26,7 @@ pub mod diarize;
 pub mod error;
 pub mod hooks;
 pub mod notes;
+pub mod notes_segments;
 pub mod pipeline;
 pub mod providers;
 pub mod record_defaults;

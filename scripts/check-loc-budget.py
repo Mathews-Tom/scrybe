@@ -117,7 +117,10 @@ LOC_CEILINGS: dict[str, int] = {
     # that prove durable transcript and hook payloads remain identical. Raised
     # to 15450 for M6 PR-2's exact token dedup and crash-safe suppressed WAL
     # disposition, including boundary, recovery, and dual-source stream tests.
-    "scrybe-core": 15450,
+    # Raised to 15800 for M7's canonical transcript parser, explicit `[notes]`
+    # configuration, and whole-segment packing with bounded overlap. Map-reduce
+    # orchestration, provider-cap handling, and templates remain separate slices.
+    "scrybe-core": 15800,
     # 2000 was the v0.5 ceiling. Raised to 2300 at v0.6 to absorb the
     # `scrybe bench` subcommand. Raised to 2500 at v1.0.1 to absorb
     # the `--source mic` and `--whisper-model` wiring on `scrybe record`
