@@ -328,8 +328,6 @@ pub struct LlmConfig {
     pub base_url: String,
     #[serde(default = "default_llm_model")]
     pub model: String,
-    #[serde(default = "default_notes_template")]
-    pub notes_template: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key_env: Option<String>,
     /// Retry policy applied by cloud LLM providers.
@@ -349,17 +347,12 @@ fn default_llm_model() -> String {
     "llama3.1:8b".to_string()
 }
 
-fn default_notes_template() -> String {
-    "default".to_string()
-}
-
 impl Default for LlmConfig {
     fn default() -> Self {
         Self {
             provider: default_llm_provider(),
             base_url: default_llm_base_url(),
             model: default_llm_model(),
-            notes_template: default_notes_template(),
             api_key_env: None,
             retry: RetryPolicy::default(),
         }

@@ -5,8 +5,8 @@
 //     https://www.apache.org/licenses/LICENSE-2.0
 
 //! Markdown rendering for `transcript.md` and the LLM prompt that
-//! produces `notes.md`. The default templates are baked in; users can
-//! override the notes template via `config.llm.notes_template`.
+//! produces `notes.md`. The default template is baked in and selected
+//! through `config.notes.template`.
 //!
 //! Tier-3 internal: `transcript.md` line format is documented in
 //! `docs/system-design.md` §5 but is not a stability contract.
@@ -67,6 +67,25 @@ fn format_hms_ms(start_ms: u64) -> String {
     let m = (total_secs % 3_600) / 60;
     let s = total_secs % 60;
     format!("{h:02}:{m:02}:{s:02}")
+}
+
+/// The only shipped named notes structure.
+pub const DEFAULT_TEMPLATE: &str = "default";
+
+/// Reject a template name before capture starts.
+///
+/// # Errors
+///
+/// Returns a configuration error for every unknown template name.
+pub fn validate_template(name: &str) -> Result<(), crate::error::ConfigError> {
+    if name == DEFAULT_TEMPLATE {
+        Ok(())
+    } else {
+        Err(crate::error::ConfigError::Invalid {
+            key: "notes.template".to_string(),
+            reason: format!("unknown template {name:?}; expected {DEFAULT_TEMPLATE:?}"),
+        })
+    }
 }
 
 /// Render the LLM prompt that produces `notes.md`.
@@ -431,5 +450,19 @@ mod tests {
         let body = render_notes_body(None, dt(2026, 4, 29, 9, 0), "## TL;DR\n\nA\n");
 
         assert!(body.contains("Untitled session"));
+    }
+    #[test]
+    fn default_template_is_accepted() {
+        assert!(validate_template(DEFAULT_TEMPLATE).is_ok());
+    }
+
+    #[test]
+    fn unknown_template_names_are_rejected() {
+        let error = validate_template("executive").unwrap_err();
+
+        assert!(matches!(
+            error,
+            crate::error::ConfigError::Invalid { key, .. } if key == "notes.template"
+        ));
     }
 }
