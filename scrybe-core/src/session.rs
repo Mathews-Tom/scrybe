@@ -278,6 +278,8 @@ struct SessionJournals {
 /// final at spawn time; only `frames_written` grows afterward).
 struct JournalSlot {
     first_frame_epoch_ms: i64,
+    first_frame_timestamp_ns: u64,
+    last_frame_end_timestamp_ns: u64,
     sample_rate: u32,
     channels: u16,
     writer: JournalWriter,
@@ -297,6 +299,8 @@ impl JournalSlot {
     const fn partial_anchor(&self) -> JournalAnchor {
         JournalAnchor {
             first_frame_epoch_ms: self.first_frame_epoch_ms,
+            first_frame_timestamp_ns: Some(self.first_frame_timestamp_ns),
+            last_frame_end_timestamp_ns: Some(self.last_frame_end_timestamp_ns),
             sample_rate: self.sample_rate,
             channels: self.channels,
             frames_written: 0,
@@ -348,6 +352,8 @@ impl SessionJournals {
                 JournalWriter::spawn(&self.dir, frame.source, frame.sample_rate, frame.channels)?;
             *slot = Some(JournalSlot {
                 first_frame_epoch_ms: Utc::now().timestamp_millis(),
+                first_frame_timestamp_ns: frame.timestamp_ns,
+                last_frame_end_timestamp_ns: frame_end_timestamp_ns(frame),
                 sample_rate: frame.sample_rate,
                 channels: frame.channels,
                 writer,
@@ -356,6 +362,9 @@ impl SessionJournals {
         }
         if let Some(s) = slot.as_mut() {
             s.writer.push(Arc::clone(&frame.samples));
+            s.last_frame_end_timestamp_ns = s
+                .last_frame_end_timestamp_ns
+                .max(frame_end_timestamp_ns(frame));
             s.captured_ms = s.captured_ms.saturating_add(frame_duration_ms(frame));
         }
         if spawned_new {
@@ -413,6 +422,8 @@ fn finish_anchor(slot: Option<JournalSlot>) -> Result<Option<JournalAnchor>, Cor
     let summary = slot.writer.finish()?;
     Ok(Some(JournalAnchor {
         first_frame_epoch_ms: slot.first_frame_epoch_ms,
+        first_frame_timestamp_ns: Some(slot.first_frame_timestamp_ns),
+        last_frame_end_timestamp_ns: Some(slot.last_frame_end_timestamp_ns),
         sample_rate: summary.sample_rate,
         channels: summary.channels,
         frames_written: summary.frames_written,
@@ -432,6 +443,22 @@ fn frame_duration_ms(frame: &AudioFrame) -> u64 {
     let frames_per_channel = frame.samples.len() / usize::from(frame.channels);
     let frames_per_channel = u64::try_from(frames_per_channel).unwrap_or(u64::MAX);
     frames_per_channel.saturating_mul(1_000) / u64::from(frame.sample_rate)
+}
+
+/// End timestamp of one source-local audio frame. Source timestamp values are
+/// not comparable across sources, but each adapter guarantees a single
+/// source's timestamps advance with its sample clock.
+fn frame_end_timestamp_ns(frame: &AudioFrame) -> u64 {
+    let channels = usize::from(frame.channels);
+    if frame.sample_rate == 0 || channels == 0 {
+        return frame.timestamp_ns;
+    }
+    let frames_per_channel = u64::try_from(frame.samples.len() / channels).unwrap_or(u64::MAX);
+    let duration_ns = frames_per_channel
+        .saturating_mul(1_000_000_000)
+        .checked_div(u64::from(frame.sample_rate))
+        .unwrap_or(u64::MAX);
+    frame.timestamp_ns.saturating_add(duration_ns)
 }
 
 /// The anchor-aligned wall-clock instant `elapsed_ms` (minus
@@ -688,24 +715,18 @@ where
         // them.
         crate::pipeline::journal::write_manifest(&folder.join("journal"), &journal_manifest)?;
     }
-    #[allow(clippy::cast_precision_loss)]
-    let wall_clock_secs = if verify_duration {
-        (Utc::now() - started_at).num_milliseconds() as f64 / 1000.0
-    } else {
-        0.0
-    };
     let merge_report = merge_journal(
         &folder.join("journal"),
         &audio_path,
         &journal_manifest,
         encoder_config,
-        wall_clock_secs,
+        verify_duration,
     )?;
     debug!(
         ?journal_manifest,
         encoded_secs = merge_report.encoded_secs,
         channels = merge_report.channels,
-        wall_clock_secs,
+        verify_duration,
         "offline journal merge complete"
     );
 
@@ -1994,17 +2015,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_run_with_verify_duration_true_fails_loudly_on_declared_vs_wall_clock_mismatch() {
-        // Regression guard for the `verify_duration` field itself:
-        // when set (every real capture source), a session whose
-        // frames declare far more audio than the real wall-clock time
-        // `run()` actually took must fail loudly via the offline
-        // merge's duration assertion, rather than silently accepting
-        // a corrupt-duration `audio.opus`. `started_at: Utc::now()`
-        // makes this a genuine real-time comparison: frames still
-        // generate near-instantly (in-memory `stream::iter`), so the
-        // encoded duration (7s of declared content) is wildly off
-        // from the real elapsed wall-clock time of this test.
+    async fn test_run_with_verify_duration_true_fails_loudly_on_source_clock_gap() {
+        // Regression guard for the `verify_duration` field itself: a real
+        // capture source whose timestamps contain a gap must fail loudly,
+        // even when provider startup or shutdown changes process elapsed time.
         let tmp = tempfile::tempdir().unwrap();
         let stt = EchoStt;
         let llm = CannedLlm;
@@ -2012,9 +2026,8 @@ mod tests {
         let prompter = AcceptingPrompter;
         let hooks: Vec<Box<dyn Hook>> = Vec::new();
 
-        // 7s of declared audio (frame_size=1600 at 16kHz = 100ms per
-        // frame; 70 frames = 7s), generated instantly.
-        let frames = stream::iter((0..70).map(|i| Ok(speech_frame(i * 100_000_000, 1_600))));
+        // 7s of samples arrive across a 13.9s source-clock span.
+        let frames = stream::iter((0..70).map(|i| Ok(speech_frame(i * 200_000_000, 1_600))));
 
         let inputs = SessionInputs {
             id: SessionId::new(),

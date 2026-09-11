@@ -122,7 +122,10 @@ LOC_CEILINGS: dict[str, int] = {
     # 16300 for M7's preflighted local tokenizer, capped map dispatch,
     # deterministic processing gaps, reduction orchestration, and title source
     # cutover. Reduction/title cap compaction and templates remain separate.
-    "scrybe-core": 16300,
+    # Raised to 16400 for the M10 source-clock duration guard: journal manifests
+    # now retain per-source capture timestamps so model startup and shutdown do
+    # not invalidate a real capture, while timestamp gaps still fail loudly.
+    "scrybe-core": 16400,
     # 2000 was the v0.5 ceiling. Raised to 2300 at v0.6 to absorb the
     # `scrybe bench` subcommand. Raised to 2500 at v1.0.1 to absorb
     # the `--source mic` and `--whisper-model` wiring on `scrybe record`

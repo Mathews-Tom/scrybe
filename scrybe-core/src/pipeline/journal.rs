@@ -72,9 +72,18 @@ pub struct JournalSummary {
 /// uses to align two independently-clocked sources, since
 /// `AudioFrame::timestamp_ns` is only comparable within one source's
 /// own stream (`docs/development-plan.md` §19.2 defect D2).
+///
+/// The source-local timestamp bounds are optional for repair compatibility
+/// with manifests written before duration validation used capture clocks.
+/// A completed current-format manifest records both values so merge can
+/// validate its source audio without including model startup or shutdown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct JournalAnchor {
     pub first_frame_epoch_ms: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_frame_timestamp_ns: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_frame_end_timestamp_ns: Option<u64>,
     pub sample_rate: u32,
     pub channels: u16,
     pub frames_written: u64,
@@ -505,12 +514,16 @@ mod tests {
                 sample_rate: 16_000,
                 channels: 1,
                 frames_written: 960_000,
+                first_frame_timestamp_ns: None,
+                last_frame_end_timestamp_ns: None,
             }),
             system: Some(JournalAnchor {
                 first_frame_epoch_ms: 1_735_000_000_163,
                 sample_rate: 48_000,
                 channels: 2,
                 frames_written: 2_880_000,
+                first_frame_timestamp_ns: None,
+                last_frame_end_timestamp_ns: None,
             }),
         };
 
@@ -531,6 +544,8 @@ mod tests {
                 sample_rate: 16_000,
                 channels: 1,
                 frames_written: 480_000,
+                first_frame_timestamp_ns: None,
+                last_frame_end_timestamp_ns: None,
             }),
             system: None,
         };
@@ -553,6 +568,8 @@ mod tests {
                 sample_rate: 16_000,
                 channels: 1,
                 frames_written: 0,
+                first_frame_timestamp_ns: None,
+                last_frame_end_timestamp_ns: None,
             }),
             system: None,
         };

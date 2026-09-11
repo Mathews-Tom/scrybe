@@ -4,6 +4,21 @@ All notable changes to scrybe are documented here. The format follows [Keep a Ch
 
 ## [Unreleased]
 
+## [1.3.1] — 2026-09-11
+
+### Fixed
+
+- macOS release builds now include microphone, ScreenCaptureKit system-audio, Opus, local Whisper, and OpenAI-compatible provider support. The final CLI carries the system Swift-runtime rpath required by ScreenCaptureKit.
+- Offline journal merge validates each source against its own capture-clock interval, preventing local model startup and shutdown work from triggering false duration failures while preserving detection of source timestamp gaps.
+
+### Verification
+
+- Real macOS mic-only and mic-plus-system captures produced audio, transcript, and notes with local Whisper and Ollama. Both redacted qualification receipts passed; the stereo Stage B receipt verified `stereo:mic-l,system-r`.
+
+### Security
+
+- Default-feature builds remain free of network-provider dependencies. Local Ollama remains opt-in through explicit release or user feature selection.
+
 ## [1.3.0] — 2026-09-11
 
 This reconciled release publishes every capability merged after v1.2.1: streaming STT, durable transcript reconciliation and echo suppression, capped map-reduce notes, a read-only local agent surface, and the local-STT comparison lane.
@@ -49,6 +64,7 @@ This release completes the macOS capture-liveness train. A dead or wrong input d
 
 - 8 crates. Publish posture unchanged: `scrybe` is the crates.io placeholder; distribution uses cargo-dist release artifacts.
 
+[1.3.1]: https://github.com/Mathews-Tom/scrybe/releases/tag/v1.3.1
 [1.3.0]: https://github.com/Mathews-Tom/scrybe/releases/tag/v1.3.0
 
 [1.2.1]: https://github.com/Mathews-Tom/scrybe/releases/tag/v1.2.1
