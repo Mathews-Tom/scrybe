@@ -19,6 +19,7 @@ pub mod init;
 pub mod list;
 #[cfg(feature = "agent-access")]
 pub mod mcp;
+pub mod qualify;
 pub mod rec;
 pub mod record;
 pub mod repair;
@@ -50,6 +51,8 @@ pub enum Command {
     /// Recover `audio.opus` from a crashed or `SIGKILL`ed session's
     /// journal.
     Repair(repair::Args),
+    /// Verify a completed macOS qualification session and write a redacted receipt.
+    Qualify(qualify::Args),
     /// Read-only local-agent access server over stdio (M9). Refuses
     /// to start unless `[agent_access].enabled = true` in config.
     #[cfg(feature = "agent-access")]
@@ -73,6 +76,7 @@ pub async fn run(cmd: Command) -> Result<()> {
         Command::Doctor(a) => doctor::run(a).await,
         Command::Bench(a) => bench::run(a).await,
         Command::Repair(a) => repair::run(a).await,
+        Command::Qualify(a) => qualify::run(&a),
         #[cfg(feature = "agent-access")]
         Command::Mcp(a) => mcp::run(a).await,
     }
