@@ -6,7 +6,7 @@
   "license": "Apache-2.0",
   "architecture": {
     "64bit": {
-      "url": "https://github.com/Mathews-Tom/scrybe/releases/download/v{{ version }}/scrybe-cli-x86_64-pc-windows-msvc.zip",
+      "url": "https://github.com/Mathews-Tom/scrybe/releases/download/v{{ version }}/scrybe-x86_64-pc-windows-msvc.zip",
       "hash": "{{ sha256_x86_64_windows }}"
     }
   },
@@ -17,7 +17,7 @@
   "autoupdate": {
     "architecture": {
       "64bit": {
-        "url": "https://github.com/Mathews-Tom/scrybe/releases/download/v$version/scrybe-cli-x86_64-pc-windows-msvc.zip"
+        "url": "https://github.com/Mathews-Tom/scrybe/releases/download/v$version/scrybe-x86_64-pc-windows-msvc.zip"
       }
     },
     "hash": {

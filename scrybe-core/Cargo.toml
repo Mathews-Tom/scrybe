@@ -1,14 +1,18 @@
 [package]
-name = "scrybe-core"
-version = "1.3.1"
-description = "Core domain types, error hierarchy, extension traits, atomic-write storage primitives, and configuration loader for the scrybe local-first meeting transcription system."
-publish = false
+name = "scrybe-meeting-core"
+version = "1.3.2"
+description = "Core session, storage, provider, and pipeline library for the Scrybe meeting recorder."
+publish = true
 authors.workspace = true
 edition.workspace = true
 homepage.workspace = true
 repository.workspace = true
 license.workspace = true
 rust-version.workspace = true
+readme = "../README.md"
+
+[lib]
+name = "scrybe_core"
 
 [features]
 default = []
@@ -20,12 +24,12 @@ default = []
 # `serde_json`, `toml`, and `chrono`, already unconditional deps below.
 agent-access = []
 # Enables Hook::Git via git2 / libgit2. Off by default so the workspace
-# builds without a system libgit2; enable in scrybe-cli when the user
-# turns on the [hooks.git] section in config.
+# builds without a system libgit2; enable it in the application package when
+# the user turns on the [hooks.git] section in config.
 hook-git = ["dep:git2"]
 # Enables WhisperLocalProvider via whisper-rs (links libwhisper / Metal /
 # BLAS depending on platform). Off by default so the workspace builds
-# without C++ toolchain; scrybe-cli enables it via its own feature flag.
+# without a C++ toolchain; the application package enables this feature.
 whisper-local = ["dep:whisper-rs"]
 # Enables `SherpaStreamingProvider` through the official `sherpa-onnx`
 # binding. Opt-in only: the workspace `.cargo/config.toml` requires a
@@ -33,7 +37,8 @@ whisper-local = ["dep:whisper-rs"]
 stt-sherpa = ["dep:sherpa-onnx"]
 # OpenAI-compatible STT and LLM providers (Groq, OpenAI, Together,
 # vLLM, …). Pulls in `reqwest` with rustls-only TLS; the
-# `egress-audit` CI lane stays green only on the default-feature graph.
+# `egress-audit` CI lane remains clean only when the application is
+# checked with `--no-default-features`.
 openai-compat = ["dep:reqwest", "dep:url"]
 # `IcsFileProvider` — calendar context from local `.ics` files via
 # the `ical` crate.
@@ -63,7 +68,7 @@ diarize-pyannote = []
 # (see encoder.rs module docstring); landed at v1.0.2 to close the
 # v0.1 carryover where `NullEncoder` wrote raw PCM under an `.opus`
 # filename. Off by default so the workspace builds without libopus;
-# scrybe-cli enables it in release builds. With the feature off, the
+# the application package enables it in release builds. With the feature off,
 # pipeline falls back to `NullEncoder` (the test-only deterministic
 # implementation).
 encoder-opus = ["dep:opus", "dep:ogg"]
@@ -102,10 +107,11 @@ sherpa-onnx = { version = "=1.13.7", optional = true }
 # Opus + Ogg deps for the `encoder-opus` feature. Both are local-only
 # (no network surface), so they do not perturb the `egress-audit` CI
 # lane; only pulled in when the consumer enables `encoder-opus`. The
-# `opus` crate links libopus (vendored on macOS via opus-sys, system
-# package elsewhere). `ogg` is pure Rust and writes the Ogg container
-# framing required by RFC 7845 OpusHead / OpusTags.
-opus = { version = "0.3", optional = true }
+# `opus` 0.4 uses the maintained `opusic-sys` bindings instead of the
+# CMake-4-incompatible vendored build in `audiopus_sys` 0.2.2. `ogg`
+# is pure Rust and writes the Ogg container framing required by RFC
+# 7845 OpusHead / OpusTags.
+opus = { version = "0.4", optional = true }
 ogg = { version = "0.9", optional = true }
 
 [target.'cfg(unix)'.dependencies]
@@ -124,7 +130,7 @@ wiremock = { workspace = true }
 
 # Pipeline-stage micro-benchmarks per `docs/system-design.md` §11 ("Bench
 # gate") and `.docs/development-plan.md` §7.3.4. Run locally with
-# `cargo bench -p scrybe-core`. CI gates only on `cargo bench --no-run`
+# `cargo bench -p scrybe-meeting-core`. CI gates only on `cargo bench --no-run`
 # (compile) — the throughput-regression gate runs on the self-hosted
 # Tier-3 Mac per `system-design.md` §11.
 [[bench]]

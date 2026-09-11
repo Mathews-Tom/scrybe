@@ -1,14 +1,17 @@
 [package]
-name = "scrybe-cli"
-version = "1.3.1"
-description = "Command-line driver for scrybe: init, record, list, show, doctor."
-publish = false
+name = "scrybe"
+version = "1.3.2"
+description = "Local-first meeting recording, transcription, and notes for macOS."
+publish = true
 authors.workspace = true
 edition.workspace = true
 homepage.workspace = true
 repository.workspace = true
 license.workspace = true
 rust-version.workspace = true
+readme = "../README.md"
+keywords = ["meeting", "transcription", "whisper", "local-first", "privacy"]
+categories = ["multimedia::audio", "command-line-utilities"]
 
 [[bin]]
 name = "scrybe"
@@ -16,7 +19,15 @@ path = "src/main.rs"
 doc = false
 
 [features]
-default = []
+default = [
+    "cli-shell",
+    "hook-git",
+    "mic-capture",
+    "system-capture-mac",
+    "encoder-opus",
+    "whisper-local",
+    "llm-openai-compat",
+]
 hook-git = ["scrybe-core/hook-git"]
 whisper-local = ["scrybe-core/whisper-local"]
 stt-sherpa = ["scrybe-core/stt-sherpa"]
@@ -30,11 +41,10 @@ stt-sherpa = ["scrybe-core/stt-sherpa"]
 # `tokio/process` below). No new dependency.
 agent-access = ["scrybe-core/agent-access", "tokio/io-std"]
 # Enables the live cpal binding in `scrybe-capture-mic` so
-# `scrybe record --mic` opens the default input device. Off by default
-# so the cpal transitive dependency tree (CoreAudio / ALSA / WASAPI
-# bindings) stays out of CI builds; users opt in via
-# `cargo install --features mic-capture` per the v1.0.x mic-only path
-# documented in `INSTALL.md`. Without this feature, `--mic` returns
+# `scrybe record --mic` opens the default input device. Included in
+# the published macOS application's default feature set; hermetic
+# development and CI builds disable all defaults explicitly. Without
+# this feature, `--mic` returns
 # `CaptureError::PermissionDenied("live-mic feature disabled ...")`.
 mic-capture = ["scrybe-capture-mic/live-mic"]
 # Enables both macOS system-audio adapters. `sck` is the default,
@@ -48,27 +58,24 @@ system-capture-mac = [
 ]
 # Enables the live `OggOpusEncoder` in `scrybe-core` so `audio.opus`
 # is a real Ogg-Opus file (decodable by ffmpeg / vlc / browser audio
-# tags) rather than the v0.1 NullEncoder raw-PCM fallback. Off by
-# default so the workspace builds without libopus headers.
+# tags) rather than the v0.1 NullEncoder raw-PCM fallback. Included in
+# the published macOS application's default feature set.
 encoder-opus = ["scrybe-core/encoder-opus"]
 # Enables `OpenAiCompatLlmProvider` so `scrybe record --llm openai-compat`
 # generates real `notes.md` summaries via any OpenAI-compat
 # `/chat/completions` endpoint — Ollama at `http://localhost:11434/v1`,
 # OpenAI, Groq, Together, vLLM, … (see `docs/system-design.md` §4.3,
 # §8.2). Forwards to `scrybe-core/openai-compat`, which pulls
-# `reqwest` with rustls-only TLS. Off by default so the air-gappable
-# default-feature graph stays network-free per the egress audit
-# (`scripts/check-egress-baseline.py`); enable on opt-in.
+# `reqwest` with rustls-only TLS. Included in the published application;
+# runtime configuration still controls whether any network provider runs.
 llm-openai-compat = ["scrybe-core/openai-compat"]
 # Desktop shell: tray-icon + global-hotkey wired to a main-thread event
 # pump so `scrybe record --shell` toggles capture from a global hotkey
 # and a status-bar Quit menu.
 #
-# Default-OFF because the Linux build of `tray-icon` 0.23 needs GTK
-# headers, which the GitHub-hosted `ubuntu-24.04` runner does not carry
-# without an `apt install` step. A maintainer building for desktop
-# distribution opts in via `cargo install --features cli-shell` (or per
-# the release recipe in `.docs/development-plan.md` §13).
+# Included by default for the supported macOS application. Cross-platform
+# workspace validation uses `--no-default-features` because Linux requires
+# GTK development headers and Windows/Linux recording remains parked.
 cli-shell = [
     "dep:tray-icon",
     "dep:global-hotkey",
@@ -87,10 +94,9 @@ directories.workspace = true
 futures.workspace = true
 global-hotkey = { version = "0.7", optional = true }
 keyboard-types = { version = "0.8", optional = true }
-scrybe = { path = "../scrybe", version = "1.3.1" }
-scrybe-capture-mac = { path = "../scrybe-capture-mac", version = "1.3.1" }
-scrybe-capture-mic = { path = "../scrybe-capture-mic", version = "1.3.1" }
-scrybe-core = { path = "../scrybe-core", version = "1.3.1" }
+scrybe-capture-mac = { package = "scrybe-meeting-capture-mac", path = "../scrybe-capture-mac", version = "=1.3.2" }
+scrybe-capture-mic = { package = "scrybe-meeting-capture-mic", path = "../scrybe-capture-mic", version = "=1.3.2" }
+scrybe-core = { package = "scrybe-meeting-core", path = "../scrybe-core", version = "=1.3.2" }
 serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "fs", "io-util", "sync", "time"] }
@@ -116,24 +122,14 @@ tempfile = "3"
 [lints]
 workspace = true
 
-# Tarball generation for `scrybe-cli` is owned by cargo-dist. Other workspace
-# crates (`scrybe`, `scrybe-core`, `scrybe-capture-mac`) are libraries or
-# placeholders and stay opted out via the absence of this block.
+# Tarball generation for the `scrybe` application package is owned by
+# cargo-dist. Library and parked-platform workspace packages stay opted out
+# via the absence of this block.
 #
-# The macOS release artifact is the product, not a diagnostics-only CLI:
-# it includes mic capture, Opus encoding, local Whisper, and the opt-in
-# OpenAI-compatible provider needed for a local Ollama notes path. Config keeps
-# every network provider opt-in; default configs and egress-audit builds remain
-# feature-minimal.
+# cargo-dist uses the package's default feature set, keeping the GitHub artifact
+# and crates.io install on one production profile. Runtime configuration keeps
+# network providers inactive until selected; the egress audit covers the
+# explicit hermetic `--no-default-features` build.
 [package.metadata.dist]
 dist = true
-features = [
-    "cli-shell",
-    "hook-git",
-    "mic-capture",
-    "system-capture-mac",
-    "encoder-opus",
-    "whisper-local",
-    "llm-openai-compat",
-]
 default-features = true

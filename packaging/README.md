@@ -34,6 +34,6 @@ Each rendered manifest should be verified against the corresponding cosign-signe
 Each placeholder template carries gaps that need closing at submission time, beyond `{{ ... }}` substitution:
 
 - **`fdroid/dev.scrybe.scrybe.yml`** — `subdir: scrybe-android` points at the Cargo crate of the same name; F-Droid builds a Gradle project, which (per `docs/system-design.md` §3) lives at `android/`. Update `subdir` to `android` once the Gradle project lands at v0.5.x.
-- **`scoop/scrybe.json`** — references `scrybe-cli-x86_64-pc-windows-msvc.zip`, which the cargo-dist matrix does not yet emit. Wait until the v0.9.x cargo-dist target expansion adds Windows artifacts before submitting to the Scoop bucket.
-- **`aur/PKGBUILD`** — references `scrybe-cli-{x86_64,aarch64}-unknown-linux-gnu.tar.xz`, which the cargo-dist matrix does not yet emit. Same gating as Scoop.
-- **`flatpak/dev.scrybe.scrybe.yaml`** — `--share=network` is wider than the default-feature graph requires (the egress-audit lane proves no networking crates link in). Optional users opt in to cloud STT/LLM features at install time via `flatpak override --user --share=network dev.scrybe.scrybe`; consider dropping `--share=network` from the manifest before submission.
+- **`scoop/scrybe.json`** — references `scrybe-x86_64-pc-windows-msvc.zip`, which the cargo-dist matrix does not emit. Keep the template parked until M8 resumes and Windows recording has a maintainer-owned hardware qualification path.
+- **`aur/PKGBUILD`** — references `scrybe-{x86_64,aarch64}-unknown-linux-gnu.tar.xz`, which the cargo-dist matrix does not emit. Keep the template parked until M8 resumes and Linux recording has a maintainer-owned hardware qualification path.
+- **`flatpak/dev.scrybe.scrybe.yaml`** — remains a parked template. Reassess its `--share=network` permission against the Linux product profile when M8 resumes; the v1.3.2 crates.io contract applies only to macOS.

@@ -10,7 +10,7 @@
 //! Run with:
 //!
 //! ```text
-//! cargo run -p scrybe-capture-mac --features voice-processing-io-probe \
+//! cargo run -p scrybe-meeting-capture-mac --features voice-processing-io-probe \
 //!     --example voice_processing_io_probe
 //! ```
 //!
@@ -47,7 +47,7 @@ fn main() {
 #[cfg(not(all(target_os = "macos", feature = "voice-processing-io-probe")))]
 fn main() {
     eprintln!(
-        "this example requires macOS and `cargo run -p scrybe-capture-mac \
+        "this example requires macOS and `cargo run -p scrybe-meeting-capture-mac \
          --features voice-processing-io-probe --example voice_processing_io_probe`"
     );
     std::process::exit(1);

@@ -35,7 +35,6 @@ from pathlib import Path
 # test footprint dominates, prefer extracting tests to `tests/` (which
 # tokei excludes here because we point it at `src/` only).
 LOC_CEILINGS: dict[str, int] = {
-    "scrybe": 100,
     # 8500 was the v1.0.0 ceiling (after pyannote-onnx). Raised to
     # 9000 at v1.0.2 to absorb the OggOpusEncoder (~340 LoC including
     # tests + the new derive_model_label helper for the whisper-name

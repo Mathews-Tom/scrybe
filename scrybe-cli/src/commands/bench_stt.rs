@@ -100,6 +100,7 @@ const MEASUREMENT_SCOPE: MeasurementScope = MeasurementScope {
 /// `SttProvider::transcribe` failure, or `paired::aggregate` rejecting the
 /// collected measurements. Every failure aborts before printing a report.
 pub async fn run(args: SttArgs) -> Result<()> {
+    #[cfg(not(feature = "whisper-local"))]
     require_whisper_feature()?;
     let sherpa_runtime_lib_dir = require_sherpa_runtime_lib_dir()?;
     let corpus = load_corpus(&args.corpus).with_context(|| {
@@ -173,18 +174,12 @@ where
     Ok(measurements)
 }
 
+#[cfg(not(feature = "whisper-local"))]
 fn require_whisper_feature() -> Result<()> {
-    #[cfg(feature = "whisper-local")]
-    {
-        Ok(())
-    }
-    #[cfg(not(feature = "whisper-local"))]
-    {
-        bail!(
-            "`scrybe bench stt` requires the `whisper-local` cargo feature; rebuild with \
-             `--features whisper-local,stt-sherpa`."
-        );
-    }
+    bail!(
+        "`scrybe bench stt` requires the `whisper-local` cargo feature; rebuild with \
+         `--features whisper-local,stt-sherpa`."
+    );
 }
 
 fn build_whisper_provider(model_path: &Path) -> Result<Box<dyn SttProvider>> {

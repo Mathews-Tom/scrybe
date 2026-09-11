@@ -1464,7 +1464,7 @@ mod tests {
     /// returns when `whisper-local` is enabled in CI — currently that
     /// feature isn't on the default build because `whisper-rs` needs a
     /// verified C++ toolchain on the macos-14 hosted runner per
-    /// `scrybe-cli/Cargo.toml`'s `[package.metadata.dist]` block.
+    /// the `scrybe` package's `[package.metadata.dist]` block.
     ///
     /// 10 s is loose enough to absorb CI noise (Windows shared
     /// runners are the slowest cell in the matrix today; the macos-14

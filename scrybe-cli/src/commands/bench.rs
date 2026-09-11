@@ -18,7 +18,7 @@
 //!
 //! Behavior is deliberately decoupled from `cargo bench`: this command
 //! does not invoke cargo. The maintainer runs
-//! `cargo bench --bench pipeline -p scrybe-core` first; afterwards
+//! `cargo bench --bench pipeline -p scrybe-meeting-core` first; afterwards
 //! `scrybe bench` walks the `target/criterion/` directory and
 //! aggregates the per-benchmark `new/estimates.json` files emitted by
 //! Criterion 0.5 into a single timestamped snapshot. This split keeps
@@ -198,7 +198,7 @@ fn write_snapshot(target: &Path, snapshot: &BenchSnapshot) -> Result<()> {
 fn scan_criterion_tree(criterion_dir: &Path) -> Result<Vec<BenchEntry>> {
     if !criterion_dir.is_dir() {
         return Err(anyhow!(
-            "criterion directory {} does not exist; run `cargo bench --bench pipeline -p scrybe-core` first",
+            "criterion directory {} does not exist; run `cargo bench --bench pipeline -p scrybe-meeting-core` first",
             criterion_dir.display()
         ));
     }

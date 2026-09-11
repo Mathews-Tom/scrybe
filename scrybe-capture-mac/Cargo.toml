@@ -1,14 +1,18 @@
 [package]
-name = "scrybe-capture-mac"
-version = "1.3.1"
-description = "macOS audio capture adapter for scrybe. Implements scrybe-core's AudioCapture trait via Core Audio Taps (macOS 14.4+) primary path with a ScreenCaptureKit fallback for 13.0–14.3."
-publish = false
+name = "scrybe-meeting-capture-mac"
+version = "1.3.2"
+description = "macOS microphone and system-audio capture adapters for the Scrybe meeting recorder."
+publish = true
 authors.workspace = true
 edition.workspace = true
 homepage.workspace = true
 repository.workspace = true
 license.workspace = true
 rust-version.workspace = true
+readme = "../README.md"
+
+[lib]
+name = "scrybe_capture_mac"
 
 [features]
 default = []
@@ -66,7 +70,7 @@ voice-processing-io-probe = ["dep:objc2-audio-toolbox"]
 [dependencies]
 async-trait.workspace = true
 futures.workspace = true
-scrybe-core = { path = "../scrybe-core", version = "1.3.1" }
+scrybe-core = { package = "scrybe-meeting-core", path = "../scrybe-core", version = "=1.3.2" }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 tracing.workspace = true

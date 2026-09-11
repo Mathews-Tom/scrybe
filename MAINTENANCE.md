@@ -85,12 +85,12 @@ The active release train — supersedes the "first minor after the freeze" frami
 
 ## 5. Distribution and trust posture
 
-The publish posture from v0.1.0 carries forward unchanged at v1.0:
+The v1.3.2 distribution repair makes the application installable from crates.io:
 
-- Only the `scrybe` placeholder crate publishes to crates.io. `scrybe-core`, `scrybe-cli`, and the four capture adapters keep `publish = false`. Downstream users install the binary via the cargo-dist tarballs (Homebrew, Scoop, AUR, Flathub, F-Droid as those submissions land), via the `curl | sh` installer one-liner, or via `cargo install --git https://github.com/Mathews-Tom/scrybe scrybe-cli --tag v1.0.0 --features cli-shell,hook-git` for the audit-friendly path.
-- Native code-signing on macOS (Apple Developer ID + notarization) and Windows (Authenticode certificate) remains explicitly out of scope through v1.x. Users handle Gatekeeper's "Apple cannot verify" prompt and Windows SmartScreen's "Run anyway" path manually per `INSTALL.md`. The cosign keyless OIDC signature over `SHA256SUMS.txt` is the cryptographic anchor for distribution trust — it proves the artifact came from the GHA workflow on the tagged commit, without paying the vendor-CA tax.
-- Reproducible builds verified via `.github/workflows/reproducibility.yml`. The lane runs in advisory mode at v1.0.0 — the macOS-14 cargo-dist tarballs are not yet bit-identical across runner instances. Promotion to a blocking gate is a v1.0.x → v1.1 deliverable. The lane uploads both legs' artifacts on every run so a contributor can run `diffoscope` between them and localise the residual non-determinism.
-- Supply-chain provenance via `cargo-vet`. The wiring lands at v0.9.0-rc1 / v1.0.0; the direct-dep audit work is incremental and the lane stays advisory until the maintainer commits the first batch of `audits.toml` entries.
+- `cargo install scrybe --locked` installs the full supported macOS application. The publish graph is `scrybe-meeting-core` → `scrybe-meeting-capture-{mac,mic}` → `scrybe`; Linux, Windows, and Android adapters remain private until their hardware-qualified release paths resume.
+- The GitHub Release installer remains the faster prebuilt path. Native code-signing on macOS and Windows remains out of scope through v1.x; SHA256 manifests and keyless cosign signatures provide artifact provenance.
+- Reproducibility verification remains advisory because independent macOS builds retain required Mach-O UUID variance and cargo-dist archive metadata differences. Both legs upload artifacts for inspection.
+- `cargo-vet` remains advisory while direct-dependency audits are accumulated.
 
 ---
 
@@ -98,7 +98,7 @@ The publish posture from v0.1.0 carries forward unchanged at v1.0:
 
 Contributions land via pull request with the conventional-commit format documented in `.github/PULL_REQUEST_TEMPLATE.md` (when present) or in `~/.claude/rules/commit-standards.md` (the maintainer's local convention). Concrete expectations:
 
-- Every PR must keep the workspace CI green: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test --workspace`, `cargo audit`, `cargo deny check`, the coverage gate, the LoC-budget gate, and the egress-audit gate.
+- Every PR must keep the workspace CI green: hermetic cross-platform formatting, Clippy, check, and tests with `--no-default-features`; published-default checks on macOS; `cargo audit`; `cargo deny check`; coverage; LoC budget; egress audit; and release planning.
 - New code carries unit tests at the 90% line-coverage threshold for `scrybe-core` and 80% for the workspace. Critical paths (capture, atomic writes, retry policy, consent attestation, config validation) target 95%.
 - Tier-1 changes are non-starters — see §2. The scope freeze in §1 that used to pair with this line is retired; Tier-1 (architectural trait/schema shapes) is the remaining hard boundary. A PR that touches a Tier-1 type closes with a pointer to this document.
 - Contributors retain copyright on their contributions. There is no CLA. A `CONTRIBUTING.md` documenting the licensing record (whether DCO sign-off, an explicit Apache-2.0 §5 contribution clause, or another mechanism) is a v1.0.x deliverable; until it lands, contributions are accepted under the repository's existing Apache-2.0 license per Apache-2.0 §5 ("each Contributor hereby grants ... a perpetual, worldwide, non-exclusive ... license").
