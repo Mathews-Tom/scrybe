@@ -13,17 +13,15 @@
 #   embedded in tar archives.
 # - `RUSTFLAGS=--remap-path-prefix=$workspace=/build` strips runner-
 #   specific source paths from emitted DWARF and panic-message strings.
-# - `RUSTFLAGS+=-C link-args=-Wl,-no_uuid` suppresses the Mach-O
-#   LC_UUID load command on macOS.
 # - `rust-toolchain.toml` pins the exact toolchain (1.95.0) so the leg
 #   that runs first cannot pick up a newer rustup auto-update.
 # - cargo-dist version pinned to 0.25.1 — same lockstep guarantee.
 #
-# Lane status at v1.0.0: advisory. Empirically the four inputs
-# above are not yet sufficient to make cargo-dist tarballs bit-
-# identical on `macos-14`; remaining non-determinism sources need
-# deeper investigation (candidate suspects: rustc embedded build-host
-# triple, cargo-dist metadata, xz compressor non-determinism). The
+# Lane status: advisory. These inputs are not sufficient to make
+# cargo-dist tarballs bit-identical on `macos-26`; remaining
+# non-determinism sources need deeper investigation (candidate suspects:
+# rustc embedded build-host triple, cargo-dist metadata, xz compressor
+# non-determinism). The
 # verification step emits a `::warning::` annotation on mismatch
 # rather than failing the job so the lane stays informational while
 # the maintainer works through the residual divergences. Promotion
@@ -68,11 +66,14 @@ env:
   # built with a different epoch than what the release pipeline emits.
   # When bumping either value, bump both.
   SOURCE_DATE_EPOCH: "1714464000"
+  # Matches release.yml so audiopus_sys's vendored Opus configures under
+  # CMake 4 on current macOS runners.
+  CMAKE_POLICY_VERSION_MINIMUM: "3.5"
 
 jobs:
   verify:
     name: verify (${{ matrix.target }})
-    runs-on: macos-14
+    runs-on: macos-26
     strategy:
       fail-fast: false
       matrix:
@@ -98,16 +99,14 @@ jobs:
       - name: dist build (leg A)
         working-directory: scrybe
         env:
-          # `-Wl,-no_uuid` matches `release.yml` and is the load-bearing
-          # half of bit-equality on macOS. The linker otherwise embeds a
-          # per-invocation LC_UUID that defeats reproducibility under
-          # SOURCE_DATE_EPOCH + remap-path-prefix alone.
-          RUSTFLAGS: "--remap-path-prefix=${{ github.workspace }}/scrybe=/build -C link-args=-Wl,-no_uuid"
+          # Keep release.yml's required LC_UUID while remapping only
+          # checkout-specific source paths.
+          RUSTFLAGS: "--remap-path-prefix=${{ github.workspace }}/scrybe=/build"
         run: dist build --artifacts=local --target=${{ matrix.target }}
       - name: dist build (leg B)
         working-directory: scrybe-rebuild
         env:
-          RUSTFLAGS: "--remap-path-prefix=${{ github.workspace }}/scrybe-rebuild=/build -C link-args=-Wl,-no_uuid"
+          RUSTFLAGS: "--remap-path-prefix=${{ github.workspace }}/scrybe-rebuild=/build"
         run: dist build --artifacts=local --target=${{ matrix.target }}
       # Advisory at v1.0.0. Mismatches surface as `::warning::`
       # annotations rather than job failures while the residual macOS
