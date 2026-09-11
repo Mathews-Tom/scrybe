@@ -114,6 +114,8 @@ mod tests {
                     sample_rate: summary.sample_rate,
                     channels: summary.channels,
                     frames_written: summary.frames_written,
+                    first_frame_timestamp_ns: None,
+                    last_frame_end_timestamp_ns: None,
                 }),
                 system: None,
             },

@@ -96,7 +96,7 @@ pub fn repair_session(folder: &Path) -> Result<RepairOutcome, CoreError> {
         &audio_path,
         &manifest,
         EncoderConfig::default(),
-        0.0,
+        false,
     )?;
 
     let meta_path = folder.join("meta.toml");
@@ -243,6 +243,8 @@ mod tests {
                     sample_rate: summary.sample_rate,
                     channels: summary.channels,
                     frames_written: summary.frames_written,
+                    first_frame_timestamp_ns: None,
+                    last_frame_end_timestamp_ns: None,
                 }),
                 system: None,
             },
@@ -281,6 +283,8 @@ mod tests {
                     sample_rate: summary.sample_rate,
                     channels: summary.channels,
                     frames_written: summary.frames_written,
+                    first_frame_timestamp_ns: None,
+                    last_frame_end_timestamp_ns: None,
                 }),
                 system: None,
             },

@@ -41,9 +41,9 @@ pub struct MergeReport {
     pub channels: u16,
 }
 
-/// Fraction of `wall_clock_secs` the encoded duration may deviate by
-/// before the merge fails loudly. 1% per `DEVELOPMENT_PLAN.md`'s
-/// audio-correctness acceptance criteria.
+/// Fraction of a source-local capture-clock span the journal duration may
+/// deviate by before the merge fails loudly. 1% per
+/// `DEVELOPMENT_PLAN.md`'s audio-correctness acceptance criteria.
 const DURATION_TOLERANCE_RATIO: f64 = 0.01;
 
 /// Runs the complete offline merge for one session.
@@ -58,18 +58,18 @@ const DURATION_TOLERANCE_RATIO: f64 = 0.01;
 ///
 /// `CoreError::Pipeline(PipelineError::EmptyJournal)` if `manifest`
 /// names a source with no readable segment bytes on disk.
-/// `CoreError::Pipeline(PipelineError::DurationMismatch)` if the
-/// encoded duration differs from `wall_clock_secs` by more than 1%
-/// (skipped when `wall_clock_secs` is not positive, e.g. a
-/// zero-length test session). `CoreError::Storage` for any
-/// underlying I/O failure. Other `CoreError::Pipeline` variants for
-/// resample or encoder failures.
+/// `CoreError::Pipeline(PipelineError::DurationMismatch)` if a current-format
+/// source manifest's journal duration differs from its source-local capture
+/// clock span by more than 1%. Old manifests without source-clock bounds skip
+/// that validation so `scrybe repair` remains backward-compatible.
+/// `CoreError::Storage` for any underlying I/O failure. Other
+/// `CoreError::Pipeline` variants for resample or encoder failures.
 pub fn merge_journal(
     journal_dir: &Path,
     audio_path: &Path,
     manifest: &JournalManifest,
     encoder_config: EncoderConfig,
-    wall_clock_secs: f64,
+    verify_duration: bool,
 ) -> Result<MergeReport, CoreError> {
     let mic_pcm = manifest
         .mic
@@ -79,6 +79,14 @@ pub fn merge_journal(
         .system
         .map(|anchor| load_source(journal_dir, "system", anchor, encoder_config.sample_rate))
         .transpose()?;
+    if verify_duration {
+        validate_source_duration(mic_pcm.as_deref(), manifest.mic, encoder_config.sample_rate)?;
+        validate_source_duration(
+            system_pcm.as_deref(),
+            manifest.system,
+            encoder_config.sample_rate,
+        )?;
+    }
     let delta_ms = match (manifest.mic, manifest.system) {
         (Some(mic), Some(system)) => system.first_frame_epoch_ms - mic.first_frame_epoch_ms,
         _ => 0,
@@ -100,16 +108,6 @@ pub fn merge_journal(
     #[allow(clippy::cast_precision_loss)]
     let total_frames = (pcm.len() / usize::from(channels.max(1))) as f64;
     let encoded_secs = total_frames / f64::from(final_config.sample_rate.max(1));
-    if wall_clock_secs > 0.0 {
-        let ratio = (encoded_secs - wall_clock_secs).abs() / wall_clock_secs;
-        if ratio > DURATION_TOLERANCE_RATIO {
-            return Err(CoreError::Pipeline(PipelineError::DurationMismatch {
-                encoded_secs,
-                wall_clock_secs,
-                ratio_pct: ratio * 100.0,
-            }));
-        }
-    }
 
     let mut encoder = default_session_encoder(final_config).map_err(CoreError::Pipeline)?;
     let mut bytes = encoder.push_pcm(&pcm).map_err(CoreError::Pipeline)?;
@@ -126,6 +124,43 @@ pub fn merge_journal(
         encoded_secs,
         channels,
     })
+}
+
+/// Ensures one source's persisted PCM covers the same interval as its own
+/// capture clock. Source timestamps are deliberately never compared across
+/// sources; epoch anchors remain responsible for cross-source alignment.
+fn validate_source_duration(
+    pcm: Option<&[f32]>,
+    anchor: Option<JournalAnchor>,
+    sample_rate: u32,
+) -> Result<(), CoreError> {
+    let (Some(pcm), Some(anchor)) = (pcm, anchor) else {
+        return Ok(());
+    };
+    let (Some(first_timestamp_ns), Some(last_end_timestamp_ns)) = (
+        anchor.first_frame_timestamp_ns,
+        anchor.last_frame_end_timestamp_ns,
+    ) else {
+        return Ok(());
+    };
+    let capture_span_ns = last_end_timestamp_ns.saturating_sub(first_timestamp_ns);
+    #[allow(clippy::cast_precision_loss)]
+    let journal_secs = pcm.len() as f64 / f64::from(sample_rate.max(1));
+    #[allow(clippy::cast_precision_loss)]
+    let capture_secs = capture_span_ns as f64 / 1_000_000_000.0;
+    let ratio = if capture_secs > 0.0 {
+        (journal_secs - capture_secs).abs() / capture_secs
+    } else {
+        f64::INFINITY
+    };
+    if ratio > DURATION_TOLERANCE_RATIO {
+        return Err(CoreError::Pipeline(PipelineError::DurationMismatch {
+            encoded_secs: journal_secs,
+            wall_clock_secs: capture_secs,
+            ratio_pct: ratio * 100.0,
+        }));
+    }
+    Ok(())
 }
 
 /// Reads every segment for `tag`, downmixes to mono, and resamples to
@@ -266,6 +301,8 @@ mod tests {
                 sample_rate: 16_000,
                 channels: 1,
                 frames_written: 16_000,
+                first_frame_timestamp_ns: None,
+                last_frame_end_timestamp_ns: None,
             }),
             system: None,
         };
@@ -278,7 +315,7 @@ mod tests {
                 sample_rate: 16_000,
                 ..EncoderConfig::default()
             },
-            1.0,
+            true,
         )
         .unwrap();
 
@@ -305,6 +342,8 @@ mod tests {
                 sample_rate,
                 channels: 1,
                 frames_written: 1_000,
+                first_frame_timestamp_ns: None,
+                last_frame_end_timestamp_ns: None,
             }),
             system: Some(JournalAnchor {
                 // System started 40ms after mic.
@@ -312,6 +351,8 @@ mod tests {
                 sample_rate,
                 channels: 1,
                 frames_written: 1_000,
+                first_frame_timestamp_ns: None,
+                last_frame_end_timestamp_ns: None,
             }),
         };
 
@@ -323,7 +364,7 @@ mod tests {
                 sample_rate,
                 ..EncoderConfig::default()
             },
-            1.04,
+            true,
         )
         .unwrap();
 
@@ -374,6 +415,8 @@ mod tests {
                 sample_rate: 16_000,
                 channels: 1,
                 frames_written: 8_000,
+                first_frame_timestamp_ns: None,
+                last_frame_end_timestamp_ns: None,
             }),
             system: None,
         };
@@ -388,7 +431,7 @@ mod tests {
                 sample_rate: 16_000,
                 ..EncoderConfig::default()
             },
-            0.5,
+            false,
         )
         .unwrap();
 
@@ -396,23 +439,24 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_fails_loudly_and_preserves_journal_when_duration_deliberately_short() {
+    fn test_merge_fails_loudly_and_preserves_journal_when_source_clock_has_gap() {
         let tmp = tempdir().unwrap();
         let journal_dir = tmp.path().join("journal");
         let audio_path = tmp.path().join("audio.opus");
-        // Only 1 second of journaled audio...
+        // One second of journaled audio covers a claimed 60-second source-clock
+        // span. This is the discontinuity a real capture path must reject.
         write_journal_segment(&journal_dir, "mic", 0, &sine(16_000, 0.01));
         let manifest = JournalManifest {
             mic: Some(JournalAnchor {
                 first_frame_epoch_ms: 1000,
+                first_frame_timestamp_ns: Some(0),
+                last_frame_end_timestamp_ns: Some(60_000_000_000),
                 sample_rate: 16_000,
                 channels: 1,
                 frames_written: 16_000,
             }),
             system: None,
         };
-
-        // ...but the caller claims 60s of wall clock elapsed.
         let err = merge_journal(
             &journal_dir,
             &audio_path,
@@ -421,7 +465,7 @@ mod tests {
                 sample_rate: 16_000,
                 ..EncoderConfig::default()
             },
-            60.0,
+            true,
         )
         .unwrap_err();
 
@@ -452,6 +496,8 @@ mod tests {
                 sample_rate: 16_000,
                 channels: 1,
                 frames_written: 0,
+                first_frame_timestamp_ns: None,
+                last_frame_end_timestamp_ns: None,
             }),
             system: None,
         };
@@ -461,7 +507,7 @@ mod tests {
             &audio_path,
             &manifest,
             EncoderConfig::default(),
-            1.0,
+            true,
         )
         .unwrap_err();
 
@@ -484,7 +530,7 @@ mod tests {
             &audio_path,
             &manifest,
             EncoderConfig::default(),
-            0.0,
+            false,
         )
         .unwrap();
 
@@ -509,7 +555,7 @@ mod tests {
             &audio_path,
             &manifest,
             EncoderConfig::default(),
-            0.0,
+            false,
         )
         .unwrap();
 
@@ -531,6 +577,8 @@ mod tests {
                 sample_rate: 1_000,
                 channels: 2,
                 frames_written: 1_000,
+                first_frame_timestamp_ns: None,
+                last_frame_end_timestamp_ns: None,
             }),
             system: None,
         };
@@ -543,7 +591,7 @@ mod tests {
                 sample_rate: 1_000,
                 ..EncoderConfig::default()
             },
-            1.0,
+            false,
         )
         .unwrap();
 
@@ -569,6 +617,8 @@ mod tests {
                 sample_rate: 8_000,
                 channels: 1,
                 frames_written: 8_000,
+                first_frame_timestamp_ns: None,
+                last_frame_end_timestamp_ns: None,
             }),
             system: None,
         };
@@ -581,7 +631,7 @@ mod tests {
                 sample_rate: 16_000,
                 ..EncoderConfig::default()
             },
-            1.0,
+            false,
         )
         .unwrap();
 
@@ -608,6 +658,8 @@ mod tests {
                 sample_rate: summary.sample_rate,
                 channels: summary.channels,
                 frames_written: summary.frames_written,
+                first_frame_timestamp_ns: None,
+                last_frame_end_timestamp_ns: None,
             }),
             system: None,
         };
@@ -620,7 +672,7 @@ mod tests {
                 sample_rate: 16_000,
                 ..EncoderConfig::default()
             },
-            1.0,
+            false,
         )
         .unwrap();
 
