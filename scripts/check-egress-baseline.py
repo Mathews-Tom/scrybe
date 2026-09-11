@@ -4,12 +4,12 @@
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #     https://www.apache.org/licenses/LICENSE-2.0
-"""Egress-baseline audit for `scrybe-cli` default-feature builds.
+"""Egress-baseline audit for the `scrybe` hermetic build.
 
-Walks `scrybe-cli`'s transitive dependency graph with default features
-only — the air-gappable shape advertised in `docs/system-overview.md`
-and `.docs/development-plan.md` §7.4 — and asserts that no resolved
-package matches a denylist of HTTP, TLS, DNS, or transport crates.
+Walks the application's transitive dependency graph with
+`--no-default-features` — the explicit air-gappable shape advertised in
+`docs/system-overview.md` — and asserts that no resolved package matches a
+denylist of HTTP, TLS, DNS, or transport crates.
 
 Why a static dependency-graph check rather than running `lsof` against
 a built binary:
@@ -20,10 +20,9 @@ a built binary:
   sockets in any single test run; absence of egress at runtime does
   not prove absence of capability. The dependency graph proves the
   capability is not even compiled in.
-- Adding a network crate to the default-feature build is the exact
-  regression class this gate is meant to catch (e.g. someone moves a
-  cloud-STT provider from a feature-gated module into the default
-  build by accident).
+- Adding a network crate to the explicit no-default-feature build is the exact
+  regression class this gate catches (for example, moving a cloud provider
+  dependency out from behind its feature gate).
 
 Tokio's `net`, `process`, and `signal-unix` features are similarly
 inspected via `cargo tree --format` so accidental enabling of
@@ -35,9 +34,9 @@ Run locally:
 
 Run in CI: see `.github/workflows/ci.yml` job `egress-audit`.
 
-Exit status 0 means the default-feature graph is clean. Exit status 1
-means at least one denylisted crate appeared; the offending crates and
-the path that pulled each one in are printed.
+Exit status 0 means the no-default-feature graph is clean. Exit status 1 means
+at least one denylisted crate appeared; the offending crates and the path that
+pulled each one in are printed.
 """
 
 from __future__ import annotations
@@ -47,12 +46,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-# Crates whose presence in the `scrybe-cli` default-feature graph would
-# imply the binary can speak HTTP, TLS, or DNS to a remote host.
-# Cloud STT/LLM providers are gated behind `--features openai-compat`
-# and `--features whisper-local` respectively (the latter is local
-# inference and does not pull network deps); both must remain absent
-# from the default-feature build.
+# Crates whose presence in the `scrybe` no-default-feature graph would imply
+# the hermetic binary can speak HTTP, TLS, or DNS to a remote host. Network
+# providers must remain absent from this explicitly minimal build.
 NETWORK_DENYLIST: frozenset[str] = frozenset(
     {
         # HTTP clients
@@ -94,9 +90,9 @@ NETWORK_DENYLIST: frozenset[str] = frozenset(
 )
 
 # Tokio is allowlisted, but the `net` and `process` features pull in
-# socket and child-process syscalls that are out of scope for v0.1
-# default builds. `cargo tree --format "{p} {f}"` reports active
-# features per package.
+# socket and child-process syscalls that are out of scope for hermetic
+# no-default-feature builds. `cargo tree --format "{p} {f}"` reports
+# active features per package.
 TOKIO_FORBIDDEN_FEATURES: frozenset[str] = frozenset({"net", "process", "tokio-net"})
 
 
@@ -104,8 +100,7 @@ PACKAGE_LINE = re.compile(r"^([A-Za-z0-9_\-]+)\s+v([0-9][^\s]*)")
 
 
 def run_cargo_tree(manifest: Path) -> str:
-    """Run `cargo tree` with default features only and return stdout.
-
+    """Run `cargo tree` without default features and return stdout.
     Raises `RuntimeError` rather than masking any cargo failure as an
     empty graph — silent failure of the audit is exactly the regression
     class we are trying to prevent.
@@ -227,7 +222,7 @@ def main() -> int:
     tokio_features = tokio_active_features(feature_tree)
     forbidden_tokio = sorted(TOKIO_FORBIDDEN_FEATURES & tokio_features)
 
-    print(f"egress audit: {len(packages)} packages in default-feature graph")
+    print(f"egress audit: {len(packages)} packages in no-default-feature graph")
     print(f"egress audit: tokio features active = {sorted(tokio_features)}")
 
     if not hits and not forbidden_tokio:
@@ -240,15 +235,15 @@ def main() -> int:
         for crate in hits:
             print(f"  - {crate}")
         print()
-        print("If this is intentional, gate the dep behind a non-default")
-        print("feature (e.g. `openai-compat`) and update this denylist.")
+        print("Remove the dependency from the hermetic graph or gate it")
+        print("behind an application feature.")
     if forbidden_tokio:
         print()
         print("egress audit FAILED — forbidden tokio features active:")
         for feature in forbidden_tokio:
             print(f"  - tokio/{feature}")
         print()
-        print("Default-feature builds must not enable tokio's net/process layer.")
+        print("No-default-feature builds must not enable tokio's net/process layer.")
     return 1
 
 

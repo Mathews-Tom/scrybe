@@ -122,46 +122,55 @@ jobs:
             throw "Sherpa runtime library directory missing: $runtimeDir"
           }
           "SHERPA_ONNX_LIB_DIR=$runtimeDir" >> $env:GITHUB_ENV
-      - name: cargo check
-        run: cargo check --workspace --all-targets
-      - name: cargo clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: cargo check (hermetic workspace)
+        run: cargo check --workspace --all-targets --no-default-features
+      - name: cargo clippy (hermetic workspace)
+        run: cargo clippy --workspace --all-targets --no-default-features -- -D warnings
+      - name: cargo check (published macOS defaults)
+        if: matrix.os == 'macos-26'
+        run: cargo check -p scrybe --all-targets
+      - name: cargo clippy (published macOS defaults)
+        if: matrix.os == 'macos-26'
+        run: cargo clippy -p scrybe --all-targets -- -D warnings
       - name: cargo check (Sherpa streaming provider)
-        run: cargo check --workspace --all-targets --features stt-sherpa
+        run: cargo check --workspace --all-targets --no-default-features --features stt-sherpa
       - name: cargo clippy (Sherpa streaming provider)
-        run: cargo clippy --workspace --all-targets --features stt-sherpa -- -D warnings
+        run: cargo clippy --workspace --all-targets --no-default-features --features stt-sherpa -- -D warnings
       - name: cargo check (mac core-audio-tap feature)
         if: matrix.os == 'macos-26'
-        run: cargo check -p scrybe-capture-mac --features core-audio-tap --all-targets
+        run: cargo check -p scrybe-meeting-capture-mac --features core-audio-tap --all-targets
       - name: cargo clippy (mac core-audio-tap feature)
         if: matrix.os == 'macos-26'
-        run: cargo clippy -p scrybe-capture-mac --features core-audio-tap --all-targets -- -D warnings
-      - name: cargo test (lib, bin, integration, examples)
-        run: cargo test --workspace --all-targets
+        run: cargo clippy -p scrybe-meeting-capture-mac --features core-audio-tap --all-targets -- -D warnings
+      - name: cargo test (hermetic lib, bin, integration, examples)
+        run: cargo test --workspace --all-targets --no-default-features
+      - name: cargo test (published macOS defaults)
+        if: matrix.os == 'macos-26'
+        run: cargo test -p scrybe --all-targets
       - name: cargo test (Sherpa streaming provider)
-        run: cargo test --workspace --all-targets --features stt-sherpa
+        run: cargo test --workspace --all-targets --no-default-features --features stt-sherpa
       - name: cargo test (mac core-audio-tap feature, ignored hardware tests skipped)
         if: matrix.os == 'macos-26'
-        run: cargo test -p scrybe-capture-mac --features core-audio-tap --all-targets
+        run: cargo test -p scrybe-meeting-capture-mac --features core-audio-tap --all-targets
       - name: cargo check (mac ScreenCaptureKit feature)
         if: matrix.os == 'macos-26'
         env:
           MACOSX_DEPLOYMENT_TARGET: "13.0"
-        run: cargo check -p scrybe-capture-mac --features system-capture-sck --all-targets
+        run: cargo check -p scrybe-meeting-capture-mac --features system-capture-sck --all-targets
       - name: cargo clippy (mac ScreenCaptureKit feature)
         if: matrix.os == 'macos-26'
         env:
           MACOSX_DEPLOYMENT_TARGET: "13.0"
-        run: cargo clippy -p scrybe-capture-mac --features system-capture-sck --all-targets -- -D warnings
+        run: cargo clippy -p scrybe-meeting-capture-mac --features system-capture-sck --all-targets -- -D warnings
       - name: cargo test (mac ScreenCaptureKit feature)
         if: matrix.os == 'macos-26'
         env:
           MACOSX_DEPLOYMENT_TARGET: "13.0"
-        run: cargo test -p scrybe-capture-mac --features system-capture-sck --all-targets
+        run: cargo test -p scrybe-meeting-capture-mac --features system-capture-sck --all-targets
       - name: cargo test (doc)
-        run: cargo test --workspace --doc
+        run: cargo test --workspace --doc --no-default-features
       - name: cargo doc
-        run: cargo doc --workspace --no-deps
+        run: cargo doc --workspace --no-deps --no-default-features
         env:
           RUSTDOCFLAGS: "-D warnings"
 
@@ -245,7 +254,7 @@ jobs:
         run: python3 scripts/check-loc-budget.py
 
   egress-audit:
-    name: egress-audit (default-feature graph has no network crates)
+    name: egress-audit (no-default-feature graph has no network crates)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -253,7 +262,7 @@ jobs:
         with:
           toolchain: 1.95.0
       - uses: Swatinem/rust-cache@v2
-      - name: assert no network crates in scrybe-cli default build
+      - name: assert no network crates in scrybe hermetic build
         run: python3 scripts/check-egress-baseline.py
 
   bench-compile:
@@ -272,10 +281,10 @@ jobs:
       # runner; GitHub-hosted CPUs are too noisy for absolute numbers.
       # This job catches bench bitrot — a refactor that breaks the
       # benchmark harness — on every PR.
-      - name: cargo bench --no-run (workspace)
-        run: cargo bench --workspace --no-run
-      - name: cargo clippy on benches
-        run: cargo clippy --workspace --benches -- -D warnings
+      - name: cargo bench --no-run (hermetic workspace)
+        run: cargo bench --workspace --no-run --no-default-features
+      - name: cargo clippy on hermetic benches
+        run: cargo clippy --workspace --benches --no-default-features -- -D warnings
 
   dist-plan:
     name: dist-plan (cargo-dist config valid)
@@ -289,13 +298,24 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-dist@0.25.1
+      # Package together because the current internal dependency versions do
+      # not exist in crates.io until each release publishes them first.
+      - name: package crates.io graph
+        run: >-
+          cargo package
+          -p scrybe-meeting-core
+          -p scrybe-meeting-capture-mac
+          -p scrybe-meeting-capture-mic
+          -p scrybe
+          --locked
+          --no-verify
       # cargo-dist 0.25 ships its binary as `dist`, not `cargo-dist`, so
       # `cargo dist plan` fails with "no such command: dist".
       - name: dist plan
         run: dist plan --output-format=human
 
   coverage:
-    name: coverage (workspace + scrybe-core gate)
+    name: coverage (hermetic workspace + scrybe-meeting-core gate)
     runs-on: ubuntu-latest
     env:
       RUSTFLAGS: ""
@@ -310,16 +330,16 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-llvm-cov@0.6.21
-      - name: workspace coverage gate (>= 80% lines)
-        run: cargo llvm-cov --workspace --fail-under-lines 80 --summary-only
-      - name: scrybe-core coverage gate (>= 90% lines)
+      - name: hermetic workspace coverage gate (>= 80% lines)
+        run: cargo llvm-cov --workspace --no-default-features --fail-under-lines 80 --summary-only
+      - name: scrybe-meeting-core coverage gate (>= 90% lines)
         run: |
           cargo llvm-cov clean --workspace
-          cargo llvm-cov --package scrybe-core --fail-under-lines 90 --summary-only
+          cargo llvm-cov --package scrybe-meeting-core --no-default-features --fail-under-lines 90 --summary-only
       - name: emit lcov for upload
         run: |
           cargo llvm-cov clean --workspace
-          cargo llvm-cov --workspace --lcov --output-path lcov.info --summary-only
+          cargo llvm-cov --workspace --no-default-features --lcov --output-path lcov.info --summary-only
       - uses: actions/upload-artifact@v4
         with:
           name: coverage-lcov

@@ -1,24 +1,35 @@
 # Installing scrybe
 
-scrybe ships unsigned binaries through v1.0. macOS Gatekeeper and the equivalent SmartScreen prompt on Windows are addressed at install time rather than at build time — Apple Developer ID enrollment and Windows code-signing certificates are deliberately out of scope (`.docs/development-plan.md` §13.1).
+scrybe ships unsigned binaries through v1.x. macOS Gatekeeper is addressed at install time rather than at build time because Apple Developer ID enrollment remains deliberately out of scope.
 
-This document covers macOS today. Linux and Windows installation paths land in their respective releases.
+This document covers the qualified macOS product path. Linux and Windows recording remain parked until their hardware qualification paths resume.
 
 ---
 
-## macOS — quick install (recommended)
+## macOS — Cargo install
+
+Install the complete application from crates.io without cloning the repository:
 
 ```sh
-curl --proto '=https' --tlsv1.2 -LsSf \
-  https://github.com/Mathews-Tom/scrybe/releases/latest/download/scrybe-cli-installer.sh | sh
+xcode-select --install   # one-time; no-op when already installed
+rustup toolchain install 1.95.0
+rustup run 1.95.0 cargo install scrybe --locked
 scrybe doctor
 ```
 
-The installer detects your CPU architecture, downloads the matching tarball, verifies its SHA256 against the release's checksum manifest (`dist-manifest.json`), extracts the binary into `~/.cargo/bin/` (or `~/.local/bin/` if cargo is not present), and adds that directory to your `PATH` if needed.
+The crates.io package enables microphone capture, ScreenCaptureKit system audio, local Whisper, Opus, OpenAI-compatible notes, and the desktop shell. Cargo builds native dependencies locally, so this path takes longer than the prebuilt installer.
 
-`curl` does not attach `com.apple.quarantine` to its downloads, so Gatekeeper's "Apple cannot verify" dialog never fires for binaries installed this way — you do not need to run `xattr` by hand.
+## macOS — prebuilt quick install
 
-`scrybe doctor` confirms permission state, disk space, and any missing prerequisites before your first session.
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/Mathews-Tom/scrybe/releases/latest/download/scrybe-installer.sh | sh
+scrybe doctor
+```
+
+The installer detects your CPU architecture, downloads the matching tarball, verifies its SHA256 against `dist-manifest.json`, installs `scrybe` into `~/.cargo/bin/` or `~/.local/bin/`, and updates `PATH` when required.
+
+`curl` does not attach `com.apple.quarantine`, so this path does not require a manual `xattr` command. `scrybe doctor` checks permission state, disk space, and prerequisites before the first session.
 
 ---
 
@@ -32,8 +43,8 @@ Each release publishes two macOS archives at `https://github.com/Mathews-Tom/scr
 
 | Archive | When to download |
 |---|---|
-| `scrybe-cli-aarch64-apple-darwin.tar.xz` | Apple Silicon Macs (M1, M2, M3, M4) |
-| `scrybe-cli-x86_64-apple-darwin.tar.xz` | Intel Macs |
+| `scrybe-aarch64-apple-darwin.tar.xz` | Apple Silicon Macs (M1, M2, M3, M4) |
+| `scrybe-x86_64-apple-darwin.tar.xz` | Intel Macs |
 
 `uname -m` answers which one you need: `arm64` → aarch64, `x86_64` → x86_64.
 
@@ -51,9 +62,9 @@ shasum -a 256 -c SHA256SUMS.txt --ignore-missing
 ### 3. Extract and place the binary
 
 ```sh
-tar -xf scrybe-cli-aarch64-apple-darwin.tar.xz
+tar -xf scrybe-aarch64-apple-darwin.tar.xz
 mkdir -p ~/.local/bin
-mv scrybe-cli-aarch64-apple-darwin/scrybe ~/.local/bin/
+mv scrybe-aarch64-apple-darwin/scrybe ~/.local/bin/
 ```
 
 If `~/.local/bin` is not on `$PATH`, add it (`export PATH="$HOME/.local/bin:$PATH"` in `~/.zshrc`).
@@ -66,7 +77,7 @@ Browsers attach `com.apple.quarantine` to downloaded files. Launching produces a
 xattr -dr com.apple.quarantine ~/.local/bin/scrybe
 ```
 
-`-d` deletes the attribute; `-r` recurses if you ever extract into a `.app` bundle (scrybe-cli ships a single binary, so the recurse flag is harmless). The first launch after this no longer prompts.
+`-d` deletes the attribute; `-r` also handles an extracted `.app` bundle. The first launch after this no longer prompts.
 
 If you re-download the archive in a new browser session, repeat this step. Quarantine is per-download, not per-binary. The quick-install path above does not need this step because `curl` does not attach the attribute.
 
@@ -81,46 +92,43 @@ scrybe doctor
 
 ---
 
-## macOS — build from source
+## macOS — build from a source checkout
 
-The Apache-2.0 source builds cleanly on a stock macOS install with Xcode Command Line Tools and `rustup`:
+The crates.io command above is the supported Cargo installation path. For development against a checkout:
 
 ```sh
-xcode-select --install   # one-time, prompts a UI
-brew install rustup-init && rustup-init -y
+xcode-select --install   # one-time; no-op when already installed
 git clone https://github.com/Mathews-Tom/scrybe.git
 cd scrybe
-cargo install --path scrybe-cli --features cli-shell,hook-git
+cargo install --path scrybe-cli --locked
 ```
 
-`whisper-local` is opt-in. To compile the local Whisper provider into your build, add it to the feature list:
+The application package's default features match the prebuilt release. Whisper-rs compiles native whisper.cpp and Apple's Metal support; expect the first build to take several minutes.
+
+Audit the explicit hermetic build separately:
 
 ```sh
-cargo install --path scrybe-cli --features cli-shell,hook-git,whisper-local
-```
-
-Whisper-rs links a vendored libwhisper and Apple's Metal framework. Expect a longer compile (~5 min on M1 Pro on first build).
-
-To audit that the default-feature build has zero outbound network capability:
-
-```sh
-cargo build --release --no-default-features
+cargo build -p scrybe --release --no-default-features
 python3 scripts/check-egress-baseline.py
 ```
 
-The egress audit walks `scrybe-cli`'s default-feature dependency graph and asserts that no HTTP, TLS, DNS, or QUIC crate is linked in. The CI gate is the same script.
+The egress audit measures that no-default-feature dependency graph and rejects
+HTTP, TLS, DNS, QUIC, and forbidden Tokio networking/process features. The
+published default build intentionally includes OpenAI-compatible provider
+support, but no provider runs until selected in configuration.
 
-`cargo install` builds the binary on your machine; it never interacts with Gatekeeper, so no `xattr` step is needed for this path either.
+Cargo-built binaries are local build products and do not carry Gatekeeper's
+download quarantine attribute.
 
 ---
 
 ## macOS — system audio capture (`--source mic+system`)
 
-Build the live microphone and system-audio adapters:
+
+The default application build already includes the live microphone and system-audio adapters:
 
 ```sh
-cargo install --path scrybe-cli --locked \
-  --features mic-capture,system-capture-mac,whisper-local,encoder-opus,llm-openai-compat
+cargo install scrybe --locked
 ```
 
 ### ScreenCaptureKit default: macOS 13+
@@ -304,7 +312,7 @@ The existing `tests/fixtures/multilingual/MANIFEST.toml` remains the **20-clip W
 With `SHERPA_ONNX_LIB_DIR` explicitly exported to the manually provisioned runtime:
 
 ```sh
-cargo build --release -p scrybe-cli --features whisper-local,stt-sherpa
+cargo build --release -p scrybe --no-default-features --features whisper-local,stt-sherpa
 target/release/scrybe bench stt \
   --corpus "$HOME/Library/Application Support/dev.scrybe.scrybe/bench/english-paired/MANIFEST.toml" \
   --whisper-model "$HOME/Library/Application Support/dev.scrybe.scrybe/models/ggml-base.en.bin" \
@@ -326,15 +334,9 @@ title is supplied, scrybe first asks the same LLM for a short factual
 session title, rewrites the transcript/notes/meta headers with that
 title, and renames the folder to `YYYY-MM-DD-HHMM-title-ULID`.
 
-The default backend is `stub`, which writes a fixed templated body so
-CI smoke tests stay hermetic. To produce real summaries by default,
-build with `--features llm-openai-compat` and write the local profile:
+The hermetic configuration default is `stub` so CI smoke tests remain deterministic. On macOS, `scrybe init` selects `openai-compat`; the published application already contains that provider.
 
 ```sh
-# Build with the LLM-OpenAI-compat feature
-cargo install --path scrybe-cli \
-  --features cli-shell,hook-git,mic-capture,whisper-local,encoder-opus,llm-openai-compat
-
 # With Ollama already serving your chosen model on localhost:11434
 ollama pull gemma4:latest
 scrybe init --force
@@ -357,14 +359,14 @@ api_key_env = "GROQ_API_KEY"
 
 `meta.toml` records the active LLM in `[providers].llm` as `<provider>:<model>` (e.g. `ollama:llama3.1:8b`, `openai-compat:llama3-70b-8192`). The retry policy in `[llm].retry` (max attempts, exponential backoff with cap) covers transient 429 / 5xx upstream failures; permanent 4xx short-circuits without retries.
 
-Without `--features llm-openai-compat`, `--llm openai-compat` errors at start time rather than silently falling back to the stub — same hard-error pattern as `--whisper-model` without `--features whisper-local` (v1.0.1).
+A `--no-default-features` source build rejects `--llm openai-compat` rather than silently falling back to the stub.
 
 ## Read-only local-agent access (`scrybe mcp`)
 
 `scrybe mcp` serves `list_recent_meetings`, `search_meetings`, `get_meeting`, `get_meeting_notes`, and `get_meeting_transcript` as MCP tools over newline-delimited JSON-RPC on stdin/stdout. It is off by default at two layers: the binary needs the `agent-access` build feature, and the running config needs an explicit opt-in.
 
 ```sh
-cargo install --path scrybe-cli --features agent-access
+cargo install scrybe --locked --features agent-access
 ```
 
 Enable it in `config.toml`:
@@ -398,7 +400,7 @@ This posture is reviewed post-v1.0 if first-run friction is shown to materially 
 
 ## Verify a release with cosign
 
-Each GitHub Release ships a cosign-signed `SHA256SUMS.txt` covering every artifact and a separately-signed `scrybe-cli-sbom.cdx.json` (CycloneDX SBOM). Verifying the manifest's signature transitively covers every asset whose hash appears in the file — there is no need to verify each tarball individually.
+Each GitHub Release ships a cosign-signed `SHA256SUMS.txt` covering every artifact and a separately-signed `scrybe-sbom.cdx.json` (CycloneDX SBOM). Verifying the manifest's signature transitively covers every asset whose hash appears in the file — there is no need to verify each tarball individually.
 
 Install cosign once (any 2.x release works):
 
@@ -410,7 +412,7 @@ brew install cosign            # macOS
 Download the manifest, its signature, and its certificate from the release page:
 
 ```sh
-TAG=v1.0.0   # the release you are verifying
+TAG=v1.3.2   # the release you are verifying
 BASE="https://github.com/Mathews-Tom/scrybe/releases/download/${TAG}"
 curl -LO "${BASE}/SHA256SUMS.txt"
 curl -LO "${BASE}/SHA256SUMS.txt.sig"
@@ -434,11 +436,11 @@ The same recipe works for the SBOM:
 
 ```sh
 cosign verify-blob \
-  --certificate scrybe-cli-sbom.cdx.json.pem \
-  --signature scrybe-cli-sbom.cdx.json.sig \
+  --certificate scrybe-sbom.cdx.json.pem \
+  --signature scrybe-sbom.cdx.json.sig \
   --certificate-identity-regexp "^https://github.com/Mathews-Tom/scrybe/.github/workflows/release.yml@refs/tags/${TAG}$" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  scrybe-cli-sbom.cdx.json
+  scrybe-sbom.cdx.json
 ```
 
 cosign is artifact-level CI provenance, not OS-level code signing. Gatekeeper's "Apple cannot verify" prompt and Windows SmartScreen are unaffected by a cosign-verified tarball — the install paths above remain the way to handle each.
@@ -447,29 +449,25 @@ cosign is artifact-level CI provenance, not OS-level code signing. Gatekeeper's 
 
 ## Verify reproducibility
 
-`.github/workflows/reproducibility.yml` builds each release tarball twice on a fresh macOS-14 runner from divergent workspace paths and compares SHA256 across legs. The release workflow pins `SOURCE_DATE_EPOCH=1714464000`, sets `RUSTFLAGS=--remap-path-prefix=$workspace=/build -C link-args=-Wl,-no_uuid`, and locks the toolchain to `1.95.0` via `rust-toolchain.toml`.
+`.github/workflows/reproducibility.yml` builds each release tarball twice on a fresh `macos-26` runner from divergent workspace paths and compares SHA256 across legs. The release workflow pins `SOURCE_DATE_EPOCH=1714464000`, remaps the workspace path to `/build`, preserves the Mach-O UUID required by dyld, and uses Rust 1.95.0.
 
-The lane runs in **advisory mode** at v1.0.0 — see `CHANGELOG.md` "Known limitations" and `MAINTENANCE.md` §5 for the rationale. The four inputs above are not yet sufficient to make cargo-dist tarballs bit-identical on `macos-14`; tracking down the residual non-determinism is a v1.0.x → v1.1 follow-up. Both legs' artifacts upload on every run so an investigator can pull them down and run `diffoscope leg-a/scrybe leg-b/scrybe` to localise the divergence.
+The lane remains advisory because Mach-O UUIDs and cargo-dist archive metadata are not yet bit-identical across independent builds. Both legs upload their artifacts for `diffoscope` analysis.
 
 Local reproduction recipe (matches the CI inputs):
 
 ```sh
-git clone --branch v1.0.0 https://github.com/Mathews-Tom/scrybe.git scrybe
+git clone --branch v1.3.2 https://github.com/Mathews-Tom/scrybe.git scrybe
 cd scrybe
 SOURCE_DATE_EPOCH=1714464000 \
-  RUSTFLAGS="--remap-path-prefix=$(pwd)=/build -C link-args=-Wl,-no_uuid" \
+  RUSTFLAGS="--remap-path-prefix=$(pwd)=/build" \
   cargo dist build --artifacts=local --target=aarch64-apple-darwin
-shasum -a 256 target/distrib/scrybe-cli-aarch64-apple-darwin.tar.xz
+shasum -a 256 target/distrib/scrybe-aarch64-apple-darwin.tar.xz
 ```
 
 Comparison against a published release tag's `SHA256SUMS.txt` is informative but not yet authoritative — until the v1.0.x reproducibility-hardening lands, divergences here are expected. File an issue with `xcodebuild -showsdks` and `rustc -vV` if you investigate; the diffoscope output is the load-bearing artifact.
 
 ---
 
-## Linux
+## Linux and Windows
 
-Linux distribution surfaces — `cargo deb`, AUR `scrybe-bin`, Flathub — land in the v1.0.x stream as templates in `packaging/` are submitted to each downstream registry. The audit-friendly path on Linux today is `cargo install --git https://github.com/Mathews-Tom/scrybe scrybe-cli --tag v1.0.0 --features cli-shell,hook-git`, which builds locally against the pinned toolchain and never crosses a vendor's trust path.
-
-## Windows
-
-Windows distribution surfaces — `cargo wix` MSI, Scoop bucket — land in the v1.0.x stream alongside the `windows-latest` cargo-dist target. The current path is `cargo install --git https://github.com/Mathews-Tom/scrybe scrybe-cli --tag v1.0.0 --features cli-shell,hook-git`. Direct-download tarballs (when available) trigger SmartScreen's "Windows protected your PC" dialog because the binary is unsigned per `.docs/development-plan.md` §13.1. Click `More info → Run anyway` once; subsequent launches do not prompt.
+Linux and Windows recording remain parked until each platform has a maintainer-owned hardware qualification path. The v1.3.2 crates.io installation contract is macOS-only; do not present a successful cross-platform compile as recording support.

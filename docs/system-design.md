@@ -1032,7 +1032,7 @@ If the user also runs Ollama with `llama3.1:8b` (~5 GB resident), recommend clou
 | RAM | < 400 MB | 1 GB |
 | APK size | < 100 MB (without model) | 250 MB |
 
-These are performance targets, not measurements from the English paired STT benchmark. `cargo bench -p scrybe-core` runs pipeline microbenchmarks; `scrybe bench` harvests their Criterion JSON without running inference. `scrybe bench stt --corpus <MANIFEST> --whisper-model <FILE> --sherpa-model <DIR>` instead runs both existing local STT providers on a manually acquired, checksum-validated English corpus and emits complete versioned per-clip and aggregate WER/realtime-factor JSON. See [acquisition and timing scope](../INSTALL.md#optional-streaming-zipformer-and-english-paired-stt-benchmark): each clip/backend measurement constructs a fresh provider, includes that provider's initialization plus one transcription in `provider_lifecycle_secs`, and records `cold-provider-per-clip`. It is not a decoder-only throughput, cold-machine startup, live partial-latency, RAM, or release-eligibility measurement without a captured real-audio run.
+These are performance targets, not measurements from the English paired STT benchmark. `cargo bench -p scrybe-meeting-core` runs pipeline microbenchmarks; `scrybe bench` harvests their Criterion JSON without running inference. `scrybe bench stt --corpus <MANIFEST> --whisper-model <FILE> --sherpa-model <DIR>` instead runs both existing local STT providers on a manually acquired, checksum-validated English corpus and emits complete versioned per-clip and aggregate WER/realtime-factor JSON. See [acquisition and measurement scope](../INSTALL.md#optional-streaming-zipformer-and-english-paired-stt-benchmark).
 
 ## 10. Security model
 

@@ -1,235 +1,178 @@
-# Release runbook
+# Release Runbook
 
-Step-by-step procedure for publishing a scrybe release. Each step lists its exact command, its verification, and its rollback (where one exists). Read the entire document before starting.
+This runbook publishes the Scrybe application to crates.io and GitHub from one reviewed commit. crates.io versions are immutable. Complete every reversible check before the first `cargo publish`.
 
-The runbook assumes Option B from `CHANGELOG.md` for v0.1.0: only the `scrybe` crate publishes to crates.io; `scrybe-core`, `scrybe-capture-mac`, and `scrybe-cli` stay workspace-private (`publish = false`). Binary distribution is via cargo-dist tarballs published as GitHub Release assets, triggered automatically by the version tag push.
+## Publish Graph
 
-## v0.1.0 — first non-placeholder release
+Publish v1.3.2 packages in this order:
 
-### Pre-flight (do these first; cheap and reversible)
+1. `scrybe-meeting-core`
+2. `scrybe-meeting-capture-mac`
+3. `scrybe-meeting-capture-mic`
+4. `scrybe`
 
-#### 1. Confirm working tree is clean and on `main`
+The two capture packages are independent after core is visible. The application must remain last.
 
-```bash
-cd /Users/druk/WorkSpace/AetherForge/scrybe
-git checkout main
+## Preflight
+
+Work from synchronized `main` with a clean tree:
+
+```sh
+git switch main
 git pull --ff-only origin main
-git status                              # must be clean
-git log --oneline -5                    # confirm latest commits match main on origin
+git status --short
 ```
 
-If output shows pending changes, stop. Investigate before proceeding.
+Confirm main CI is green and the release commit is the expected v1.3.2 preparation commit:
 
-#### 2. Confirm CI on main is green
-
-```bash
-gh run list --branch main --limit 5 --json status,conclusion,workflowName
+```sh
+gh run list --branch main --limit 5 --json status,conclusion,workflowName,headSha
+git log --oneline -5
 ```
 
-Every recent `ci` run must show `conclusion: success`. The last `nightly-e2e` run (if any) must also be `success` — if it failed, triage Tier-3 before publishing.
+Confirm the crates.io credential file exists without printing its contents:
 
-#### 3. Confirm crates.io credentials are configured
-
-```bash
-ls ~/.cargo/credentials.toml            # must exist
+```sh
+test -f ~/.cargo/credentials.toml
+cargo owner --list scrybe
 ```
 
-If missing, generate a new token at <https://crates.io/me> (scope: publish-update) and run `cargo login <token>`. The token will be persisted to `~/.cargo/credentials.toml` with `0600` permissions.
+`cargo owner --list scrybe` must include `Mathews-Tom`. Never print or paste the registry token.
 
-#### 4. Verify the version bump landed in main
+Confirm all package versions and exact internal requirements:
 
-```bash
-grep -rn 'version = "0.1.0"' scrybe/Cargo.toml scrybe-core/Cargo.toml \
-    scrybe-capture-mac/Cargo.toml scrybe-cli/Cargo.toml | head
+```sh
+cargo metadata --no-deps --format-version 1
 ```
 
-Must show `0.1.0` in all four. If any still show `0.1.0-alpha.1`, the version-bump PR (which this runbook is shipped under) was not fully merged.
+The four published packages must report `1.3.2`. Every internal dependency must report `=1.3.2`. The Linux, Windows, and Android adapter packages remain private.
 
-### Publish (the irreversible bit)
+Recheck that the new internal package names are unclaimed immediately before publication:
 
-#### 5. Dry-run one more time
-
-```bash
-cargo publish --dry-run -p scrybe
+```sh
+cargo info scrybe-meeting-core --registry crates-io
+cargo info scrybe-meeting-capture-mac --registry crates-io
+cargo info scrybe-meeting-capture-mic --registry crates-io
 ```
 
-Expected output ends with:
+Before first publication, the expected result for each internal name is “could not find”. Stop if another owner has claimed any name.
 
-```text
-Packaging scrybe v0.1.0 (.../scrybe)
-Packaged 6 files, 5.7KiB (2.5KiB compressed)
-Verifying scrybe v0.1.0 (.../scrybe)
-Compiling scrybe v0.1.0 (.../target/package/scrybe-0.1.0)
-Finished `dev` profile [unoptimized + debuginfo] target(s) in <N>s
-Uploading scrybe v0.1.0 (.../scrybe)
-warning: aborting upload due to dry run
+## Package Inspection
+
+Assemble the four packages together so Cargo can resolve their unpublished workspace dependencies:
+
+```sh
+cargo package \
+  -p scrybe-meeting-core \
+  -p scrybe-meeting-capture-mac \
+  -p scrybe-meeting-capture-mic \
+  -p scrybe \
+  --locked \
+  --allow-dirty \
+  --no-verify
 ```
 
-If `--dry-run` errors with "version 0.1.0 already exists", someone has already published — stop and investigate before re-running. If it errors on packaging or compile, fix the underlying issue and re-run from step 1.
+Inspect every `.crate` archive and its normalized `Cargo.toml`. Confirm source, tests, README, license metadata, exact internal dependency versions, and package names. Reject credentials, local session artifacts, generated evidence, absolute paths, or undeclared files.
 
-#### 6. Publish the `scrybe` crate to crates.io
+Run the full repository gate and a clean isolated path install before uploading:
 
-```bash
-cargo publish -p scrybe
+```sh
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --no-default-features -- -D warnings
+cargo check --workspace --all-targets --no-default-features
+cargo test --workspace --all-targets --no-default-features
+python3 scripts/check-egress-baseline.py
+python3 scripts/check-loc-budget.py
+dist plan --output-format=human
 ```
 
-This is **irreversible** at the version-number level. Once `cargo publish` returns success, the version `0.1.0` of `scrybe` is permanently consumed on crates.io. You can yank but not delete (see Rollback below).
+The release gate also requires the published-default macOS Clippy, test, release build, and isolated installation checks documented in `INSTALL.md`.
 
-Expected: same output as the dry-run minus the abort line. The final line is `Uploaded scrybe v0.1.0`.
+## Publish to crates.io
 
-#### 7. Verify the publish
+Dry-run and publish core:
 
-```bash
-sleep 30                                # crates.io index needs a moment to propagate
-cargo search scrybe --limit 1
+```sh
+cargo publish -p scrybe-meeting-core --dry-run --locked
+cargo publish -p scrybe-meeting-core --locked
 ```
 
-Expected:
+Wait until the exact version resolves:
 
-```text
-scrybe = "0.1.0"        # Open-source local-first meeting transcription...
+```sh
+cargo info scrybe-meeting-core@1.3.2 --registry crates-io
 ```
 
-Or check the page directly:
+Then dry-run and publish the capture packages:
 
-```bash
-open https://crates.io/crates/scrybe
+```sh
+cargo publish -p scrybe-meeting-capture-mac --dry-run --locked
+cargo publish -p scrybe-meeting-capture-mic --dry-run --locked
+cargo publish -p scrybe-meeting-capture-mac --locked
+cargo publish -p scrybe-meeting-capture-mic --locked
 ```
 
-Confirm `0.1.0` is listed as the latest version.
+Wait until both exact versions resolve:
 
-#### 8. Tag the release
-
-```bash
-git tag -a v0.1.0 -m "v0.1.0: macOS-alpha first non-placeholder release"
-git push origin v0.1.0
+```sh
+cargo info scrybe-meeting-capture-mac@1.3.2 --registry crates-io
+cargo info scrybe-meeting-capture-mic@1.3.2 --registry crates-io
 ```
 
-The tag push triggers `.github/workflows/release.yml` automatically, which runs `cargo-dist build` for `aarch64-apple-darwin` and `x86_64-apple-darwin`, generates the shell installer, computes `SHA256SUMS.txt`, and creates a GitHub Release at `https://github.com/Mathews-Tom/scrybe/releases/tag/v0.1.0` carrying every artifact.
+Dry-run and publish the application last:
 
-#### 9. Watch the release workflow
-
-`gh run watch` accepts a run ID positionally; resolve the latest run from the `release` workflow and pipe it in:
-
-```bash
-gh run list --workflow=release.yml --limit 1 --json databaseId --jq '.[0].databaseId' | xargs gh run watch
+```sh
+cargo publish -p scrybe --dry-run --locked
+cargo publish -p scrybe --locked
 ```
 
-Or open the run in a browser:
+Do not proceed to the GitHub tag until crates.io installs the application from the registry:
 
-```bash
-gh run list --workflow=release.yml --limit 1 --json url --jq '.[0].url'
+```sh
+INSTALL_ROOT="$(mktemp -d)"
+CARGO_HOME="$(mktemp -d)" rustup run 1.95.0 cargo install scrybe --version 1.3.2 --locked --root "$INSTALL_ROOT"
+"$INSTALL_ROOT/bin/scrybe" --version
+"$INSTALL_ROOT/bin/scrybe" doctor
+"$INSTALL_ROOT/bin/scrybe" record --help
 ```
 
-Wait for `conclusion: success`. Job durations: `plan` ~30s, `build` (per target) ~90s, `release` ~60s. Total wall time ~5 minutes.
+The version must be `scrybe 1.3.2`; `doctor` and `record --help` must execute without a repository checkout.
 
-#### 10. Verify the GitHub Release
+## Publish the GitHub Release
 
-```bash
-gh release view v0.1.0
+Create an annotated tag on the same commit used for crates.io:
+
+```sh
+git tag -a v1.3.2 -m "v1.3.2"
+git push origin v1.3.2
 ```
 
-Expected assets:
+The tag triggers `.github/workflows/release.yml`. Wait for its plan, Apple Silicon build, Intel build, and release jobs:
 
-- `scrybe-cli-aarch64-apple-darwin.tar.xz`
-- `scrybe-cli-x86_64-apple-darwin.tar.xz`
-- `scrybe-cli-installer.sh`
+```sh
+gh run list --workflow release.yml --limit 1
+gh release view v1.3.2
+```
+
+Download every asset into an empty directory and verify `SHA256SUMS.txt`. Execute the installed published binary, confirm its Mach-O UUID, and run the self-signed bundle smoke from `INSTALL.md`.
+
+Expected v1.3.2 asset names include:
+
+- `scrybe-aarch64-apple-darwin.tar.xz`
+- `scrybe-x86_64-apple-darwin.tar.xz`
+- `scrybe-installer.sh`
 - `dist-manifest.json`
+- `scrybe-sbom.cdx.json`
 - `SHA256SUMS.txt`
 
-Each tarball must contain `scrybe`, `INSTALL.md`, `LICENSE`, and `README.md` — verify by extracting one:
+## Recovery
 
-```bash
-mkdir -p /tmp/scrybe-release-check && cd /tmp/scrybe-release-check
-gh release download v0.1.0 --pattern '*aarch64*'
-tar xf scrybe-cli-aarch64-apple-darwin.tar.xz
-ls scrybe-cli-aarch64-apple-darwin/      # scrybe, INSTALL.md, LICENSE, README.md
-./scrybe-cli-aarch64-apple-darwin/scrybe --version    # 0.1.0
+If a crates.io upload succeeds, that package version cannot be replaced. Yank a defective version only to prevent new resolution:
+
+```sh
+cargo yank --vers 1.3.2 scrybe
 ```
 
-#### 11. Smoke-test the shell installer
+Fix forward with a new patch version when accepted bytes are defective. Never move or recreate an existing release tag after users can install its crates.io package.
 
-On a clean shell:
-
-```bash
-curl --proto '=https' --tlsv1.2 -sSf https://github.com/Mathews-Tom/scrybe/releases/download/v0.1.0/scrybe-cli-installer.sh | sh
-```
-
-Expected: installer fetches the matching tarball, verifies SHA256, extracts to `~/.local/bin/` (or `$CARGO_HOME/bin` if cargo-dist's default placement applies), and prints a success message.
-
-```bash
-which scrybe                            # path to the just-installed binary
-scrybe --version                        # 0.1.0
-xattr -dr com.apple.quarantine "$(which scrybe)"   # required on macOS for the unsigned binary
-```
-
-#### 12. Update the dev-plan checkboxes
-
-`.docs/development-plan.md` §1.1 status snapshot, §4 phase overview, and §7.4 exit criteria all reference v0.1.0 as a target. The maintainer manually updates each to reflect the released state. This is a doc-only commit on a follow-up PR; not part of the release runbook itself.
-
-### Rollback
-
-#### Yank a published version
-
-If a critical bug is discovered post-publish:
-
-```bash
-cargo yank --version 0.1.0 -p scrybe --reason "describe the bug here"
-```
-
-`yank` does **not** delete the version. Existing dependents that have `Cargo.lock` pinned to `0.1.0` continue to download it. New resolutions that don't already pin will skip the yanked version. You cannot re-use the version number.
-
-To unyank (e.g., after confirming the bug is downstream-only):
-
-```bash
-cargo yank --version 0.1.0 --undo -p scrybe
-```
-
-#### Delete the GitHub Release
-
-```bash
-gh release delete v0.1.0 --yes --cleanup-tag
-```
-
-`--cleanup-tag` removes both the GitHub Release entry and the underlying `v0.1.0` tag. Note: only the release UI and tag are affected. The crates.io publish is not undone by this command.
-
-#### Recover from a failed `release.yml` run
-
-If `release.yml` fails (e.g., one of the macOS targets fails to build mid-run), the GitHub Release will not exist or will be partial. Diagnose via `gh run view <run-id> --log-failed`. Fix the underlying issue, push the fix to main, then either:
-
-- Re-run the failed jobs: `gh run rerun <run-id> --failed`
-- Or delete the tag and re-push: `git push --delete origin v0.1.0 && git tag -d v0.1.0 && git tag v0.1.0 <new-sha> && git push origin v0.1.0`
-
-The `cargo publish` to crates.io is independent of the release workflow — that step is already irreversible regardless of what happens to the GitHub Release.
-
-## Future releases (v0.2.0 and beyond)
-
-When the dev plan reaches §8 (Phase 2) and beyond, the publish set may grow:
-
-- v0.2.0 introduces `OpenAiCompatSttProvider` and `OpenAiCompatLlmProvider`. These are useful as a building block for downstream consumers, so flipping `publish = true` on `scrybe-core` becomes a real proposal at that point.
-- v0.3.0 introduces the Linux capture adapter (`scrybe-capture-linux`). Same publish question.
-- v1.0.0 freezes Tier-1 traits per `docs/system-design.md` §12. After v1.0, every workspace crate is a candidate for crates.io.
-
-When the publish set changes, this runbook gains additional steps. Order them topologically — every dependent's publish must wait for its dependencies to be live on the crates.io index, because publish-time verification resolves `path + version` deps against the index, not against the local workspace.
-
-Workspace dependency graph:
-
-- `scrybe-core` — no scrybe-* deps
-- `scrybe` — no scrybe-* deps (placeholder)
-- `scrybe-capture-mac` — depends on `scrybe-core`
-- `scrybe-cli` — depends on `scrybe`, `scrybe-core`, `scrybe-capture-mac`
-
-A valid publish order:
-
-```bash
-# multi-crate publish in dependency order with index-propagation sleeps
-cargo publish -p scrybe-core
-sleep 60                                # let scrybe-core land in the index
-cargo publish -p scrybe                 # independent of scrybe-core, but must precede scrybe-cli
-sleep 60
-cargo publish -p scrybe-capture-mac     # needs scrybe-core in the index
-sleep 60
-cargo publish -p scrybe-cli             # needs all three above in the index
-```
-
-The 60-second sleep matters: dependents publish-time-resolve their `path + version` deps against the live crates.io index, not against the local workspace, so the index has to have the new version visible before the dependent's publish job verifies. Publishing `scrybe-cli` before `scrybe` (or before `scrybe-capture-mac`) would fail at the verify step because the dep's new version wouldn't be on crates.io yet.
+If the GitHub workflow fails before publishing a usable release, fix the workflow on main and cut a new patch version. Do not retag v1.3.2 after crates.io publication because the registry package and source tag must remain permanently aligned.

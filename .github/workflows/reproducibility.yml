@@ -21,11 +21,10 @@
 # cargo-dist tarballs bit-identical on `macos-26`; remaining
 # non-determinism sources need deeper investigation (candidate suspects:
 # rustc embedded build-host triple, cargo-dist metadata, xz compressor
-# non-determinism). The
-# verification step emits a `::warning::` annotation on mismatch
-# rather than failing the job so the lane stays informational while
-# the maintainer works through the residual divergences. Promotion
-# to a blocking gate is a v1.0.x → v1.1 deliverable.
+# non-determinism). The verification step emits a `::warning::` annotation on
+# mismatch rather than failing the job so the lane stays informational. Promote
+# it to blocking only after the required Mach-O UUID and cargo-dist archive
+# metadata are independently reproducible.
 #
 # Triggers:
 # - workflow_dispatch: manual rerun for a maintainer verifying a tag.
@@ -66,9 +65,6 @@ env:
   # built with a different epoch than what the release pipeline emits.
   # When bumping either value, bump both.
   SOURCE_DATE_EPOCH: "1714464000"
-  # Matches release.yml so audiopus_sys's vendored Opus configures under
-  # CMake 4 on current macOS runners.
-  CMAKE_POLICY_VERSION_MINIMUM: "3.5"
 
 jobs:
   verify:
@@ -108,14 +104,12 @@ jobs:
         env:
           RUSTFLAGS: "--remap-path-prefix=${{ github.workspace }}/scrybe-rebuild=/build"
         run: dist build --artifacts=local --target=${{ matrix.target }}
-      # Advisory at v1.0.0. Mismatches surface as `::warning::`
-      # annotations rather than job failures while the residual macOS
-      # non-determinism sources are tracked down. The script still
-      # emits the per-asset SHA256 pair on mismatch so a future
-      # investigator can grep the workflow log for the divergence
-      # pattern. Promotion to a hard fail is the v1.0.x → v1.1
-      # deliverable; remove the always-zero exit and re-add the
-      # `if mismatched` block at that time.
+      # Advisory at v1.3.2. Mismatches surface as `::warning::`
+      # annotations rather than job failures while required Mach-O UUID
+      # variance and cargo-dist archive metadata remain unresolved. The
+      # script still emits the per-asset SHA256 pair on mismatch so an
+      # investigator can locate the divergence. Promote this to a hard
+      # failure only after both sources are independently reproducible.
       - name: compare SHA256 across legs (advisory)
         run: |
           set -euo pipefail

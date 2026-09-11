@@ -7,14 +7,14 @@
 # Placeholders:
 #   {{ version }}            — release version without the leading `v`
 #                              (e.g. `0.9.0-rc1`).
-#   {{ sha256_aarch64 }}     — SHA256 of `scrybe-cli-aarch64-apple-darwin.tar.xz`
+#   {{ sha256_aarch64 }}     — SHA256 of `scrybe-aarch64-apple-darwin.tar.xz`
 #                              from the release's `SHA256SUMS.txt`.
-#   {{ sha256_x86_64 }}      — SHA256 of `scrybe-cli-x86_64-apple-darwin.tar.xz`
+#   {{ sha256_x86_64 }}      — SHA256 of `scrybe-x86_64-apple-darwin.tar.xz`
 #                              from the release's `SHA256SUMS.txt`.
 #
-# `brew install` from a tap is the recommended convenience-first install
-# path on macOS per `INSTALL.md`. Tap-installed binaries inherit the
-# tap's trust posture; no Gatekeeper "Apple cannot verify" prompt fires.
+# `brew install` from a tap is the prebuilt alternative to
+# `cargo install scrybe --locked`. Tap-installed binaries inherit the tap's
+# trust posture; no Gatekeeper "Apple cannot verify" prompt fires.
 
 class Scrybe < Formula
   desc "Local-first meeting transcription — capture, transcribe, summarize on device"
@@ -24,11 +24,11 @@ class Scrybe < Formula
 
   on_macos do
     on_arm do
-      url "https://github.com/Mathews-Tom/scrybe/releases/download/v#{version}/scrybe-cli-aarch64-apple-darwin.tar.xz"
+      url "https://github.com/Mathews-Tom/scrybe/releases/download/v#{version}/scrybe-aarch64-apple-darwin.tar.xz"
       sha256 "{{ sha256_aarch64 }}"
     end
     on_intel do
-      url "https://github.com/Mathews-Tom/scrybe/releases/download/v#{version}/scrybe-cli-x86_64-apple-darwin.tar.xz"
+      url "https://github.com/Mathews-Tom/scrybe/releases/download/v#{version}/scrybe-x86_64-apple-darwin.tar.xz"
       sha256 "{{ sha256_x86_64 }}"
     end
   end

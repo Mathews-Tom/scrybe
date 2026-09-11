@@ -7,7 +7,7 @@
 
 scrybe is an open-source meeting transcription tool built around one constraint: the meeting artifacts belong on the user's machine as ordinary files. It captures audio locally, transcribes it with either local Whisper or a user-configured OpenAI-compatible provider, generates Markdown notes, and writes everything under `~/scrybe/`.
 
-Current release: `v1.2.1`.
+Current release: `v1.3.2`.
 
 ## What Works Today
 
@@ -29,26 +29,27 @@ Linux, Windows, and Android crates are present in the workspace as adapter surfa
 
 ## Install
 
-macOS quick install:
+Install the full macOS application from crates.io:
 
 ```sh
-curl --proto '=https' --tlsv1.2 -LsSf \
-  https://github.com/Mathews-Tom/scrybe/releases/latest/download/scrybe-cli-installer.sh | sh
+cargo install scrybe --locked
 scrybe doctor
 ```
 
-The installer downloads the matching macOS tarball, verifies the release checksum manifest, and installs the `scrybe` binary on `PATH`. It does not require notarization because `curl` downloads do not carry the browser quarantine attribute.
+This builds Scrybe locally with microphone capture, ScreenCaptureKit system audio, Whisper, Opus, and OpenAI-compatible notes enabled. It requires Rust 1.95 and Xcode Command Line Tools.
 
-Manual tarball installation, release verification, and source builds are documented in [`INSTALL.md`](INSTALL.md).
-
-## Real Local Recording Build
-
-The release tarball is intentionally conservative. For the full local macOS path with microphone, system audio, Whisper, Opus, and OpenAI-compatible notes:
+For a faster prebuilt installation:
 
 ```sh
-cargo install --path scrybe-cli \
-  --features cli-shell,hook-git,mic-capture,system-capture-mac,whisper-local,encoder-opus,llm-openai-compat
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/Mathews-Tom/scrybe/releases/latest/download/scrybe-installer.sh | sh
+scrybe doctor
+```
 
+The GitHub installer downloads the matching macOS tarball, verifies the release checksum manifest, and installs `scrybe` on `PATH`. Both installation paths provide the same production capabilities. Manual tarball installation, release verification, and source builds are documented in [`INSTALL.md`](INSTALL.md).
+
+## First Local Recording Setup
+```sh
 mkdir -p ~/Library/Application\ Support/dev.scrybe.scrybe/models
 curl -L -o ~/Library/Application\ Support/dev.scrybe.scrybe/models/ggml-small.en.bin \
   https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin
@@ -123,16 +124,15 @@ For `--source mic+system`, `audio.opus` preserves the source master with the use
 
 scrybe is a Rust workspace with a small core and platform adapters:
 
-| Crate | Role |
+| Package | Role |
 |---|---|
-| `scrybe` | Published placeholder crate and public package identity |
-| `scrybe-core` | Session orchestration, storage, config, providers, hooks, diarization, pipeline |
-| `scrybe-cli` | CLI binary: `init`, `record`, `list`, `show`, `doctor`, `bench`, `mcp` (opt-in) |
-| `scrybe-capture-mac` | macOS Core Audio Taps adapter |
-| `scrybe-capture-mic` | Cross-platform microphone adapter via `cpal` |
-| `scrybe-capture-linux` | PipeWire/Pulse adapter surface |
-| `scrybe-capture-win` | WASAPI adapter surface |
-| `scrybe-android` | Android FFI adapter surface |
+| `scrybe` | Published application and `scrybe` binary (`scrybe-cli/`) |
+| `scrybe-meeting-core` | Published session, storage, config, provider, hook, diarization, and pipeline library |
+| `scrybe-meeting-capture-mac` | Published macOS microphone and system-audio adapter |
+| `scrybe-meeting-capture-mic` | Published microphone adapter via `cpal` |
+| `scrybe-capture-linux` | Private PipeWire/Pulse adapter surface |
+| `scrybe-capture-win` | Private WASAPI adapter surface |
+| `scrybe-android` | Private Android FFI adapter surface |
 
 The important public seams are:
 
@@ -146,8 +146,7 @@ The Tier-1 stability contract is documented in [`docs/system-design.md`](docs/sy
 
 ## Privacy and Network Posture
 
-- Default builds keep the network provider graph out of the binary.
-- Cloud STT/LLM is opt-in through OpenAI-compatible config.
+- The published application includes OpenAI-compatible provider support, but no network provider runs unless selected in configuration.
 - API keys are read from named environment variables.
 - There is no account system, sync service, telemetry, hosted backend, or bot that joins calls.
 - Courtesy notification is part of the recording flow and is recorded in `meta.toml`.
@@ -156,7 +155,7 @@ The Tier-1 stability contract is documented in [`docs/system-design.md`](docs/sy
 Run the egress audit locally:
 
 ```sh
-cargo build --release --no-default-features
+cargo build -p scrybe --release --no-default-features
 python3 scripts/check-egress-baseline.py
 ```
 
@@ -166,7 +165,7 @@ python3 scripts/check-egress-baseline.py
 - `--source mic+system` defaults to ScreenCaptureKit on macOS 13+ and requires **Screen & System Audio Recording**. This privacy permission covers screen recording in addition to system audio; deny it if that scope is unacceptable.
 - The macOS 14.4+ Core Audio Tap backend remains available as `[record].system_backend = "tap"` for recovery. It requires the narrower Audio Capture permission and a signed `.app` bundle. A failed or silent Tap switches once to ScreenCaptureKit after a 1.5 s startup window, so a quiet desktop can switch before external audio begins.
 - Tray and global-hotkey shell support exists behind `cli-shell`; the headless `record` path remains the reliable path.
-- The crates.io `scrybe` package is the public package identity. The implementation crates are currently `publish = false`; install the CLI from GitHub releases or build from source.
+- crates.io installation supports the polished macOS application. Linux and Windows recording remain parked until hardware-qualified release paths exist.
 - Native macOS notarization and Windows Authenticode signing are out of scope for the v1 line. Release artifacts are verified with checksums and cosign provenance instead.
 
 ## Development
@@ -174,10 +173,10 @@ python3 scripts/check-egress-baseline.py
 Required toolchain is pinned by the repository:
 
 ```sh
-cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo check --all-targets
-cargo test --workspace
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --no-default-features -- -D warnings
+cargo check --workspace --all-targets --no-default-features
+cargo test --workspace --all-targets --no-default-features
 ```
 
 Additional gates used by CI include `cargo audit`, `cargo deny check`, coverage, LoC budget, egress audit, release planning, and advisory reproducibility checks.

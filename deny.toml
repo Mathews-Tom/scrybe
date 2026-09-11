@@ -58,13 +58,13 @@ ignore = [
     { id = "RUSTSEC-2026-0183", reason = "git2 0.19 unsound Remote::list(); not called — Hook::Git uses find_remote+push only." },
     { id = "RUSTSEC-2026-0184", reason = "git2 0.19 unsound Blame/BlameHunk via blame_buffer(); not reachable — Hook::Git never calls Blame APIs." },
     # `glib 0.18.5` is pulled in transitively by `tray-icon 0.23 →
-    # muda → gtk-rs 0.18` and only when the optional `cli-shell`
-    # cargo feature is enabled (Linux desktop builds). The default
-    # headless build does not link this graph at all. Upstream
-    # `tray-icon` ≥ 0.24 is expected to migrate to gtk-rs 0.20 which
-    # drops the unsound `VariantStrIter` impl. Re-evaluate when
-    # `tray-icon` ships that bump.
-    { id = "RUSTSEC-2024-0429", reason = "glib 0.18 VariantStrIter unsoundness, optional via tray-icon→muda→gtk-rs 0.18; cli-shell feature only." },
+    # muda → gtk-rs 0.18` only for Linux desktop builds. The published
+    # v1.3.2 defaults target macOS, where tray-icon uses AppKit; Linux
+    # recording remains parked and cross-platform CI disables defaults.
+    # Upstream `tray-icon` ≥ 0.24 is expected to migrate to gtk-rs 0.20,
+    # which drops the unsound `VariantStrIter` impl. Re-evaluate when
+    # Linux delivery resumes or `tray-icon` ships that bump.
+    { id = "RUSTSEC-2024-0429", reason = "glib 0.18 VariantStrIter unsoundness is Linux-only via tray-icon→muda→gtk-rs 0.18; Linux delivery is parked and macOS uses AppKit." },
     # `idna 0.5.x` accepts certain malformed Punycode labels that
     # should be rejected; patched in `idna 1.0.0`. Lockfile still
     # carries `idna 0.5.x` via the `url 2.5.0` precise pin in the

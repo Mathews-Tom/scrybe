@@ -157,7 +157,7 @@ fn test_bench_print_criterion_mode_still_works_unchanged() {
 /// reaches the `SHERPA_ONNX_LIB_DIR` check this exercises. Not part of the
 /// current CI matrix (which tests default and `--features stt-sherpa`
 /// separately, never combined); run locally with
-/// `cargo test -p scrybe-cli --features whisper-local,stt-sherpa`.
+/// `cargo test -p scrybe --no-default-features --features whisper-local,stt-sherpa`.
 #[cfg(all(feature = "whisper-local", feature = "stt-sherpa"))]
 #[test]
 fn test_bench_stt_rejects_unset_sentinel_and_unprovisioned_sherpa_runtime_dir() {

@@ -4,6 +4,30 @@ All notable changes to scrybe are documented here. The format follows [Keep a Ch
 
 ## [Unreleased]
 
+## [1.3.2] — 2026-09-11
+
+### Added
+
+- `cargo install scrybe --locked` now installs the complete macOS meeting-recording application directly from crates.io without cloning the repository.
+
+### Changed
+
+- The obsolete placeholder crate is removed. The application now owns the reserved `scrybe` package, with its required libraries published as `scrybe-meeting-core`, `scrybe-meeting-capture-mac`, and `scrybe-meeting-capture-mic`.
+- The crates.io application defaults match the GitHub release: microphone capture, ScreenCaptureKit system audio, local Whisper, Opus, OpenAI-compatible notes, desktop shell, and Git hooks.
+- cargo-dist assets follow the application package identity: `scrybe-{target}.tar.xz`, `scrybe-installer.sh`, and `scrybe-sbom.cdx.json`.
+
+### Fixed
+
+- Opus bindings move from `opus` 0.3 and CMake-4-incompatible `audiopus_sys` to `opus` 0.4 and `opusic-sys`, allowing a clean Cargo installation without the release workflow's CMake policy override.
+
+### Security
+
+- The dependency-level no-egress guarantee now explicitly covers `cargo build -p scrybe --no-default-features`; published defaults include the configured OpenAI-compatible provider, but no network provider runs unless selected by the user.
+
+### Workspace
+
+- Seven workspace packages remain after removing the placeholder. Four publish to crates.io in dependency order; the parked Linux, Windows, and Android adapters remain private.
+
 ## [1.3.1] — 2026-09-11
 
 ### Added
@@ -80,6 +104,7 @@ This release completes the macOS capture-liveness train. A dead or wrong input d
 
 - 8 crates. Publish posture unchanged: `scrybe` is the crates.io placeholder; distribution uses cargo-dist release artifacts.
 
+[1.3.2]: https://github.com/Mathews-Tom/scrybe/releases/tag/v1.3.2
 [1.3.1]: https://github.com/Mathews-Tom/scrybe/releases/tag/v1.3.1
 [1.3.0]: https://github.com/Mathews-Tom/scrybe/releases/tag/v1.3.0
 

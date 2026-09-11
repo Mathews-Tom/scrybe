@@ -1,4 +1,4 @@
-# Release workflow for scrybe-cli driven by cargo-dist 0.25.
+# Release workflow for the `scrybe` application driven by cargo-dist 0.25.
 #
 # Trigger:
 # - Push of a tag matching `v[0-9]+.[0-9]+.[0-9]+*` (e.g. v0.1.0, v0.1.0-rc1).
@@ -7,9 +7,9 @@
 #   signing, but does NOT create a GitHub Release.
 #
 # Outputs (per `[workspace.metadata.dist]` in `Cargo.toml`):
-# - `scrybe-cli-aarch64-apple-darwin.tar.xz`
-# - `scrybe-cli-x86_64-apple-darwin.tar.xz`
-# - `scrybe-cli-installer.sh` (cargo-dist shell installer; quick-install path
+# - `scrybe-aarch64-apple-darwin.tar.xz`
+# - `scrybe-x86_64-apple-darwin.tar.xz`
+# - `scrybe-installer.sh` (cargo-dist shell installer; quick-install path
 #   documented in `INSTALL.md`)
 # - `dist-manifest.json` (cargo-dist artifact-list manifest read by the
 #   installer to resolve and verify per-target tarballs)
@@ -112,10 +112,6 @@ jobs:
       # reproducibility lane therefore remains advisory for UUID variance.
       SOURCE_DATE_EPOCH: "1714464000"
       RUSTFLAGS: "--remap-path-prefix=${{ github.workspace }}=/build"
-      # audiopus_sys 0.2.2 vendors an Opus CMake project whose declared
-      # minimum predates CMake 3.5. CMake 4 removed that compatibility
-      # unless callers explicitly select the 3.5 policy floor.
-      CMAKE_POLICY_VERSION_MINIMUM: "3.5"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -182,24 +178,24 @@ jobs:
       # CycloneDX SBOM covering the binary's dependency graph. Emitted
       # at release time (not in the build matrix) because it is a
       # cross-target manifest derived from `Cargo.lock`, not from any
-      # individual tarball. Shipped as `scrybe-cli-sbom.cdx.json` so
+      # individual tarball. Shipped as `scrybe-sbom.cdx.json` so
       # downstream consumers running `cargo audit` / `osv-scanner`
       # against the SBOM can reproduce the binary's vulnerability
       # posture without checking out source.
       #
       # `cargo cyclonedx` defaults to one SBOM per workspace member
       # written into each crate's directory. The release artifact is
-      # the `scrybe-cli` binary, so scope to that package via its
-      # manifest path and move the single expected output into staging.
+      # the `scrybe` application, so scope to its manifest and move the
+      # single expected output into staging.
       # Running at the workspace root would emit one SBOM per crate.
       - name: generate CycloneDX SBOM
         run: |
           set -euo pipefail
-          cargo cyclonedx --manifest-path scrybe-cli/Cargo.toml --format json --override-filename scrybe-cli-sbom
+          cargo cyclonedx --manifest-path scrybe-cli/Cargo.toml --format json --override-filename scrybe-sbom
           sbom_path="$(find . -type f \( \
-            -name scrybe-cli-sbom \
-            -o -name scrybe-cli-sbom.json \
-            -o -name scrybe-cli-sbom.cdx.json \
+            -name scrybe-sbom \
+            -o -name scrybe-sbom.json \
+            -o -name scrybe-sbom.cdx.json \
             -o -name bom.json \
           \) -print -quit)"
           if [ -z "$sbom_path" ]; then
@@ -207,8 +203,8 @@ jobs:
             find . -type f \( -name '*sbom*' -o -name 'bom.*' -o -name '*.cdx.json' \) -print
             exit 1
           fi
-          mv "$sbom_path" dist-staging/scrybe-cli-sbom.cdx.json
-          ls -la dist-staging/scrybe-cli-sbom.cdx.json
+          mv "$sbom_path" dist-staging/scrybe-sbom.cdx.json
+          ls -la dist-staging/scrybe-sbom.cdx.json
       - name: write SHA256 manifest
         working-directory: dist-staging
         run: |
@@ -234,7 +230,7 @@ jobs:
           COSIGN_YES: "true"
         run: |
           set -euo pipefail
-          for asset in SHA256SUMS.txt scrybe-cli-sbom.cdx.json; do
+          for asset in SHA256SUMS.txt scrybe-sbom.cdx.json; do
             [ -e "$asset" ] || { echo "::error::missing $asset"; exit 1; }
             cosign sign-blob \
               --output-signature "${asset}.sig" \
@@ -255,7 +251,7 @@ jobs:
           TAG: ${{ needs.plan.outputs.tag }}
         run: |
           # `dist-staging/*` would also match the unpacked
-          # `scrybe-cli-<target>/` working directories cargo-dist leaves
+          # `scrybe-<target>/` working directories cargo-dist leaves
           # in target/distrib alongside the tarballs. `gh release create`
           # rejects directory paths with "is a directory" — the v0.1.0
           # first-attempt run hit exactly that. Restrict the upload to

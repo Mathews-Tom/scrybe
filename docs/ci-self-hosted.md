@@ -128,7 +128,7 @@ The workflow `if:` evaluates the variable at scheduling time — flipping it to 
 `cargo`'s build cache grows without bound. Schedule a weekly `cron` under the `scrybe-runner` account to prune:
 
 ```cron
-0 4 * * 0 cd ~/actions-runner/_work/scrybe/scrybe && cargo clean --target-dir target -p scrybe-capture-mac && cargo clean --target-dir target -p scrybe-cli
+0 4 * * 0 cd ~/actions-runner/_work/scrybe/scrybe && cargo clean --target-dir target -p scrybe-meeting-capture-mac && cargo clean --target-dir target -p scrybe
 ```
 
 Or use `cargo-cache --autoclean` if installed. The full `target/` for this workspace at `core-audio-tap` features sits around 3–4 GB; weekly pruning is plenty.

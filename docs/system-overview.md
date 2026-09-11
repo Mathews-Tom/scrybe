@@ -17,8 +17,8 @@ scrybe is a single-binary, open-source meeting notetaker. It captures the meetin
 | **Storage** | Plain markdown on disk. No SQLite, no proprietary format |
 | **STT** | `whisper.cpp` local by default. Any OpenAI-compatible API as alternative |
 | **LLM** | Ollama / LM Studio local. Any OpenAI-compatible API as alternative |
-| **Network egress** | Zero by default. Only present if the user configures a cloud provider |
-| **Audio capture** | Native OS APIs only. No virtual audio driver required. macOS uses Core Audio Taps (14.4+) primary, ScreenCaptureKit fallback (13.0–14.3) |
+| **Network egress** | No provider egress until the user configures one; the explicit `--no-default-features` build excludes network-capable dependencies |
+| **Audio capture** | Native OS APIs only. No virtual audio driver required. macOS uses ScreenCaptureKit (13+) by default, with Core Audio Taps (14.4+) as the legacy recovery path |
 | **Account system** | None. There is nothing to sign up for |
 | **Courtesy notification** | Mandatory pre-start step (configurable, not removable). Posts a brief notice into the meeting chat or plays a short spoken disclosure. See `LEGAL.md` for jurisdiction-specific guidance |
 | **Project posture** | Open-source software. The author publishes a binary; users run it on their own hardware. There is no managed service, no hosted endpoint, no data flow back to the author |
@@ -206,7 +206,7 @@ An OSS maintainer hops on a community call. They want notes for the project's pu
 
 ### Example 4 — Audit-friendly local build
 
-A developer wants a notetaker they can read top-to-bottom and verify behaves as advertised. `cargo build --no-default-features --features mac,whisper-local` produces a binary with zero outbound network capability — verifiable with `lsof`. The Apache-2.0 source is small enough to audit in an evening.
+A developer wants a notetaker they can read top-to-bottom and verify behaves as advertised. `cargo build -p scrybe --no-default-features` produces the explicit hermetic binary; `python3 scripts/check-egress-baseline.py` verifies that its dependency graph contains no network-capable crates. The Apache-2.0 source remains directly auditable.
 
 ### Example 5 — Meeting on an Android phone in a coffee shop
 

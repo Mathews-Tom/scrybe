@@ -80,7 +80,7 @@ jobs:
           # exists so a triager can confirm the host's macOS minor
           # version is >= 14.4 (the Core Audio Taps API floor).
       - name: build with mac capture features
-        run: cargo build -p scrybe-capture-mac --features core-audio-tap --all-targets
+        run: cargo build -p scrybe-meeting-capture-mac --features core-audio-tap --all-targets
       - name: run Tier-2 ignored capture tests
         # The single in-tree Tier-3 test today is
         # `test_tap_stream_create_and_drop_on_real_hardware` in
@@ -88,7 +88,7 @@ jobs:
         # from `.docs/development-plan.md` §7.3.3 land in subsequent
         # slices and will be picked up by the same `--ignored` flag
         # without changes here.
-        run: cargo test -p scrybe-capture-mac --features core-audio-tap -- --ignored --nocapture
+        run: cargo test -p scrybe-meeting-capture-mac --features core-audio-tap -- --ignored --nocapture
       - name: collect runner diagnostics
         if: always()
         run: |
