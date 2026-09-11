@@ -189,7 +189,10 @@ LOC_CEILINGS: dict[str, int] = {
     # `bench stt` mode, its fail-loud provision checks, and the unchanged
     # Criterion-harvest dispatch. Raised to 4850 for M9's default-off stdio
     # command, config refusal, and recorded five-tool integration transcript.
-    "scrybe-cli": 4850,
+    # Raised to 5200 for M10's redacted qualification verifier: receipt schema,
+    # stage dependency, session-artifact evidence, named failures, CLI wiring,
+    # and adversarial no-content serialization tests.
+    "scrybe-cli": 5200,
     # Raised to 2700 for M6's opt-in transactional VoiceProcessingIO path:
     # explicit device/format/processing configuration, ducking suppression,
     # RAII cleanup, and a plain-input fallback proved against forced failures.
