@@ -191,8 +191,10 @@ LOC_CEILINGS: dict[str, int] = {
     # command, config refusal, and recorded five-tool integration transcript.
     # Raised to 5200 for M10's redacted qualification verifier: receipt schema,
     # stage dependency, session-artifact evidence, named failures, CLI wiring,
-    # and adversarial no-content serialization tests.
-    "scrybe-cli": 5200,
+    # and adversarial no-content serialization tests. Raised to 5350 for
+    # M10's installed CLI-owned self-signed bundle creator, Keychain identity
+    # diagnostic, and deterministic signature verification.
+    "scrybe-cli": 5350,
     # Raised to 2700 for M6's opt-in transactional VoiceProcessingIO path:
     # explicit device/format/processing configuration, ducking suppression,
     # RAII cleanup, and a plain-input fallback proved against forced failures.
