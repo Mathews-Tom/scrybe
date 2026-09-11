@@ -21,6 +21,8 @@
 //! download URL in `scrybe init` (`docs/system-design.md` §7.1).
 
 use std::path::{Path, PathBuf};
+#[cfg(feature = "whisper-local")]
+use std::sync::Arc;
 
 use async_trait::async_trait;
 
@@ -70,10 +72,20 @@ fn derive_model_label(model_path: &Path) -> String {
 
 /// Local Whisper provider. The struct exists in every build; runtime
 /// behavior depends on the `whisper-local` feature.
-#[derive(Debug)]
 pub struct WhisperLocalProvider {
     config: WhisperLocalConfig,
     name: String,
+    #[cfg(feature = "whisper-local")]
+    context: tokio::sync::OnceCell<Arc<whisper_rs::WhisperContext>>,
+}
+impl std::fmt::Debug for WhisperLocalProvider {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("WhisperLocalProvider")
+            .field("config", &self.config)
+            .field("name", &self.name)
+            .finish_non_exhaustive()
+    }
 }
 
 impl WhisperLocalProvider {
@@ -92,7 +104,12 @@ impl WhisperLocalProvider {
             });
         }
         let name = format!("whisper-local:{}", config.model_label);
-        Ok(Self { config, name })
+        Ok(Self {
+            config,
+            name,
+            #[cfg(feature = "whisper-local")]
+            context: tokio::sync::OnceCell::new(),
+        })
     }
 
     #[must_use]
@@ -109,8 +126,15 @@ fn is_partial(path: &Path) -> bool {
 
 #[async_trait]
 impl SttProvider for WhisperLocalProvider {
-    async fn transcribe(&self, _chunk: AudioChunk) -> Result<TranscriptChunk, SttError> {
-        transcribe_impl(&self.config, _chunk).await
+    async fn transcribe(&self, chunk: AudioChunk) -> Result<TranscriptChunk, SttError> {
+        #[cfg(feature = "whisper-local")]
+        {
+            transcribe_impl(&self.config, &self.context, chunk).await
+        }
+        #[cfg(not(feature = "whisper-local"))]
+        {
+            transcribe_impl(&self.config, chunk).await
+        }
     }
 
     fn name(&self) -> &str {
@@ -121,11 +145,29 @@ impl SttProvider for WhisperLocalProvider {
 #[cfg(feature = "whisper-local")]
 async fn transcribe_impl(
     config: &WhisperLocalConfig,
+    context: &tokio::sync::OnceCell<Arc<whisper_rs::WhisperContext>>,
     chunk: AudioChunk,
 ) -> Result<TranscriptChunk, SttError> {
-    use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
+    use whisper_rs::{
+        install_whisper_tracing_trampoline, FullParams, SamplingStrategy, WhisperContext,
+        WhisperContextParameters,
+    };
 
-    let model_path = config.model_path.clone();
+    let context = context
+        .get_or_try_init(|| async {
+            let model_path = config.model_path.clone();
+            tokio::task::spawn_blocking(move || {
+                install_whisper_tracing_trampoline();
+                let params = WhisperContextParameters::default();
+                WhisperContext::new_with_params(model_path.to_string_lossy().as_ref(), params)
+                    .map(Arc::new)
+                    .map_err(|error| SttError::Decoding(Box::new(error)))
+            })
+            .await
+            .map_err(|error| SttError::Decoding(Box::new(error)))?
+        })
+        .await?
+        .clone();
     let language = config.language.clone();
     let source = chunk.source;
     let start_ms = u64::try_from(chunk.start.as_millis()).unwrap_or(0);
@@ -133,13 +175,9 @@ async fn transcribe_impl(
     let samples = chunk.samples.as_ref().to_vec();
 
     tokio::task::spawn_blocking(move || -> Result<TranscriptChunk, SttError> {
-        let ctx_params = WhisperContextParameters::default();
-        let ctx =
-            WhisperContext::new_with_params(model_path.to_string_lossy().as_ref(), ctx_params)
-                .map_err(|e| SttError::Decoding(Box::new(e)))?;
-        let mut state = ctx
+        let mut state = context
             .create_state()
-            .map_err(|e| SttError::Decoding(Box::new(e)))?;
+            .map_err(|error| SttError::Decoding(Box::new(error)))?;
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
         if language != "auto" {
             params.set_language(Some(language.as_str()));
@@ -150,15 +188,15 @@ async fn transcribe_impl(
         params.set_print_timestamps(false);
         state
             .full(params, &samples)
-            .map_err(|e| SttError::Decoding(Box::new(e)))?;
+            .map_err(|error| SttError::Decoding(Box::new(error)))?;
         let segment_count = state
             .full_n_segments()
-            .map_err(|e| SttError::Decoding(Box::new(e)))?;
+            .map_err(|error| SttError::Decoding(Box::new(error)))?;
         let mut text = String::new();
-        for i in 0..segment_count {
+        for index in 0..segment_count {
             let segment = state
-                .full_get_segment_text(i)
-                .map_err(|e| SttError::Decoding(Box::new(e)))?;
+                .full_get_segment_text(index)
+                .map_err(|error| SttError::Decoding(Box::new(error)))?;
             text.push_str(&segment);
         }
         Ok(TranscriptChunk {
@@ -171,7 +209,7 @@ async fn transcribe_impl(
         })
     })
     .await
-    .map_err(|e| SttError::Decoding(Box::new(e)))?
+    .map_err(|error| SttError::Decoding(Box::new(error)))?
 }
 
 #[cfg(not(feature = "whisper-local"))]

@@ -155,7 +155,7 @@ open ./scrybe.app --args doctor --check-tap
 
 ## Record from a real microphone with local Whisper transcription
 
-The default `scrybe record` runs a synthetic 440 Hz sine through the pipeline so CI smoke tests stay hermetic. To record from your actual mic and transcribe with whisper.cpp, build with the `mic-capture` and `whisper-local` features and supply a model path at runtime:
+The hermetic `default` profile uses a synthetic 440 Hz sine, while the macOS `mac-local` profile records microphone plus system audio. Build with the `mic-capture` and `whisper-local` features and configure a model path:
 
 ```sh
 # Build with all opt-in features (mic + system audio + Whisper + Opus
@@ -166,8 +166,8 @@ cargo install --path scrybe-cli \
 # Download a whisper.cpp model into scrybe's platform data directory
 # (one-time; pick a size that fits your RAM).
 mkdir -p ~/Library/Application\ Support/dev.scrybe.scrybe/models
-curl -L -o ~/Library/Application\ Support/dev.scrybe.scrybe/models/ggml-base.en.bin \
-  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin
+curl -L -o ~/Library/Application\ Support/dev.scrybe.scrybe/models/ggml-small.en.bin \
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin
 
 # Write the one-time local Mac profile. This lands at
 # ~/Library/Application Support/dev.scrybe.scrybe/config.toml unless
@@ -184,54 +184,48 @@ scrybe record "client-call"
 scrybe list                       # shows the new session
 scrybe show <session-id>          # renders transcript + notes
 
-# audio.opus is now real Ogg/Opus — playable in any standard audio
-# tool. Without --features encoder-opus the file is raw PCM bytes
-# (the v0.1 NullEncoder fallback) and ffmpeg/vlc reject it.
+# audio.opus is the source master. For mic+system sessions,
+# playback.opus is the centered listening mix.
 ffprobe ~/scrybe/<session>/audio.opus
+ffprobe ~/scrybe/<session>/playback.opus
 ```
 
-The first run of `--source mic+system` triggers two macOS permission
-prompts:
+The first run of `--source mic+system` triggers **Microphone** and **Screen & System Audio Recording** permission prompts for the microphone and ScreenCaptureKit adapters. Grant both via System Settings → Privacy & Security and re-run.
 
-- **Microphone** — for the cpal default-input adapter.
-- **Audio Capture** — for the Core Audio Taps adapter that captures
-  system playback. Requires macOS 14.4+; older macOS versions return
-  `CaptureError::PermissionDenied` even after grant because the
-  underlying API is unavailable.
+Pin the microphone so connecting Bluetooth headphones cannot silently change the meeting input:
 
-Grant both via System Settings → Privacy & Security and re-run.
+```toml
+[record]
+input_device = "BuiltInMicrophoneDevice" # exact UID from `scrybe devices`
 
-`--source mic+system` writes a single mono `audio.opus` interleaving
-mic and system frames by arrival time. Stereo encoding (mic on L,
-system on R) is a v1.0.x → v1.1 deliverable; the transcript channel-
-split via `FrameSource` is unaffected.
+[stt]
+model = "small.en"
+language = "en"
+```
+
+For `--source mic+system`, `audio.opus` is stereo with microphone on the left and system audio on the right. `playback.opus` centers the combined meeting in both ears. Keep `audio.opus` as the source-separated transcription and archival master.
 
 What runs:
 
-- `scrybe-capture-mic::MicCapture` opens the host's default input device via cpal on a dedicated capture thread. The first run prompts for Microphone permission via macOS System Settings → Privacy & Security → Microphone; grant it and re-run.
-- The pipeline chunks the audio at the existing 30 s / 5 s-silence-after-5 s-speech boundaries (`docs/system-design.md` §5).
-- Each chunk is resampled to 16 kHz and handed to `WhisperLocalProvider`, which transcribes via whisper.cpp against your model file.
-- The notes step uses the backend in `[record].llm`. The `mac-local`
-  profile sets it to `openai-compat`; the default profile keeps the
-  stub LLM for hermetic smoke tests.
+- `scrybe-capture-mac::NativeMicCapture` opens the exact configured Core Audio device UID. If no UID is configured, scrybe resolves and reports Core Audio's current default once at session start.
+- The pipeline chunks audio at the configured VAD-aware boundaries and transcribes each accepted chunk with one persistent whisper.cpp model context.
+- Accepted transcript chunks print in the terminal while recording. After capture stops, the terminal reports transcript, audio, notes, and metadata finalization phases.
+- The notes step uses the backend in `[record].llm`. The `mac-local` profile sets it to `openai-compat`; the default profile keeps the stub LLM for hermetic smoke tests. If finalization is interrupted, run `scrybe repair <session-folder>` followed by `scrybe notes <session-folder>`.
 
 Whisper model sizes (English-only, `.en` suffix; multilingual variants are larger):
 
 | Model | File size | RAM use | Speed on M1 Pro | Use when |
 |---|---|---|---|---|
 | `ggml-tiny.en.bin` | ~75 MB | ~390 MB | ~30× realtime | Quick smoke test only |
-| `ggml-base.en.bin` | ~150 MB | ~500 MB | ~16× realtime | Reasonable default |
-| `ggml-small.en.bin` | ~470 MB | ~1.0 GB | ~6× realtime | Better accuracy |
-| `ggml-large-v3-turbo.bin` | ~1.5 GB | ~3.0 GB | ~2× realtime | Production quality |
+| `ggml-base.en.bin` | ~150 MB | ~500 MB | ~16× realtime | Lower-memory fallback |
+| `ggml-small.en.bin` | ~470 MB | ~1.0 GB | ~6× realtime | Default for English meetings |
+| `ggml-large-v3-turbo.bin` | ~1.5 GB | ~3.0 GB | ~2× realtime | Maximum local accuracy when latency permits |
 
 The `--whisper-model` flag rejects `*.partial` paths so an interrupted download cannot silently produce a corrupt transcript.
 
-`meta.toml` records the actual loaded model in `[providers].stt`
-(e.g. `whisper-local:ggml-base.en` for the `ggml-base.en.bin`
-example above). The `scrybe retranscribe` flow planned for v1.x
-uses this string as the canonical previous-attempt identifier.
+`meta.toml` records the loaded model in `[providers].stt` (for example, `whisper-local:ggml-small.en`).
 
-System audio capture (the other end of a Zoom/Teams/Meet call) on macOS goes through `scrybe-capture-mac` (Core Audio Taps); wiring it into `scrybe record` alongside the mic adapter is a v1.x deliverable.
+System audio capture on macOS uses ScreenCaptureKit by default, with the signed Core Audio Tap bundle retained as a recovery backend.
 
 ---
 

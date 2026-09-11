@@ -251,8 +251,8 @@ pub fn clean_generated_title(raw: &str) -> Option<String> {
 }
 
 /// Wrap the LLM's response into a final `notes.md` body. Adds a
-/// machine-friendly header (title + timestamp + provider stamp) and
-/// the LLM's structured output verbatim.
+/// machine-friendly header and removes one redundant outer Markdown fence
+/// while preserving the structured Markdown inside it.
 #[must_use]
 pub fn render_notes_body(
     title: Option<&str>,
@@ -263,9 +263,21 @@ pub fn render_notes_body(
     let title_line = title.unwrap_or("Untitled session");
     let _ = writeln!(out, "# {title_line} — notes");
     let _ = writeln!(out, "*Generated {}*\n", started_at.format("%Y-%m-%d %H:%M"));
-    out.push_str(llm_output.trim_end());
+    out.push_str(strip_outer_markdown_fence(llm_output));
     out.push('\n');
     out
+}
+fn strip_outer_markdown_fence(output: &str) -> &str {
+    let trimmed = output.trim();
+    let Some(body) = trimmed
+        .strip_prefix("```markdown\n")
+        .or_else(|| trimmed.strip_prefix("```\n"))
+    else {
+        return trimmed;
+    };
+    body.split_once("\n```")
+        .map_or(trimmed, |(notes, _trailing)| notes)
+        .trim_end()
 }
 
 /// Render notes and append deterministic gaps outside the provider response.
@@ -443,6 +455,18 @@ mod tests {
         assert!(body.starts_with("# Standup — notes\n"));
         assert!(body.contains("2026-04-29 09:00"));
         assert!(body.contains("## TL;DR\nShipped."));
+    }
+    #[test]
+    fn test_render_notes_body_removes_redundant_outer_markdown_fence() {
+        let body = render_notes_body(
+            Some("Standup"),
+            dt(2026, 4, 29, 9, 0),
+            "```markdown\n## TL;DR\nShipped.\n```\n\nThis summary captures the meeting.",
+        );
+
+        assert!(body.contains("## TL;DR\nShipped."));
+        assert!(!body.contains("```"));
+        assert!(!body.contains("This summary captures"));
     }
 
     #[test]

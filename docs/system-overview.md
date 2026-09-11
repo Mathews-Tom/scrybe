@@ -82,15 +82,16 @@ mic + system → channel split → 30s VAD-aware chunker → STT provider → ma
                                                         complete transcript + meeting context → LLM provider → notes.md
 ```
 
-Two STT calls per chunk (one per channel), one LLM call at end-of-session. The pipeline is intentionally **batch-windowed, not streaming**. Streaming buys ~10% better UX at ~5x the engineering cost; deferred to v2 if anyone asks.
+Whisper transcription remains VAD-windowed, and each durably accepted chunk prints in the terminal during the call. Finalization reports transcript flush, audio encoding, notes generation, and metadata writing.
 
 ### Storage
 
 ```
 ~/scrybe/2026-04-29-1430-standup/
-  audio.opus           # final compressed recording
+  audio.opus           # source master; mic-left/system-right for dual-source sessions
+  playback.opus        # centered listening mix for dual-source sessions
   transcript.md        # appended during call
-  notes.md             # generated post-call
+  notes.md             # generated post-call or with `scrybe notes`
   meta.toml            # title, duration, providers used, model versions
 ```
 

@@ -92,7 +92,7 @@ pub fn merge_journal(
         _ => 0,
     };
 
-    let (pcm, channels) = match (mic_pcm, system_pcm) {
+    let (mut pcm, channels) = match (mic_pcm, system_pcm) {
         (Some(mic), Some(system)) => (
             interleave_stereo(mic, system, delta_ms, encoder_config.sample_rate),
             2u16,
@@ -112,6 +112,18 @@ pub fn merge_journal(
     let mut encoder = default_session_encoder(final_config).map_err(CoreError::Pipeline)?;
     let mut bytes = encoder.push_pcm(&pcm).map_err(CoreError::Pipeline)?;
     bytes.extend(encoder.finish().map_err(CoreError::Pipeline)?);
+
+    if channels == 2 {
+        center_stereo_in_place(&mut pcm);
+        let mut playback_encoder =
+            default_session_encoder(final_config).map_err(CoreError::Pipeline)?;
+        let mut playback_bytes = playback_encoder
+            .push_pcm(&pcm)
+            .map_err(CoreError::Pipeline)?;
+        playback_bytes.extend(playback_encoder.finish().map_err(CoreError::Pipeline)?);
+        let playback_path = audio_path.with_file_name("playback.opus");
+        atomic_replace(&playback_path, &playback_bytes).map_err(CoreError::Storage)?;
+    }
 
     atomic_replace(audio_path, &bytes).map_err(CoreError::Storage)?;
     if let Err(e) = std::fs::remove_dir_all(journal_dir) {
@@ -204,8 +216,10 @@ fn read_segments(journal_dir: &Path, tag: &str) -> Result<Vec<f32>, CoreError> {
         let usable_len = bytes.len() - (bytes.len() % 4);
         out.extend(
             bytes[..usable_len]
-                .chunks_exact(4)
-                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])),
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|c| f32::from_le_bytes(*c)),
         );
         seq += 1;
     }
@@ -256,6 +270,13 @@ fn interleave_stereo(
         out.push(system[i]);
     }
     out
+}
+fn center_stereo_in_place(samples: &mut [f32]) {
+    for frame in samples.as_chunks_mut::<2>().0 {
+        let centered = f32::midpoint(frame[0], frame[1]);
+        frame[0] = centered;
+        frame[1] = centered;
+    }
 }
 
 #[cfg(test)]
@@ -376,8 +397,10 @@ mod tests {
         // correct (later-starting) side.
         let bytes = std::fs::read(&audio_path).unwrap();
         let pcm: Vec<f32> = bytes
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|chunk| f32::from_le_bytes(*chunk))
             .collect();
         for i in 0..40 {
             assert!(
@@ -391,6 +414,22 @@ mod tests {
             "mic (L) channel must carry real signal during the prefix window, got pcm[20]={} pcm[38]={}",
             pcm[20],
             pcm[38]
+        );
+        let playback_bytes = std::fs::read(tmp.path().join("playback.opus")).unwrap();
+        let playback_pcm: Vec<f32> = playback_bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|chunk| f32::from_le_bytes(*chunk))
+            .collect();
+        assert_eq!(playback_pcm.len(), pcm.len());
+        assert!(
+            playback_pcm
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .all(|frame| (frame[0] - frame[1]).abs() < f32::EPSILON),
+            "playback.opus must center the source-separated master into both channels"
         );
     }
 
@@ -598,8 +637,10 @@ mod tests {
         assert_eq!(report.channels, 1);
         let bytes = std::fs::read(&audio_path).unwrap();
         let pcm: Vec<f32> = bytes
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|chunk| f32::from_le_bytes(*chunk))
             .collect();
         assert!(pcm.iter().all(|&s| s.abs() < 1e-6));
     }

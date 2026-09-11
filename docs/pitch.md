@@ -83,8 +83,8 @@ I'd rather hear "you're underestimating X" now than at v0.3.
 
 | Risk | What I think today |
 |---|---|
-| macOS Screen Recording permission UX kills first-run conversion | Real on macOS 13.0–14.3. **Mitigation: use Core Audio Taps (macOS 14.4+) for audio-only capture — avoids the screen-recording permission and the orange dot.** ScreenCaptureKit is the fallback for older macOS. |
-| Local Whisper accuracy below user expectations for non-English | Real. Default to `large-v3-turbo` (~800 MB resident) not `tiny`; document `large-v3` as opt-in for max accuracy on ≥ 32 GB systems; document cloud STT as the path for hard cases. |
+| macOS Screen Recording permission UX kills first-run conversion | Real. ScreenCaptureKit is the proven default and requires the broader Screen & System Audio Recording grant. The signed Core Audio Tap bundle remains an audio-only recovery path on macOS 14.4+. |
+| Local Whisper accuracy below user expectations | Real. English meetings default to `small.en`, which improves accuracy over `base.en`; one persistent model context removes per-chunk reloads. Larger local models and compatible hosted STT remain explicit overrides. |
 | Local LLM summary quality below GPT-4 expectations | Real. Default messaging: "local works; cloud is better; here's how to BYO." Recommend cloud LLM on ≤ 16 GB systems. |
 | Meetily / anarlog ship scrybe's exact feature set first | Possible. anarlog is mac-only, Meetily is mac+win — neither will ship Linux + Android system-audio capture without significant rearchitecture. Differentiation is platform breadth + consent-by-default + filesystem-only, not first-mover. |
 | Solo-maintainer bus factor | Real. Apache-2.0 license — explicit patent grant under §3, attribution-preserving §4, no copyleft — so forks survive me without forcing closed-source-SaaS-only outcomes. |

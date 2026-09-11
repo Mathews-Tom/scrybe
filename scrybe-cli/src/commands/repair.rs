@@ -37,6 +37,7 @@ pub async fn run(args: Args) -> Result<()> {
     };
     let folder = resolve_session_folder(&root, &args.id_or_folder)
         .with_context(|| format!("resolving session {}", args.id_or_folder))?;
+    clear_stale_session_lock(&folder)?;
 
     match repair_session(&folder)
         .with_context(|| format!("repairing session at {}", folder.display()))?
@@ -55,6 +56,16 @@ pub async fn run(args: Args) -> Result<()> {
                 );
             }
         }
+        RepairOutcome::MetadataReconstructed(report) => {
+            println!(
+                "scrybe repair: audio was already complete ({:.1}s, {} channels); wrote reconstructed meta.toml",
+                report.encoded_secs, report.channels
+            );
+            println!(
+                "scrybe repair: run `scrybe notes {}` to regenerate notes.md",
+                folder.display()
+            );
+        }
         RepairOutcome::NothingToRepair => {
             println!(
                 "scrybe repair: nothing to repair in {} (no journal/, or already merged)",
@@ -63,6 +74,21 @@ pub async fn run(args: Args) -> Result<()> {
         }
     }
     Ok(())
+}
+fn clear_stale_session_lock(folder: &std::path::Path) -> Result<()> {
+    let lock_path = folder.join(scrybe_core::storage::PID_LOCK_NAME);
+    if !lock_path.exists() {
+        return Ok(());
+    }
+    if crate::commands::doctor::pid_alive_from_lock(&lock_path)? {
+        anyhow::bail!(
+            "session at {} is still owned by the process in {}",
+            folder.display(),
+            lock_path.display()
+        );
+    }
+    std::fs::remove_file(&lock_path)
+        .with_context(|| format!("removing stale session lock {}", lock_path.display()))
 }
 
 #[cfg(test)]
@@ -87,6 +113,20 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+    #[cfg(unix)]
+    #[test]
+    fn test_clear_stale_session_lock_removes_dead_owner() {
+        let mut exited = std::process::Command::new("true").spawn().unwrap();
+        let dead_pid = exited.id();
+        exited.wait().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let lock = dir.path().join(scrybe_core::storage::PID_LOCK_NAME);
+        std::fs::write(&lock, dead_pid.to_string()).unwrap();
+
+        clear_stale_session_lock(dir.path()).unwrap();
+
+        assert!(!lock.exists());
     }
 
     #[tokio::test]

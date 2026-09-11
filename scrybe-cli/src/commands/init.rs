@@ -12,7 +12,6 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::{Args as ClapArgs, ValueEnum};
-use directories::ProjectDirs;
 use scrybe_core::config::{
     Config, CONFIG_FILE_NAME, RECORD_LLM_OPENAI_COMPAT, RECORD_SOURCE_MIC_SYSTEM,
 };
@@ -97,12 +96,13 @@ fn build_config(args: &Args) -> Result<Config> {
             }
         }
         InitProfile::MacLocal => {
-            let whisper_model = args
-                .whisper_model
-                .clone()
-                .map_or_else(default_mac_local_whisper_model, Ok)?;
+            if let Some(whisper_model) = &args.whisper_model {
+                config.stt.model = whisper_model
+                    .to_str()
+                    .context("Whisper model path is not valid UTF-8")?
+                    .to_string();
+            }
             config.record.source = RECORD_SOURCE_MIC_SYSTEM.to_string();
-            config.record.whisper_model = Some(whisper_model);
             config.record.llm = RECORD_LLM_OPENAI_COMPAT.to_string();
             config.llm.model = args
                 .llm_model
@@ -123,12 +123,6 @@ const fn platform_default_profile() -> InitProfile {
     } else {
         InitProfile::Default
     }
-}
-
-fn default_mac_local_whisper_model() -> Result<PathBuf> {
-    let dirs = ProjectDirs::from("dev", "scrybe", "scrybe")
-        .context("resolving platform data directory for default Whisper model")?;
-    Ok(dirs.data_dir().join("models/ggml-base.en.bin"))
 }
 
 #[cfg(test)]
@@ -155,7 +149,7 @@ mod tests {
         assert!(target.exists());
         let body = std::fs::read_to_string(&target).unwrap();
         let parsed = Config::from_toml_str(&body, &target).unwrap();
-        assert_eq!(parsed.stt.model, "large-v3-turbo");
+        assert_eq!(parsed.stt.model, "small.en");
     }
 
     #[tokio::test]
@@ -257,10 +251,8 @@ mod tests {
         let parsed = Config::from_toml_str(&body, &target).unwrap();
 
         assert_eq!(parsed.record.source, RECORD_SOURCE_MIC_SYSTEM);
-        assert_eq!(
-            parsed.record.whisper_model.as_deref(),
-            Some(model_path.as_path())
-        );
+        assert_eq!(parsed.stt.model, model_path.to_str().unwrap());
+        assert_eq!(parsed.record.whisper_model, None);
         assert_eq!(parsed.record.llm, RECORD_LLM_OPENAI_COMPAT);
         assert_eq!(parsed.llm.model, "gemma4:latest");
     }
@@ -277,8 +269,8 @@ mod tests {
         .unwrap();
 
         assert_eq!(config.record.source, RECORD_SOURCE_MIC_SYSTEM);
-        let whisper_model = config.record.whisper_model.as_deref().unwrap();
-        assert!(whisper_model.ends_with("models/ggml-base.en.bin"));
+        assert_eq!(config.stt.model, "small.en");
+        assert_eq!(config.record.whisper_model, None);
         assert_eq!(config.record.llm, RECORD_LLM_OPENAI_COMPAT);
         assert_eq!(config.llm.model, DEFAULT_MAC_LOCAL_LLM_MODEL);
     }

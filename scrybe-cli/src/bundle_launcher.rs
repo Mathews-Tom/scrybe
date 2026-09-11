@@ -32,7 +32,7 @@ const BUNDLE_PROC_PATTERN: &str = "scrybe.app/Contents/MacOS/scrybe";
 const STARTUP_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const STARTUP_POLL_TIMEOUT: Duration = Duration::from_secs(8);
 const EXIT_POLL_INTERVAL: Duration = Duration::from_millis(250);
-const SHUTDOWN_GRACE: Duration = Duration::from_mins(1);
+const FINALIZATION_STATUS_INTERVAL: Duration = Duration::from_secs(10);
 
 /// Launch the bundle via `open --args` with the given `rec` argv,
 /// forward SIGINT to the bundle's PID, and tail the session's
@@ -90,11 +90,26 @@ pub async fn launch_via_bundle(
     }
 
     let shutdown_start = Instant::now();
-    while is_pid_alive(pid) && shutdown_start.elapsed() < SHUTDOWN_GRACE {
-        sleep(EXIT_POLL_INTERVAL).await;
-    }
-    if is_pid_alive(pid) {
-        anyhow::bail!("bundle did not exit within {SHUTDOWN_GRACE:?} of SIGINT");
+    let second_ctrl_c = tokio::signal::ctrl_c();
+    tokio::pin!(second_ctrl_c);
+    while is_pid_alive(pid) {
+        tokio::select! {
+            result = &mut second_ctrl_c => {
+                result.context("installing second Ctrl-C handler")?;
+                eprintln!("scrybe: aborting finalization; recover with `scrybe repair` and `scrybe notes`");
+                send_sigint(pid)?;
+                while is_pid_alive(pid) {
+                    sleep(EXIT_POLL_INTERVAL).await;
+                }
+                break;
+            }
+            () = sleep(FINALIZATION_STATUS_INTERVAL) => {
+                eprintln!(
+                    "scrybe: finalization still running ({}s elapsed)",
+                    shutdown_start.elapsed().as_secs()
+                );
+            }
+        }
     }
 
     // Brief drain so the transcript-tail task gets the bundle's final
@@ -185,6 +200,10 @@ fn print_final_summary(session_dir: &Path) {
     println!("  notes:      {}", session_dir.join("notes.md").display());
     println!("  meta:       {}", session_dir.join("meta.toml").display());
     println!("  audio:      {}", session_dir.join("audio.opus").display());
+    let playback = session_dir.join("playback.opus");
+    if playback.exists() {
+        println!("  playback:   {}", playback.display());
+    }
 }
 
 fn parse_session_id_from_meta(meta_toml: &str) -> Option<String> {

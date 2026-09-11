@@ -147,7 +147,7 @@ fn scan_root(root: &std::path::Path, report: &mut Report) -> Result<()> {
     Ok(())
 }
 
-fn pid_alive_from_lock(lock_path: &std::path::Path) -> Result<bool> {
+pub(super) fn pid_alive_from_lock(lock_path: &std::path::Path) -> Result<bool> {
     let body = std::fs::read_to_string(lock_path).context("reading pid.lock")?;
     let pid: u32 = body
         .trim()

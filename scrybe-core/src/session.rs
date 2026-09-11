@@ -57,6 +57,21 @@ use crate::types::{
 
 pub use crate::pipeline::normalize::STT_SAMPLE_RATE;
 
+/// User-visible pipeline phases. Observers receive these synchronously and
+/// must return quickly; the recorder never waits on an asynchronous UI.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SessionProgress {
+    Recording,
+    TranscriptAccepted(AttributedChunk),
+    FinalizingTranscript { pending_chunks: usize },
+    EncodingAudio,
+    GeneratingNotes { groups: usize },
+    WritingMetadata,
+}
+
+/// Synchronous observer for user-facing session progress.
+pub type SessionProgressObserver = dyn Fn(SessionProgress) + Send + Sync;
+
 /// Inputs the orchestrator needs from the caller. The caller owns
 /// every value here so the orchestrator never touches global state.
 pub struct SessionInputs<'a, V, S, L, D, P>
@@ -90,6 +105,7 @@ where
     pub diarizer: &'a D,
     pub prompter: &'a P,
     pub hooks: &'a [Box<dyn Hook>],
+    pub progress: Option<&'a SessionProgressObserver>,
     pub chunker_config: ChunkerConfig,
     /// Whether the offline merge asserts the encoded audio duration
     /// is within 1% of real wall-clock elapsed time
@@ -175,6 +191,7 @@ where
         diarizer,
         prompter,
         hooks,
+        progress,
         chunker_config,
         verify_duration,
     } = inputs;
@@ -204,6 +221,7 @@ where
             llm,
             diarizer,
             hooks,
+            progress,
             chunker_config,
             verify_duration,
             notes_runtime,
@@ -253,6 +271,7 @@ where
     llm: &'a L,
     diarizer: &'a D,
     hooks: &'a [Box<dyn Hook>],
+    progress: Option<&'a SessionProgressObserver>,
     chunker_config: ChunkerConfig,
     verify_duration: bool,
     notes_runtime: Option<NotesRuntime>,
@@ -517,8 +536,10 @@ where
         hooks,
         chunker_config,
         verify_duration,
+        progress,
         notes_runtime,
     } = inputs;
+    report_progress(progress, SessionProgress::Recording);
 
     let context_arc = Arc::new(context.clone());
 
@@ -607,6 +628,7 @@ where
                 transcript_path: &transcript_path,
                 session_id: id,
                 hooks,
+                progress,
             };
             if let Some(live) = streaming.as_mut() {
                 release_streaming_resolved(&progressed, &persist, live).await?;
@@ -635,6 +657,7 @@ where
                 transcript_path: &transcript_path,
                 session_id: id,
                 hooks,
+                progress,
             };
             let outcome = match streaming.as_mut() {
                 Some(live) => {
@@ -669,11 +692,18 @@ where
             c.finish(&mut sink);
         }
     }
+    report_progress(
+        progress,
+        SessionProgress::FinalizingTranscript {
+            pending_chunks: tail_for_stt.len(),
+        },
+    );
     for chunk in tail_for_stt {
         let persist = PersistContext {
             transcript_path: &transcript_path,
             session_id: id,
             hooks,
+            progress,
         };
         let outcome = match streaming.as_mut() {
             Some(live) => {
@@ -697,6 +727,7 @@ where
         transcript_path: &transcript_path,
         session_id: id,
         hooks,
+        progress,
     };
     if let Some(live) = streaming.as_mut() {
         release_streaming_resolved(&remaining_final, &persist, live).await?;
@@ -715,6 +746,7 @@ where
         // them.
         crate::pipeline::journal::write_manifest(&folder.join("journal"), &journal_manifest)?;
     }
+    report_progress(progress, SessionProgress::EncodingAudio);
     let merge_report = merge_journal(
         &folder.join("journal"),
         &audio_path,
@@ -729,6 +761,31 @@ where
         verify_duration,
         "offline journal merge complete"
     );
+    let audio_meta = AudioMeta {
+        channels: merge_report.channels,
+        layout: audio_layout(merge_report.channels == 2, merge_report.channels).to_string(),
+        sample_rate: encoder_config.sample_rate,
+        bitrate_bps: encoder_config.bitrate_bps,
+        mic_epoch_ms: journal_manifest
+            .mic
+            .map(|anchor| anchor.first_frame_epoch_ms),
+        system_epoch_ms: journal_manifest
+            .system
+            .map(|anchor| anchor.first_frame_epoch_ms),
+    };
+    let provisional_ended_at = Utc::now();
+    let provisional_meta = build_meta_toml(MetaArgs {
+        id,
+        title: title.as_deref(),
+        started_at,
+        ended_at: provisional_ended_at,
+        attestation: &attestation,
+        stt_name: stt.name(),
+        llm_name: llm.name(),
+        diarizer_name: diarizer.name(),
+        audio: Some(audio_meta.clone()),
+    })?;
+    atomic_replace(&meta_path, provisional_meta.as_bytes())?;
 
     let attributed = diarizer
         .diarize(&mic_text_chunks, &sys_text_chunks, &context)
@@ -752,6 +809,12 @@ where
             runtime.target_tokens(),
             runtime.overlap_segments(),
             |segment| token_counts[segment.ordinal - 1],
+        );
+        report_progress(
+            progress,
+            SessionProgress::GeneratingNotes {
+                groups: chunks.len(),
+            },
         );
         Some(map_reduce(llm, &chunks, &context, |prompt| runtime.prompt_fits(prompt)).await?)
     } else {
@@ -799,6 +862,7 @@ where
             &output.gaps,
         )
     } else {
+        report_progress(progress, SessionProgress::GeneratingNotes { groups: 1 });
         let prompt = notes::render_notes_prompt(&transcript_body, &context);
         let llm_output = llm.complete(&prompt).await?;
         notes::render_notes_body(Some(&final_title), started_at, &llm_output)
@@ -806,14 +870,7 @@ where
     atomic_replace(&notes_path, notes_body.as_bytes())?;
 
     let ended_at = Utc::now();
-    let audio_meta = Some(AudioMeta {
-        channels: merge_report.channels,
-        layout: audio_layout(merge_report.channels == 2, merge_report.channels).to_string(),
-        sample_rate: encoder_config.sample_rate,
-        bitrate_bps: encoder_config.bitrate_bps,
-        mic_epoch_ms: journal_manifest.mic.map(|a| a.first_frame_epoch_ms),
-        system_epoch_ms: journal_manifest.system.map(|a| a.first_frame_epoch_ms),
-    });
+    report_progress(progress, SessionProgress::WritingMetadata);
     let meta = build_meta_toml(MetaArgs {
         id,
         title: Some(&final_title),
@@ -823,7 +880,7 @@ where
         stt_name: stt.name(),
         llm_name: llm.name(),
         diarizer_name: diarizer.name(),
-        audio: audio_meta,
+        audio: Some(audio_meta),
     })?;
     atomic_replace(&meta_path, meta.as_bytes())?;
 
@@ -872,6 +929,12 @@ where
     })
 }
 
+fn report_progress(observer: Option<&SessionProgressObserver>, progress: SessionProgress) {
+    if let Some(observer) = observer {
+        observer(progress);
+    }
+}
+
 #[derive(Clone, Copy)]
 enum StoreTarget {
     Mic,
@@ -891,6 +954,7 @@ struct PersistContext<'a> {
     transcript_path: &'a std::path::Path,
     session_id: SessionId,
     hooks: &'a [Box<dyn Hook>],
+    progress: Option<&'a SessionProgressObserver>,
 }
 
 async fn process_chunk<S: SttProvider, D: Diarizer>(
@@ -967,6 +1031,10 @@ async fn persist_final(
     };
     let line = notes::render_transcript_line(&attributed);
     append_durable(persist.transcript_path, line.as_bytes())?;
+    report_progress(
+        persist.progress,
+        SessionProgress::TranscriptAccepted(attributed.clone()),
+    );
 
     if matches!(record.ended_on, ChunkBoundary::EndOfStream) {
         debug!(target = ?target_kind(target), "final chunk emitted");
@@ -1330,7 +1398,7 @@ pub(crate) struct Versioning {
 /// re-running the diarizer. Older sessions without this block are
 /// implicitly `mono:mic` or `mono:synthetic` — readers MUST treat the
 /// absence as v1.0 mono and not assume any channel attribution.
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct AudioMeta {
     pub(crate) channels: u16,
     pub(crate) layout: String,
@@ -1411,7 +1479,7 @@ pub(crate) fn build_meta_toml(args: MetaArgs<'_>) -> Result<String, CoreError> {
 )]
 mod tests {
     use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     use super::*;
     use crate::consent::AcceptingPrompter;
@@ -1555,6 +1623,9 @@ mod tests {
         let diarizer = PassThroughDiarizer;
         let prompter = AcceptingPrompter;
         let hooks: Vec<Box<dyn Hook>> = Vec::new();
+        let progress_events = Arc::new(Mutex::new(Vec::new()));
+        let observed_progress = Arc::clone(&progress_events);
+        let progress = move |event| observed_progress.lock().unwrap().push(event);
 
         let frames = stream::iter((0..6).map(|i| Ok(speech_frame(i * 10_000_000, 1_600))));
 
@@ -1576,6 +1647,7 @@ mod tests {
             hooks: &hooks,
             chunker_config: small_chunker_config(),
             verify_duration: false,
+            progress: Some(&progress),
         };
 
         let outputs = run(inputs, frames).await.unwrap();
@@ -1593,6 +1665,24 @@ mod tests {
         assert!(meta.contains("stt = \"echo-stt\""));
         assert!(meta.contains("llm = \"canned-llm\""));
         assert!(meta.contains("diarizer = \"binary-channel\""));
+        let progress_events = progress_events.lock().unwrap();
+        assert!(matches!(
+            progress_events.first(),
+            Some(SessionProgress::Recording)
+        ));
+        assert!(progress_events
+            .iter()
+            .any(|event| matches!(event, SessionProgress::TranscriptAccepted(_))));
+        assert!(progress_events
+            .iter()
+            .any(|event| matches!(event, SessionProgress::EncodingAudio)));
+        assert!(progress_events
+            .iter()
+            .any(|event| matches!(event, SessionProgress::GeneratingNotes { .. })));
+        assert!(progress_events
+            .iter()
+            .any(|event| matches!(event, SessionProgress::WritingMetadata)));
+        drop(progress_events);
     }
     #[tokio::test]
     async fn test_run_finalizes_artifacts_before_returning_terminal_capture_error() {
@@ -1626,6 +1716,7 @@ mod tests {
             hooks: &hooks,
             chunker_config: small_chunker_config(),
             verify_duration: false,
+            progress: None,
         };
 
         let error = run(inputs, frames)
@@ -1677,6 +1768,7 @@ mod tests {
             hooks: &hooks,
             chunker_config: small_chunker_config(),
             verify_duration: false,
+            progress: None,
         };
 
         let outputs = run(inputs, frames).await.unwrap();
@@ -1726,6 +1818,7 @@ mod tests {
             hooks: &hooks,
             chunker_config: small_chunker_config(),
             verify_duration: false,
+            progress: None,
         };
 
         let err = run(inputs, frames).await.unwrap_err();
@@ -1762,6 +1855,7 @@ mod tests {
             hooks: &hooks,
             chunker_config: small_chunker_config(),
             verify_duration: false,
+            progress: None,
         };
 
         let outputs = run(inputs, frames).await.unwrap();
@@ -1817,6 +1911,7 @@ mod tests {
             hooks: &hooks,
             chunker_config: small_chunker_config(),
             verify_duration: false,
+            progress: None,
         };
 
         let outputs = run(inputs, frames).await.unwrap();
@@ -1874,6 +1969,7 @@ mod tests {
             hooks: &hooks,
             chunker_config: small_chunker_config(),
             verify_duration: false,
+            progress: None,
         };
 
         let outputs = run(inputs, frames).await.unwrap();
@@ -1927,6 +2023,7 @@ mod tests {
             hooks: &hooks,
             chunker_config: small_chunker_config(),
             verify_duration: false,
+            progress: None,
         };
 
         let outputs = run(inputs, frames).await.unwrap();
@@ -1997,6 +2094,7 @@ mod tests {
             hooks: &hooks,
             chunker_config: small_chunker_config(),
             verify_duration: false,
+            progress: None,
         };
 
         let outputs = run(inputs, frames).await.unwrap();
@@ -2047,6 +2145,7 @@ mod tests {
             hooks: &hooks,
             chunker_config: small_chunker_config(),
             verify_duration: true,
+            progress: None,
         };
 
         let err = run(inputs, frames).await.unwrap_err();
@@ -2116,6 +2215,7 @@ mod tests {
             hooks: &hooks,
             chunker_config: small_chunker_config(),
             verify_duration: false,
+            progress: None,
         };
 
         let outputs = run(inputs, frames).await.unwrap();
@@ -2428,6 +2528,7 @@ mod tests {
             hooks: &hooks,
             chunker_config: small_chunker_config(),
             verify_duration: false,
+            progress: None,
         };
 
         let outputs = run(inputs, frames).await.unwrap();
@@ -2553,6 +2654,7 @@ mod tests {
             hooks: &hooks,
             chunker_config: small_chunker_config(),
             verify_duration: false,
+            progress: None,
         };
 
         let outputs = run(inputs, frames).await.unwrap();
@@ -2615,6 +2717,7 @@ mod tests {
             hooks: &hooks,
             chunker_config: small_chunker_config(),
             verify_duration: false,
+            progress: None,
         };
 
         let outputs = run(inputs, frames).await.unwrap();
@@ -2697,6 +2800,7 @@ mod tests {
             hooks: &hooks,
             chunker_config: small_chunker_config(),
             verify_duration: false,
+            progress: None,
         };
 
         let outputs = run(inputs, frames).await.unwrap();
@@ -2750,6 +2854,7 @@ mod tests {
             hooks: &hooks,
             chunker_config: small_chunker_config(),
             verify_duration: false,
+            progress: None,
         };
 
         let error = run(inputs, frames)
@@ -2851,6 +2956,7 @@ mod tests {
             hooks: &hooks,
             chunker_config: small_chunker_config(),
             verify_duration: false,
+            progress: None,
         };
 
         let outputs = run(inputs, frames).await.unwrap();
@@ -2912,6 +3018,7 @@ mod tests {
             hooks: &hooks,
             chunker_config: small_chunker_config(),
             verify_duration: false,
+            progress: None,
         };
 
         let outputs = run(inputs, frames).await.unwrap();

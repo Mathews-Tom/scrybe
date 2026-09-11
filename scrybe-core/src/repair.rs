@@ -28,7 +28,7 @@
 
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDateTime, Utc};
 
 use crate::error::CoreError;
 use crate::pipeline::encoder::EncoderConfig;
@@ -43,6 +43,9 @@ use crate::types::{ConsentAttestation, ConsentMode, SessionId};
 pub enum RepairOutcome {
     /// `journal/` recovered into `audio.opus`.
     Repaired(RepairReport),
+    /// `audio.opus` survived, but finalization was interrupted before
+    /// `meta.toml`; metadata was reconstructed from the Opus stream.
+    MetadataReconstructed(RepairReport),
     /// No `journal/` directory present, or the session already has a
     /// complete `audio.opus` — nothing for repair to do.
     NothingToRepair,
@@ -86,7 +89,27 @@ pub struct RepairReport {
 pub fn repair_session(folder: &Path) -> Result<RepairOutcome, CoreError> {
     let journal_dir = folder.join("journal");
     let audio_path = folder.join("audio.opus");
-    if !journal_dir.exists() || audio_path.exists() {
+    let meta_path = folder.join("meta.toml");
+    if audio_path.exists() {
+        if meta_path.exists() {
+            return Ok(RepairOutcome::NothingToRepair);
+        }
+        let (channels, encoded_secs) = inspect_ogg_opus(&audio_path)?;
+        write_reconstructed_meta(
+            folder,
+            &meta_path,
+            &JournalManifest::default(),
+            channels,
+            encoded_secs,
+        )?;
+        return Ok(RepairOutcome::MetadataReconstructed(RepairReport {
+            audio_path,
+            encoded_secs,
+            channels,
+            wrote_meta: true,
+        }));
+    }
+    if !journal_dir.exists() {
         return Ok(RepairOutcome::NothingToRepair);
     }
 
@@ -121,6 +144,65 @@ pub fn repair_session(folder: &Path) -> Result<RepairOutcome, CoreError> {
     }))
 }
 
+#[allow(clippy::cast_precision_loss)]
+fn inspect_ogg_opus(audio_path: &Path) -> Result<(u16, f64), CoreError> {
+    let bytes = std::fs::read(audio_path).map_err(|error| CoreError::Storage(error.into()))?;
+    let opus_head = bytes
+        .windows(8)
+        .position(|window| window == b"OpusHead")
+        .filter(|offset| offset + 12 <= bytes.len())
+        .ok_or_else(|| invalid_opus("missing OpusHead packet"))?;
+    let channels = u16::from(bytes[opus_head + 9]);
+    if channels == 0 {
+        return Err(invalid_opus("OpusHead declares zero channels"));
+    }
+    let pre_skip = u16::from_le_bytes([bytes[opus_head + 10], bytes[opus_head + 11]]);
+
+    let mut offset = 0usize;
+    let mut final_granule = None;
+    while offset + 27 <= bytes.len() {
+        if &bytes[offset..offset + 4] != b"OggS" {
+            offset += 1;
+            continue;
+        }
+        let granule = u64::from_le_bytes(
+            bytes[offset + 6..offset + 14]
+                .try_into()
+                .map_err(|_| invalid_opus("truncated Ogg granule position"))?,
+        );
+        let segment_count = usize::from(bytes[offset + 26]);
+        let table_end = offset + 27 + segment_count;
+        if table_end > bytes.len() {
+            return Err(invalid_opus("truncated Ogg segment table"));
+        }
+        let body_len = bytes[offset + 27..table_end]
+            .iter()
+            .map(|length| usize::from(*length))
+            .sum::<usize>();
+        let page_end = table_end
+            .checked_add(body_len)
+            .filter(|end| *end <= bytes.len())
+            .ok_or_else(|| invalid_opus("truncated Ogg page body"))?;
+        if granule != u64::MAX {
+            final_granule = Some(granule);
+        }
+        offset = page_end;
+    }
+    let final_granule = final_granule.ok_or_else(|| invalid_opus("missing Ogg audio granule"))?;
+    let samples = final_granule.saturating_sub(u64::from(pre_skip));
+    Ok((channels, samples as f64 / 48_000.0))
+}
+
+fn invalid_opus(reason: &str) -> CoreError {
+    CoreError::Storage(
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("invalid audio.opus: {reason}"),
+        )
+        .into(),
+    )
+}
+
 /// Best-effort session start time: the earliest `first_frame_epoch_ms`
 /// across whichever sources the manifest names. Every journaled
 /// session has at least one source by the time `repair_session` gets
@@ -135,6 +217,24 @@ fn earliest_epoch(manifest: &JournalManifest) -> Option<DateTime<Utc>> {
     .flatten()
     .min()
     .and_then(DateTime::from_timestamp_millis)
+}
+fn transcript_identity(folder: &Path) -> (Option<String>, Option<DateTime<Utc>>) {
+    let Ok(transcript) = std::fs::read_to_string(folder.join("transcript.md")) else {
+        return (None, None);
+    };
+    let mut lines = transcript.lines();
+    let title = lines
+        .next()
+        .and_then(|line| line.strip_prefix("# "))
+        .filter(|title| !title.is_empty())
+        .map(ToString::to_string);
+    let started_at = lines
+        .next()
+        .and_then(|line| line.strip_prefix('*'))
+        .and_then(|line| line.strip_suffix('*'))
+        .and_then(|value| NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M").ok())
+        .map(|value| value.and_utc());
+    (title, started_at)
 }
 
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -151,7 +251,10 @@ fn write_reconstructed_meta(
         .and_then(|name| name.rsplit('-').next())
         .and_then(|suffix| suffix.parse::<SessionId>().ok())
         .unwrap_or_default();
-    let started_at = earliest_epoch(manifest).unwrap_or_else(Utc::now);
+    let (title, transcript_started_at) = transcript_identity(folder);
+    let started_at = earliest_epoch(manifest)
+        .or(transcript_started_at)
+        .unwrap_or_else(Utc::now);
     // `ended_at` only exists so `build_meta_toml`'s existing
     // `duration_secs = ended_at - started_at` computation reports the
     // real recovered duration; it is not a claim about when the
@@ -172,7 +275,7 @@ fn write_reconstructed_meta(
     });
     let meta = build_meta_toml(MetaArgs {
         id,
-        title: None,
+        title: title.as_deref(),
         started_at,
         ended_at,
         attestation: &attestation,
@@ -220,10 +323,49 @@ mod tests {
         let folder = dir.path().join("2026-04-29-1430-already-01HBBB");
         std::fs::create_dir_all(folder.join("journal")).unwrap();
         std::fs::write(folder.join("audio.opus"), b"already merged").unwrap();
+        std::fs::write(folder.join("meta.toml"), "already complete").unwrap();
 
         let outcome = repair_session(&folder).unwrap();
 
         assert!(matches!(outcome, RepairOutcome::NothingToRepair));
+    }
+    #[test]
+    fn test_repair_session_reconstructs_meta_from_completed_opus() {
+        let dir = tempdir().unwrap();
+        let folder = dir.path().join("2026-04-29-1430-finalizing-01M1KREPAIR00");
+        std::fs::create_dir_all(&folder).unwrap();
+
+        let granule = 48_000_u64 + 312;
+        let mut ogg = vec![0_u8; 28];
+        ogg[0..4].copy_from_slice(b"OggS");
+        ogg[6..14].copy_from_slice(&granule.to_le_bytes());
+        ogg[26] = 1;
+        ogg[27] = 19;
+        ogg.extend_from_slice(b"OpusHead");
+        ogg.push(1);
+        ogg.push(2);
+        ogg.extend_from_slice(&312_u16.to_le_bytes());
+        ogg.extend_from_slice(&48_000_u32.to_le_bytes());
+        ogg.extend_from_slice(&[0, 0, 0]);
+        std::fs::write(folder.join("audio.opus"), ogg).unwrap();
+        std::fs::write(
+            folder.join("transcript.md"),
+            "# interrupted meeting\n*2026-04-29 14:30*\n",
+        )
+        .unwrap();
+
+        let outcome = repair_session(&folder).unwrap();
+
+        let RepairOutcome::MetadataReconstructed(report) = outcome else {
+            panic!("expected MetadataReconstructed outcome");
+        };
+        assert_eq!(report.channels, 2);
+        assert!((report.encoded_secs - 1.0).abs() < f64::EPSILON);
+        let meta = std::fs::read_to_string(folder.join("meta.toml")).unwrap();
+        assert!(meta.contains("channels = 2"));
+        assert!(meta.contains("duration_secs = 1"));
+        assert!(meta.contains("title = \"interrupted meeting\""));
+        assert!(meta.contains("started_at = \"2026-04-29T14:30:00Z\""));
     }
 
     #[test]

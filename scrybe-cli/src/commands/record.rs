@@ -165,7 +165,7 @@ fn resolve(cfg: &Config, args: &Args) -> Resolved {
         || {
             args.whisper_model
                 .clone()
-                .or_else(|| record_defaults::ergonomic_whisper_model(&cfg.record))
+                .or_else(|| record_defaults::ergonomic_whisper_model(&cfg.record, &cfg.stt))
         },
         |_| None,
     );
