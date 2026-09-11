@@ -194,9 +194,11 @@ mod tests {
     }
     #[test]
     fn test_whisper_model_path_preserves_absolute_stt_model_path() {
+        let absolute = std::env::current_exe().unwrap();
+        let configured = absolute.to_str().unwrap();
         assert_eq!(
-            whisper_model_path("/models/custom-whisper.gguf").as_deref(),
-            Some(Path::new("/models/custom-whisper.gguf"))
+            whisper_model_path(configured).as_deref(),
+            Some(absolute.as_path())
         );
     }
 
