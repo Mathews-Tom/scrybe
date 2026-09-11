@@ -97,7 +97,8 @@ jobs:
   build:
     name: build (${{ matrix.target }})
     needs: plan
-    runs-on: macos-14
+    # apple-metal 0.8.8 requires Metal APIs from the current macOS SDK.
+    runs-on: macos-26
     strategy:
       fail-fast: false
       matrix:
@@ -117,6 +118,10 @@ jobs:
       # `.github/workflows/reproducibility.yml`.
       SOURCE_DATE_EPOCH: "1714464000"
       RUSTFLAGS: "--remap-path-prefix=${{ github.workspace }}=/build -C link-args=-Wl,-no_uuid"
+      # audiopus_sys 0.2.2 vendors an Opus CMake project whose declared
+      # minimum predates CMake 3.5. CMake 4 removed that compatibility
+      # unless callers explicitly select the 3.5 policy floor.
+      CMAKE_POLICY_VERSION_MINIMUM: "3.5"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
