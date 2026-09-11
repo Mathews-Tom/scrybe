@@ -26,8 +26,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TEMPLATE_PLIST="${SCRIPT_DIR}/Info.plist.template"
-ENTITLEMENTS="${SCRIPT_DIR}/entitlements.plist"
+TEMPLATE_PLIST="${SCRIPT_DIR}/../../scrybe-cli/assets/macos/Info.plist.template"
+ENTITLEMENTS="${SCRIPT_DIR}/../../scrybe-cli/assets/macos/entitlements.plist"
 
 usage() {
     cat <<EOF
