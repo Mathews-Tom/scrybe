@@ -197,6 +197,12 @@ pub struct RecordConfig {
     pub source: String,
     #[serde(default = "default_system_backend")]
     pub system_backend: String,
+    /// Exact macOS Core Audio input-device UID. When omitted, the recorder
+    /// resolves and pins the current native default once at session start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_device: Option<String>,
+    /// Legacy exact-path override retained for existing configs. New profiles use
+    /// `[stt].model`, which accepts a short model name or an absolute path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub whisper_model: Option<PathBuf>,
     #[serde(default = "default_record_llm")]
@@ -229,6 +235,7 @@ impl Default for RecordConfig {
         Self {
             source: default_record_source(),
             system_backend: default_system_backend(),
+            input_device: None,
             whisper_model: None,
             llm: default_record_llm(),
             aec: false,
@@ -299,11 +306,11 @@ fn default_stt_provider() -> String {
 }
 
 fn default_stt_model() -> String {
-    "large-v3-turbo".to_string()
+    "small.en".to_string()
 }
 
 fn default_stt_language() -> String {
-    "auto".to_string()
+    "en".to_string()
 }
 
 impl Default for SttConfig {
@@ -855,7 +862,7 @@ mod tests {
 
         assert_eq!(c.schema_version, CURRENT_SCHEMA_VERSION);
         assert_eq!(c.stt.provider, "whisper-local");
-        assert_eq!(c.stt.model, "large-v3-turbo");
+        assert_eq!(c.stt.model, "small.en");
         assert_eq!(c.llm.provider, "ollama");
         assert_eq!(c.llm.base_url, "http://localhost:11434/v1");
         assert_eq!(c.storage.audio_format, "opus");

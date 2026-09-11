@@ -15,16 +15,14 @@ The supported user path today is macOS:
 
 - `scrybe init` writes the default local macOS profile on macOS.
 - `scrybe init --profile default` writes the hermetic synthetic profile used by CI and cross-platform smoke tests.
-- `scrybe record` creates a session folder with `audio.opus`, `transcript.md`, `notes.md`, and `meta.toml`.
+- `scrybe record` creates a session folder with source-separated `audio.opus`, centered `playback.opus`, `transcript.md`, `notes.md`, and `meta.toml`.
 - `--source synthetic` runs the hermetic smoke path used by CI.
-- `--source mic` records the default microphone when the binary is built with `mic-capture`; `--input-device <uid>` pins it to a macOS Core Audio device UID.
+- `--source mic` records Core Audio's default microphone resolved once at session start; `--input-device <uid>` or `[record].input_device` pins an exact macOS Core Audio device UID.
 - `scrybe devices` lists macOS input-device UIDs and identifies the current default.
-  Use its `uid` value with `scrybe rec --input-device <uid>` to prevent an
-  OS default-device change from silently changing the recording source.
 - `--source mic+system` records microphone plus macOS system audio through ScreenCaptureKit when built with `mic-capture,system-capture-mac` on macOS 13+. It requires the broader **Screen & System Audio Recording** permission.
 - `--whisper-model <PATH>` enables local whisper.cpp transcription when built with `whisper-local`.
 - `--llm openai-compat` enables real notes through Ollama, vLLM, OpenAI, Groq, Together, or any compatible `/chat/completions` endpoint when built with `llm-openai-compat`.
-- `scrybe list`, `scrybe show <id>`, `scrybe doctor`, and `scrybe bench` are available in the CLI.
+- `scrybe list`, `scrybe show <id>`, `scrybe doctor`, `scrybe repair <session>`, `scrybe notes <session>`, and `scrybe bench` are available in the CLI.
 - `scrybe bench stt --corpus <MANIFEST> --whisper-model <FILE> --sherpa-model <DIR>` compares both local providers on a checksum-validated English paired corpus when built with `whisper-local,stt-sherpa` and an explicitly provisioned native runtime. [Manual acquisition and measurement scope](INSTALL.md#optional-streaming-zipformer-and-english-paired-stt-benchmark). Whisper remains the default; the historical multilingual corpus is Whisper-only.
 
 Linux, Windows, and Android crates are present in the workspace as adapter surfaces and scaffolds. They are not the polished end-user install path yet. The project keeps those adapters in-tree so the trait contracts, config, tests, and packaging work stay cross-platform from the start.
@@ -52,8 +50,8 @@ cargo install --path scrybe-cli \
   --features cli-shell,hook-git,mic-capture,system-capture-mac,whisper-local,encoder-opus,llm-openai-compat
 
 mkdir -p ~/Library/Application\ Support/dev.scrybe.scrybe/models
-curl -L -o ~/Library/Application\ Support/dev.scrybe.scrybe/models/ggml-base.en.bin \
-  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin
+curl -L -o ~/Library/Application\ Support/dev.scrybe.scrybe/models/ggml-small.en.bin \
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin
 
 ollama pull gemma4:latest
 scrybe init
@@ -62,9 +60,10 @@ scrybe init
 On macOS, bare `scrybe init` writes the local recording profile:
 
 - `[record].source = "mic+system"`
-- `[record].whisper_model = "<platform-data-dir>/models/ggml-base.en.bin"`
+- `[record].input_device = "<Core Audio UID from scrybe devices>"` (pins the meeting microphone instead of following later OS default changes)
 - `[record].llm = "openai-compat"`
 - `[record].system_backend = "sck"` (ScreenCaptureKit; use `"tap"` only for the macOS 14.4+ legacy Core Audio Tap recovery path)
+- `[stt].model = "small.en"` and `[stt].language = "en"`
 - `[llm].model = "gemma4:latest"`
 
 The macOS platform data path is
@@ -95,12 +94,7 @@ scrybe devices
 scrybe rec --title "client-call" --source mic --input-device <uid>
 ```
 
-The first `Ctrl-C` or `SIGTERM` stops capture and finalizes available audio,
-transcript, notes, and metadata. A second signal exits immediately; use
-`scrybe repair <session-folder>` only after an abrupt process death leaves a
-`journal/` directory. A live capture stream that yields no frame for 30 seconds
-is stopped through the same ordered finalization path and the command returns a
-capture error after writing the available artifacts.
+The terminal prints each accepted transcript chunk while recording, then reports transcript flush, audio encoding, notes generation, and metadata-writing progress after the first `Ctrl-C` or `SIGTERM`. A second signal aborts finalization immediately. Run `scrybe repair <session-folder>` to recover unfinished audio or reconstruct missing metadata, then `scrybe notes <session-folder>` to regenerate missing notes.
 
 For cloud or hosted-compatible LLMs, configure `[llm]` with a base URL, model, and an environment-variable name for the API key. Secrets stay in the environment, not in `config.toml`.
 
@@ -112,6 +106,7 @@ Every session is a directory:
 ~/scrybe/
 └── 2026-05-02-1430-acme-discovery-01HXY7K9RZ/
     ├── audio.opus
+    ├── playback.opus
     ├── transcript.md
     ├── notes.md
     ├── meta.toml
@@ -120,9 +115,9 @@ Every session is a directory:
     └── .stignore
 ```
 
-The filesystem is the database. `meta.toml` and `notes.md` use atomic replace. `transcript.md` and `audio.opus` are append-only. Audio is treated as the source of truth so failed or improved transcription can be regenerated later.
+The filesystem is the database. `meta.toml`, `notes.md`, `audio.opus`, and `playback.opus` use atomic replace. `transcript.md` is append-only. Audio is treated as the source of truth so failed or improved transcription can be regenerated later.
 
-`audio.opus` is mono Ogg-Opus for `--source mic` and `--source synthetic`, and stereo Ogg-Opus for `--source mic+system` with the user's microphone on the left channel and system audio on the right. The exact channel layout is recorded in `meta.toml` under `[audio].layout` (`mono:mic` or `stereo:mic-l,system-r`) so re-transcription, archival, and any downstream tooling can split the channels deterministically without consulting the runtime pipeline.
+For `--source mic+system`, `audio.opus` preserves the source master with the user's microphone on the left channel and system audio on the right. `playback.opus` contains the same meeting as a centered stereo listening mix, preventing either speaker from playing in only one ear. The exact source layout remains recorded in `meta.toml` under `[audio].layout` as `stereo:mic-l,system-r`; downstream transcription and archival tools must use `audio.opus`, not the convenience playback mix. Mono sessions produce only `audio.opus`.
 
 ## Architecture
 

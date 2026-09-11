@@ -42,6 +42,8 @@ pub struct OpenAiCompatLlmConfig {
     pub display_name: String,
     /// Temperature passed through to the upstream.
     pub temperature: f32,
+    /// Hard output ceiling. Notes and title prompts never need unbounded prose.
+    pub max_output_tokens: u32,
     /// Retry policy. Defaults to [`RetryPolicy::default`].
     pub retry: RetryPolicy,
     /// Per-request HTTP timeout. Defaults to 120 s — large summarization
@@ -57,6 +59,7 @@ impl Default for OpenAiCompatLlmConfig {
             model: String::new(),
             display_name: "openai-compat".to_string(),
             temperature: 0.2,
+            max_output_tokens: 1_024,
             retry: RetryPolicy::default(),
             timeout: Duration::from_mins(2),
         }
@@ -136,6 +139,7 @@ impl OpenAiCompatLlmProvider {
         let body = serde_json::json!({
             "model": self.config.model,
             "temperature": self.config.temperature,
+            "max_tokens": self.config.max_output_tokens,
             "messages": [
                 {"role": "user", "content": prompt}
             ],

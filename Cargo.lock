@@ -3435,6 +3435,7 @@ dependencies = [
  "tracing-subscriber",
  "tray-icon",
  "url",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4645,6 +4646,7 @@ version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40b6fc553156b521663bfa8e713e7ad58c7ca262d46de9998cd7f2e4de5ba0d9"
 dependencies = [
+ "tracing",
  "whisper-rs-sys",
 ]
 

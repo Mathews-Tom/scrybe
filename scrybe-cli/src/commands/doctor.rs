@@ -147,7 +147,7 @@ fn scan_root(root: &std::path::Path, report: &mut Report) -> Result<()> {
     Ok(())
 }
 
-fn pid_alive_from_lock(lock_path: &std::path::Path) -> Result<bool> {
+pub(super) fn pid_alive_from_lock(lock_path: &std::path::Path) -> Result<bool> {
     let body = std::fs::read_to_string(lock_path).context("reading pid.lock")?;
     let pid: u32 = body
         .trim()
@@ -167,10 +167,36 @@ fn is_pid_alive(pid: u32) -> bool {
     rc == 0
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn is_pid_alive(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, GetLastError, ERROR_ACCESS_DENIED, WAIT_OBJECT_0,
+    };
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+    };
+
+    // SAFETY: OpenProcess returns an owned query-and-synchronize handle.
+    // Waiting with a zero timeout only reads its signalled state, and every
+    // non-null handle is closed before this function returns.
+    #[allow(unsafe_code)]
+    unsafe {
+        let handle = OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+            0,
+            pid,
+        );
+        if handle.is_null() {
+            return GetLastError() == ERROR_ACCESS_DENIED;
+        }
+        let wait = WaitForSingleObject(handle, 0);
+        let _ = CloseHandle(handle);
+        wait != WAIT_OBJECT_0
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
 const fn is_pid_alive(_pid: u32) -> bool {
-    // On Windows we conservatively treat every lock as live; the
-    // doctor command surfaces the lock and lets the user remove it.
     true
 }
 

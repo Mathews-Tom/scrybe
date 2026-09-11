@@ -561,10 +561,11 @@ Mode is selected per-session via `--consent {quick,notify,announce}` flag or `co
 ```
 ~/scrybe/
 └── 2026-04-29-1430-acme-discovery/
-    ├── audio.opus              # Opus, 32kbps, ~14MB/hour; written by the offline merge
-    ├── transcript.md           # Appended live during recording
-    ├── notes.md                # Generated at SessionEnd
-    └── meta.toml               # Static metadata
+    ├── audio.opus              # source master; mic-left/system-right for dual-source sessions
+    ├── playback.opus           # centered listening mix; dual-source sessions only
+    ├── transcript.md           # appended live during recording
+    ├── notes.md                # generated at SessionEnd
+    └── meta.toml               # static metadata
 ```
 
 During recording (and in any session interrupted before the offline
@@ -578,22 +579,12 @@ merge ran) the folder instead looks like:
     │   ├── mic-0000.f32         # raw interleaved f32 PCM, rotated every ~30s
     │   └── system-0000.f32      # present only when --source includes system
     ├── transcript.md
-    └── meta.toml                # absent until the session actually completes
+    └── meta.toml                # written after audio merge, before fallible notes generation
 ```
 
-`audio.opus` is not written incrementally during capture. Each source
-writes raw f32 PCM to its own `journal/<source>-<seq>.f32` segments on
-a dedicated thread, independent of the live encode path, so a crash
-loses at most the still-open segment. At session end (or on demand via
-`scrybe repair <id-or-folder>` after a crash), `pipeline::merge_journal`
-reads `journal/manifest.toml`'s per-source anchors, resamples each
-source to the encoder rate, silence-prefixes whichever source started
-later by the exact wall-clock delta between their `first_frame_epoch_ms`
-anchors, interleaves to stereo (or leaves mono for `--source mic`),
-encodes once, and only then deletes `journal/`. A folder with
-`journal/` present and no `audio.opus` is always an unfinished session
-recoverable with `scrybe repair`; `scrybe list` reports it as
-`UNFINISHED` rather than silently skipping it.
+`audio.opus` is not written incrementally during capture. Each source writes raw f32 PCM to its own `journal/<source>-<seq>.f32` segments on a dedicated thread, independent of transcription, so a crash loses at most the still-open segment. At session end, or on demand via `scrybe repair <id-or-folder>`, `pipeline::merge_journal` reads the manifest anchors, resamples each source, aligns them by wall-clock delta, and preserves dual-source audio as stereo microphone-left/system-right. The merge also writes `playback.opus` with the combined meeting centered in both channels. It deletes `journal/` only after both artifacts are durably replaced.
+
+A folder with `journal/` present and no `audio.opus` is recoverable with `scrybe repair`. If `audio.opus` exists but `meta.toml` is absent from an older interrupted session, repair reconstructs minimal metadata by reading the Ogg Opus header and final granule. `scrybe notes <id-or-folder>` independently regenerates missing notes from the durable transcript.
 
 `meta.toml`:
 ```toml
@@ -672,13 +663,13 @@ hotkey = "cmd+shift+r"          # macOS; ctrl+shift+r elsewhere
 
 [record]
 source = "mic+system"           # or "synthetic", "mic"
-whisper_model = "~/Library/Application Support/scrybe/models/ggml-base.en.bin"
+input_device = "BuiltInMicrophoneDevice" # exact Core Audio UID from `scrybe devices`
 llm = "openai-compat"           # or "stub"
 
 [stt]
 provider = "whisper-local"      # or "openai-compat"
-model = "large-v3"
-language = "auto"
+model = "small.en"
+language = "en"
 
 # [stt]
 # provider = "openai-compat"
@@ -838,13 +829,13 @@ flowchart LR
 
 ### 8.1 Audio is the source of truth
 
-The single most important reliability invariant: **if the process crashes mid-session, `journal/`'s raw per-source segments are recoverable via `scrybe repair`, and from the recovered audio everything else can be regenerated.**
+The single most important reliability invariant: **if the process stops during capture or finalization, durable audio and transcript state can be completed independently.**
 
 | Failure | Impact | Recovery |
 |---|---|---|
 | STT API fails mid-chunk | One chunk missing from `transcript.md` | Retranscribe from `audio.opus` post-hoc with `scrybe retranscribe <session-id>` |
-| LLM call fails at SessionEnd | No `notes.md` | `scrybe notes <session-id>` to retry |
-| Process crashes during recording (`SIGKILL`, power loss) | `audio.opus`/`meta.toml` were never written; `journal/` and whatever `transcript.md` chunks completed remain | `scrybe repair <id-or-folder>` runs the same offline merge a normal session runs against `journal/`'s segments, writes `audio.opus`, and reconstructs a minimal `meta.toml` (consent/provider/title fields marked `unknown`, since those were never durably recorded pre-crash). `scrybe list` flags the folder `UNFINISHED` until repaired |
+| LLM call fails or finalization is interrupted after audio merge | `audio.opus`, `playback.opus`, transcript, and provisional metadata remain; `notes.md` may be absent | Run `scrybe repair <id-or-folder>` if metadata is absent, then `scrybe notes <id-or-folder>` |
+| Process crashes during recording (`SIGKILL`, power loss) | `audio.opus` and metadata may be absent; `journal/` and committed transcript chunks remain | `scrybe repair <id-or-folder>` merges the journal and writes metadata; then `scrybe notes <id-or-folder>` generates notes |
 | Disk fills | Recording stops cleanly | Pre-flight check at session start: minimum 1GB free, abort if not |
 | Permission revoked mid-session (macOS) | Capture stream closes | Detected via stream error; pipeline emits `SessionFailed`, audio up to that point is preserved |
 | Microphone unplugged (USB) | System-audio continues | Mic channel goes silent in transcript; system channel continues normally |
@@ -882,7 +873,7 @@ Filesystem-as-database is only safe when each on-disk file presents either its o
 |---|---|---|
 | `meta.toml`, `notes.md` | atomic replace (write `tmp` → `fsync(file)` → rename → `fsync(parent_dir)`) | Either the previous version or the new one; never partial |
 | `transcript.md` | append-only (`O_APPEND` + `fdatasync` per chunk-boundary append) | All committed chunks present; trailing partial chunk truncated on next open |
-| `audio.opus` | write-once via the offline merge's `atomic_replace` (`pipeline::merge_journal`, after capture ends or on `scrybe repair`) | Absent until the merge succeeds; a prior `audio.opus` is left untouched if a repair's duration assertion fails |
+| `audio.opus`, `playback.opus` | write-once via the offline merge's `atomic_replace` (`pipeline::merge_journal`, after capture ends or on `scrybe repair`) | Each artifact is atomically replaced; `journal/` remains available for retry unless both writes succeed |
 | `journal/<source>-<seq>.f32` | append-only per-source segment on a dedicated writer thread, rotated every ~30s, `fsync`'d on segment close | Closed segments are complete; only the still-open segment can lose its tail. `journal/manifest.toml` (atomic-replace) carries the anchor `merge_journal` needs to resume from any completed segment |
 | `<model>.partial` → `<model>` | atomic replace after SHA256 verify | `.partial` files are recoverable orphans; loader refuses to load them |
 | `pid.lock` | exclusive create (`O_CREAT|O_EXCL`); written once with caller pid | Stale lock detection by reading pid and checking liveness |
@@ -990,11 +981,12 @@ Notes:
 ~/scrybe/
 └── 2026-04-29-1430-acme-discovery-01HXY7K9RZ/
     ├── pid.lock               # owner pid; deleted on clean exit
-    ├── audio.opus             # write-once, produced by offline merge from journal/ (see §8.3)
+    ├── audio.opus             # source master produced by offline merge
+    ├── playback.opus          # centered listening mix for dual-source sessions
     ├── transcript.md          # append-only, fdatasync-per-chunk
     ├── transcript.partial.jsonl # write-ahead log of the in-flight chunk
-    ├── notes.md               # written once at SessionEnd, atomic-replace
-    ├── meta.toml              # rewritten atomically on every state transition
+    ├── notes.md               # atomic-replace; regenerable from transcript
+    ├── meta.toml              # provisional before notes, rewritten atomically after completion
     └── .stignore              # generated; tells Syncthing to ignore until pid.lock is gone
 ```
 
@@ -1014,19 +1006,19 @@ These are part of the 95% critical-path coverage budget per `~/.claude/rules/tes
 
 ### Targets on M1 Pro / 16GB
 
-Default model is `whisper-large-v3-turbo` (~800 MB resident). `whisper-large-v3` is opt-in and shifts the RAM budget up by ~2 GB.
+The English meeting default is `small.en` (`ggml-small.en.bin`, about 1 GB resident). Larger models remain explicit overrides through `[stt].model`.
 
-| Stage | Target (large-v3-turbo default) | Hard ceiling | With opt-in `large-v3` |
+| Stage | Target (`small.en` default) | Hard ceiling | With a larger opt-in model |
 |---|---|---|---|
 | Audio capture overhead | < 1% CPU | 5% | same |
 | VAD + chunking | < 0.5% CPU | 2% | same |
-| Whisper Metal throughput | ~10x realtime | Realtime | ~5x realtime |
+| Whisper Metal throughput | ~6x realtime warm | Realtime | model-dependent |
 | Opus encoding | < 0.5% CPU | 2% | same |
 | Live disk I/O | < 1 MB/min | 5 MB/min | same |
-| Steady-state RAM (Whisper loaded) | < 1.2 GB | 2 GB | < 3.5 GB; ceiling 5 GB |
-| Cold model warm-up (first inference after load) | < 1.5s | 4s | < 5s; ceiling 10s |
+| Steady-state RAM (Whisper loaded) | < 1.5 GB | 2.5 GB | model-dependent; must fit available memory |
+| Cold model load plus first inference | < 20s | 30s | model-dependent |
 | Cold startup to "ready to record" (model lazy-loaded) | < 2s | 5s | same |
-| Pre-warm: 1s of silence runs through pipeline at SessionStart so first real chunk hits a hot model | required | — | required |
+| Persistent model context after first inference | required | — | required |
 | Idle (tray icon, no recording, no model loaded) | < 50 MB RAM, ~0% CPU | 100 MB, 1% | same |
 
 If the user also runs Ollama with `llama3.1:8b` (~5 GB resident), recommend cloud LLM via `OpenAiCompatLlmProvider` for any machine with ≤ 16 GB RAM. Ollama is the default only on ≥ 32 GB systems.

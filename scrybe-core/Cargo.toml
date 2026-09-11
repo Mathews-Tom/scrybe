@@ -97,7 +97,7 @@ toml.workspace = true
 tracing.workspace = true
 ulid.workspace = true
 url = { workspace = true, optional = true }
-whisper-rs = { version = "0.13", optional = true, default-features = false }
+whisper-rs = { version = "0.13", optional = true, default-features = false, features = ["whisper-cpp-tracing"] }
 sherpa-onnx = { version = "=1.13.7", optional = true }
 # Opus + Ogg deps for the `encoder-opus` feature. Both are local-only
 # (no network surface), so they do not perturb the `egress-audit` CI

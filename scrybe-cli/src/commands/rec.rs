@@ -53,15 +53,15 @@ use chrono::Utc;
 use clap::{Args as ClapArgs, ValueEnum};
 use futures::stream::{self, Stream, StreamExt};
 #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
-use scrybe_capture_mac::{MacCapture, NativeMicCapture, SckCapture};
-#[cfg(feature = "mic-capture")]
+use scrybe_capture_mac::{input_devices, InputDevice, MacCapture, NativeMicCapture, SckCapture};
+#[cfg(all(feature = "mic-capture", not(feature = "system-capture-mac")))]
 use scrybe_capture_mic::MicCapture;
 // AudioCapture is the registry's common bound whenever microphone capture is
 // compiled into the binary.
 #[cfg(feature = "mic-capture")]
 use scrybe_core::capture::AudioCapture;
 use scrybe_core::config::{
-    RecordConfig, RECORD_LLM_OPENAI_COMPAT, RECORD_LLM_STUB, RECORD_SOURCE_MIC,
+    RecordConfig, SttConfig, RECORD_LLM_OPENAI_COMPAT, RECORD_LLM_STUB, RECORD_SOURCE_MIC,
     RECORD_SOURCE_MIC_SYSTEM, RECORD_SOURCE_SYNTHETIC, RECORD_SYSTEM_BACKEND_SCK,
     RECORD_SYSTEM_BACKEND_TAP,
 };
@@ -80,7 +80,9 @@ use scrybe_core::providers::streaming::StreamingSttProvider;
 #[cfg(feature = "whisper-local")]
 use scrybe_core::providers::whisper_local::{WhisperLocalConfig, WhisperLocalProvider};
 use scrybe_core::providers::{LlmProvider, SttProvider};
-use scrybe_core::session::{run_with_notes as run_session_with_notes, SessionInputs};
+use scrybe_core::session::{
+    run_with_notes as run_session_with_notes, SessionInputs, SessionProgress,
+};
 #[cfg(any(test, all(feature = "mic-capture", feature = "system-capture-mac")))]
 use scrybe_core::storage::session_folder_name;
 use scrybe_core::types::{
@@ -92,6 +94,7 @@ use tokio::task::JoinHandle;
 
 use crate::prompter::TtyPrompter;
 use crate::runtime::{expand_root, load_or_default_config};
+use scrybe_core::record_defaults;
 
 #[derive(ClapArgs, Clone, Debug)]
 pub struct Args {
@@ -387,12 +390,13 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
 
     let auto_accept = args.yes || std::env::var("SCRYBE_CONSENT_AUTO_ACCEPT").as_deref() == Ok("1");
     let prompter = TtyPrompter::new(auto_accept);
-
     let source = resolve_capture_source(args.source, &cfg.record)?;
     let stt_model = resolve_stt_model(
         args.whisper_model.as_ref(),
         args.sherpa_model.as_ref(),
         &cfg.record,
+        &cfg.stt,
+        source,
     );
     let llm_backend = resolve_llm_backend(args.llm, &cfg.record)?;
     let consent_mode = args.consent.map_or(cfg.consent.default_mode, Into::into);
@@ -421,6 +425,19 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
         CaptureSourceArg::MicSystem => Some(EnergyVad::default()),
         CaptureSourceArg::Synthetic | CaptureSourceArg::Mic => None,
     };
+    #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
+    let selected_input = match source {
+        CaptureSourceArg::Synthetic => None,
+        CaptureSourceArg::Mic | CaptureSourceArg::MicSystem => {
+            let requested = args
+                .input_device
+                .as_deref()
+                .or(cfg.record.input_device.as_deref());
+            let device = resolve_macos_input_device(requested)?;
+            eprintln!("scrybe: input: {} ({})", device.name, device.uid);
+            Some(device)
+        }
+    };
 
     let registry_for_stop = capture_registry.clone();
     let stop_future = Box::pin(async move {
@@ -434,57 +451,47 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
         CaptureSourceArg::Synthetic => {
             Box::pin(synthetic_capture_stream(args.synthetic_secs).take_until(stop_future))
         }
-        CaptureSourceArg::Mic => match args.input_device.as_deref() {
-            Some(_uid) => {
-                #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
-                {
-                    let stream = match start_registered_capture(
-                        &capture_registry,
-                        NativeMicCapture::new(_uid.to_string(), cfg.record.aec),
-                    ) {
-                        Ok(stream) => stream,
-                        Err(error) => {
-                            tracing::error!(
-                                input_device = _uid,
-                                error = %error,
-                                "selected Core Audio input failed; falling back to the default input"
-                            );
-                            start_registered_capture(&capture_registry, MicCapture::new()).context(
-                                "selected Core Audio input failed and opening the default input \
-                                 also failed (grant Microphone permission in System Settings → \
-                                 Privacy & Security if prompted)",
-                            )?
-                        }
-                    };
-                    Box::pin(stream.take_until(stop_future))
-                }
-                #[cfg(not(all(feature = "mic-capture", feature = "system-capture-mac")))]
-                {
+        CaptureSourceArg::Mic => {
+            #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
+            {
+                let device = selected_input
+                    .as_ref()
+                    .context("resolved microphone missing for mic capture")?;
+                let stream = start_registered_capture(
+                    &capture_registry,
+                    NativeMicCapture::new(device.uid.clone(), cfg.record.aec),
+                )
+                .with_context(|| {
+                    format!(
+                        "opening selected Core Audio input {} ({})",
+                        device.name, device.uid
+                    )
+                })?;
+                Box::pin(stream.take_until(stop_future))
+            }
+            #[cfg(all(feature = "mic-capture", not(feature = "system-capture-mac")))]
+            {
+                if args.input_device.is_some() || cfg.record.input_device.is_some() {
                     anyhow::bail!(
                         "--input-device requires a macOS build with --features \
-                             mic-capture,system-capture-mac"
+                         mic-capture,system-capture-mac"
                     );
                 }
+                let stream = start_registered_capture(&capture_registry, MicCapture::new())
+                    .context(
+                        "opening default input device (grant Microphone permission \
+                         in System Settings → Privacy & Security if prompted)",
+                    )?;
+                Box::pin(stream.take_until(stop_future))
             }
-            None => {
-                #[cfg(feature = "mic-capture")]
-                {
-                    let stream = start_registered_capture(&capture_registry, MicCapture::new())
-                        .context(
-                            "opening default input device (grant Microphone permission \
-                             in System Settings → Privacy & Security if prompted)",
-                        )?;
-                    Box::pin(stream.take_until(stop_future))
-                }
-                #[cfg(not(feature = "mic-capture"))]
-                {
-                    anyhow::bail!(
-                            "--source mic requires the binary to be built with --features mic-capture; \
-                             this binary was built without it"
-                        );
-                }
+            #[cfg(not(feature = "mic-capture"))]
+            {
+                anyhow::bail!(
+                    "--source mic requires the binary to be built with --features mic-capture; \
+                     this binary was built without it"
+                );
             }
-        },
+        }
         CaptureSourceArg::MicSystem => {
             #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
             {
@@ -501,30 +508,19 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
                         CaptureError::Platform(Box::new(std::io::Error::other(error.to_string())))
                     })
                 });
-                let mic_frames = if let Some(uid) = args.input_device.as_deref() {
-                    match start_registered_capture(
-                        &capture_registry,
-                        NativeMicCapture::new(uid.to_string(), cfg.record.aec),
-                    ) {
-                        Ok(frames) => frames,
-                        Err(error) => {
-                            tracing::error!(
-                                input_device = uid,
-                                error = %error,
-                                "selected Core Audio input failed; falling back to the default input"
-                            );
-                            start_registered_capture(&capture_registry, MicCapture::new()).context(
-                                "selected Core Audio input failed and opening the default input \
-                                 also failed",
-                            )?
-                        }
-                    }
-                } else {
-                    start_registered_capture(&capture_registry, MicCapture::new()).context(
-                        "opening default input device (grant Microphone permission \
-                         in System Settings → Privacy & Security if prompted)",
-                    )?
-                };
+                let device = selected_input
+                    .as_ref()
+                    .context("resolved microphone missing for mic+system capture")?;
+                let mic_frames = start_registered_capture(
+                    &capture_registry,
+                    NativeMicCapture::new(device.uid.clone(), cfg.record.aec),
+                )
+                .with_context(|| {
+                    format!(
+                        "opening selected Core Audio input {} ({})",
+                        device.name, device.uid
+                    )
+                })?;
                 Box::pin(stream::select(mic_frames, system_frames).take_until(stop_future))
             }
             #[cfg(not(all(feature = "mic-capture", feature = "system-capture-mac")))]
@@ -542,7 +538,7 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
     // Start hardware capture before loading the selected STT model. The capture
     // adapters buffer their frames while the model initializes, so the Tap
     // liveness probe runs during startup instead of delaying recording.
-    let stt = match build_stt_provider(stt_model) {
+    let stt = match build_stt_provider(stt_model, &cfg.stt.language) {
         Ok(stt) => stt,
         Err(error) => {
             if let Err(stop_error) = capture_registry.stop_all() {
@@ -553,6 +549,7 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
     };
     let streaming_stt = stt.streaming();
 
+    let progress = |event| print_session_progress(event);
     let outputs = run_session_with_notes(
         SessionInputs {
             id,
@@ -587,6 +584,7 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
 
             // would fail by construction on every invocation.
             verify_duration: !matches!(source, CaptureSourceArg::Synthetic),
+            progress: Some(&progress),
         },
         stream,
         notes_runtime,
@@ -609,7 +607,52 @@ pub async fn run_with_stop(args: Args, stop_rx: watch::Receiver<bool>) -> Result
     if outputs.audio_path.exists() {
         println!("  audio:      {}", outputs.audio_path.display());
     }
+    let playback_path = outputs.folder.join("playback.opus");
+    if playback_path.exists() {
+        println!("  playback:   {}", playback_path.display());
+    }
     Ok(())
+}
+
+fn print_session_progress(event: SessionProgress) {
+    match event {
+        SessionProgress::Recording => {
+            eprintln!("scrybe: recording; press Ctrl-C to stop");
+        }
+        SessionProgress::TranscriptAccepted(attributed) => {
+            let elapsed_secs = attributed.chunk.start_ms / 1_000;
+            let minutes = elapsed_secs / 60;
+            let seconds = elapsed_secs % 60;
+            let speaker = match &attributed.speaker {
+                SpeakerLabel::Me => "Me",
+                SpeakerLabel::Them => "Them",
+                SpeakerLabel::Named(name) => name,
+                SpeakerLabel::Unknown => "Unknown",
+            };
+            let text = attributed.chunk.text.trim();
+            if !text.is_empty() {
+                println!("[{minutes:02}:{seconds:02}] {speaker}: {text}");
+            }
+        }
+        SessionProgress::FinalizingTranscript { pending_chunks } => {
+            eprintln!(
+                "scrybe: finalizing transcript ({pending_chunks} pending chunk{})",
+                if pending_chunks == 1 { "" } else { "s" }
+            );
+        }
+        SessionProgress::EncodingAudio => {
+            eprintln!("scrybe: encoding audio artifacts");
+        }
+        SessionProgress::GeneratingNotes { groups } => {
+            eprintln!(
+                "scrybe: generating notes ({groups} request group{})",
+                if groups == 1 { "" } else { "s" }
+            );
+        }
+        SessionProgress::WritingMetadata => {
+            eprintln!("scrybe: writing session metadata");
+        }
+    }
 }
 
 const CAPTURE_LIVENESS_TIMEOUT: Duration = Duration::from_secs(30);
@@ -730,7 +773,9 @@ enum SttModel {
 fn resolve_stt_model(
     whisper_model: Option<&PathBuf>,
     sherpa_model: Option<&PathBuf>,
-    cfg: &RecordConfig,
+    record: &RecordConfig,
+    stt: &SttConfig,
+    source: CaptureSourceArg,
 ) -> SttModel {
     if let Some(path) = sherpa_model {
         return SttModel::Sherpa(path.clone());
@@ -738,9 +783,31 @@ fn resolve_stt_model(
     if let Some(path) = whisper_model {
         return SttModel::Whisper(path.clone());
     }
-    cfg.whisper_model.as_ref().map_or(SttModel::Stub, |path| {
-        SttModel::Whisper(expand_root(path.as_path()))
-    })
+    if let Some(path) = &record.whisper_model {
+        return SttModel::Whisper(expand_root(path));
+    }
+    if !matches!(source, CaptureSourceArg::Synthetic) && stt.provider == "whisper-local" {
+        return record_defaults::whisper_model_path(&stt.model)
+            .map_or(SttModel::Stub, SttModel::Whisper);
+    }
+    SttModel::Stub
+}
+
+#[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
+fn resolve_macos_input_device(requested_uid: Option<&str>) -> Result<InputDevice> {
+    let devices = input_devices()
+        .map_err(anyhow::Error::from)
+        .context("enumerating macOS Core Audio input devices")?;
+    if let Some(uid) = requested_uid {
+        return devices
+            .into_iter()
+            .find(|device| device.uid == uid)
+            .with_context(|| format!("configured Core Audio input device `{uid}` was not found"));
+    }
+    devices
+        .into_iter()
+        .find(|device| device.is_default)
+        .context("macOS has no default Core Audio input device")
 }
 
 /// Future that completes the first time `stop_rx` flips to `true`,
@@ -900,13 +967,15 @@ impl SttProvider for CliStt {
 /// An explicit model always requires its matching feature. The stub remains
 /// the default only when no model has been requested or configured.
 #[allow(unused_variables)]
-fn build_stt_provider(model: SttModel) -> Result<CliStt> {
+fn build_stt_provider(model: SttModel, language: &str) -> Result<CliStt> {
     match model {
         SttModel::Stub => Ok(CliStt::Stub(StubLocalStt::new())),
         SttModel::Whisper(path) => {
             #[cfg(feature = "whisper-local")]
             {
-                let provider = WhisperLocalProvider::new(WhisperLocalConfig::new(path.clone()))
+                let mut config = WhisperLocalConfig::new(path.clone());
+                config.language = language.to_string();
+                let provider = WhisperLocalProvider::new(config)
                     .with_context(|| format!("loading whisper.cpp model at {}", path.display()))?;
                 Ok(CliStt::Whisper(provider))
             }
@@ -1624,7 +1693,7 @@ mod tests {
 
     #[test]
     fn test_build_stt_provider_returns_stub_when_no_model_path_supplied() {
-        let stt = build_stt_provider(SttModel::Stub).expect("stub branch must succeed");
+        let stt = build_stt_provider(SttModel::Stub, "en").expect("stub branch must succeed");
         assert_eq!(stt.name(), "stub-local-stt");
     }
 
@@ -1632,14 +1701,17 @@ mod tests {
     fn test_stub_provider_exposes_no_streaming_capability() {
         // The batch path must stay selected for providers that cannot
         // decode incrementally; only Sherpa answers this call.
-        let stt = build_stt_provider(SttModel::Stub).expect("stub branch must succeed");
+        let stt = build_stt_provider(SttModel::Stub, "en").expect("stub branch must succeed");
         assert!(stt.streaming().is_none());
     }
 
     #[cfg(not(feature = "whisper-local"))]
     #[test]
     fn test_build_stt_provider_errors_when_whisper_model_supplied_without_feature() {
-        let result = build_stt_provider(SttModel::Whisper(PathBuf::from("/tmp/no-such-model.bin")));
+        let result = build_stt_provider(
+            SttModel::Whisper(PathBuf::from("/tmp/no-such-model.bin")),
+            "en",
+        );
         let Err(err) = result else {
             panic!("flag without feature must error rather than silently stub");
         };
@@ -1653,7 +1725,8 @@ mod tests {
     #[cfg(not(feature = "stt-sherpa"))]
     #[test]
     fn test_build_stt_provider_errors_when_sherpa_model_supplied_without_feature() {
-        let result = build_stt_provider(SttModel::Sherpa(PathBuf::from("/tmp/no-such-model")));
+        let result =
+            build_stt_provider(SttModel::Sherpa(PathBuf::from("/tmp/no-such-model")), "en");
         let Err(err) = result else {
             panic!("flag without feature must error rather than silently stub");
         };
@@ -1670,7 +1743,13 @@ mod tests {
             whisper_model: Some(PathBuf::from("/models/whisper.bin")),
             ..RecordConfig::default()
         };
-        let model = resolve_stt_model(None, Some(&PathBuf::from("/models/sherpa")), &config);
+        let model = resolve_stt_model(
+            None,
+            Some(&PathBuf::from("/models/sherpa")),
+            &config,
+            &SttConfig::default(),
+            CaptureSourceArg::Mic,
+        );
 
         assert!(
             matches!(model, SttModel::Sherpa(path) if path.as_path() == std::path::Path::new("/models/sherpa"))
@@ -1683,7 +1762,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let partial = dir.path().join("ggml-tiny.bin.partial");
         std::fs::write(&partial, b"unfinished download").unwrap();
-        let result = build_stt_provider(SttModel::Whisper(partial));
+        let result = build_stt_provider(SttModel::Whisper(partial), "en");
         let Err(err) = result else {
             panic!("partial paths must be rejected at construction");
         };

@@ -20,6 +20,7 @@ pub mod install_macos_bundle;
 pub mod list;
 #[cfg(feature = "agent-access")]
 pub mod mcp;
+pub mod notes;
 pub mod qualify;
 pub mod rec;
 pub mod record;
@@ -45,6 +46,8 @@ pub enum Command {
     List(list::Args),
     /// Render a session's transcript and notes.
     Show(show::Args),
+    /// Regenerate `notes.md` from a session's durable transcript.
+    Notes(notes::Args),
     /// Diagnostic checks: egress, disk, permissions, model checksums.
     Doctor(doctor::Args),
     /// Aggregate Criterion bench results into a versioned snapshot.
@@ -76,6 +79,7 @@ pub async fn run(cmd: Command) -> Result<()> {
         Command::Devices(a) => devices::run(a),
         Command::List(a) => list::run(a).await,
         Command::Show(a) => show::run(a).await,
+        Command::Notes(a) => notes::run(a).await,
         Command::Doctor(a) => doctor::run(a).await,
         Command::Bench(a) => bench::run(a).await,
         Command::Repair(a) => repair::run(a).await,

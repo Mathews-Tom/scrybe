@@ -18,7 +18,7 @@ Run locally:
 
 Run in CI: see `.github/workflows/ci.yml` job `loc-budget`.
 
-Ceilings track `.docs/development-plan.md` §7.4 and are updated when
+Ceilings track `.docs/DEVELOPMENT_PLAN.md` §7 and are updated when
 the plan revises them. Increasing a ceiling is a deliberate decision:
 state the rationale in the commit message and surface it for review.
 """
@@ -125,7 +125,11 @@ LOC_CEILINGS: dict[str, int] = {
     # Raised to 16400 for the M10 source-clock duration guard: journal manifests
     # now retain per-source capture timestamps so model startup and shutdown do
     # not invalidate a real capture, while timestamp gaps still fail loudly.
-    "scrybe-core": 16400,
+    # Raised to 16850 after the first real meeting exposed finalization and
+    # playback defects. The increase covers one persistent Whisper context,
+    # centered playback encoding, synchronous progress events, provisional and
+    # reconstructed metadata, bounded notes output, and recovery regressions.
+    "scrybe-core": 16850,
     # 2000 was the v0.5 ceiling. Raised to 2300 at v0.6 to absorb the
     # `scrybe bench` subcommand. Raised to 2500 at v1.0.1 to absorb
     # the `--source mic` and `--whisper-model` wiring on `scrybe record`
@@ -197,7 +201,10 @@ LOC_CEILINGS: dict[str, int] = {
     # and adversarial no-content serialization tests. Raised to 5350 for
     # M10's installed CLI-owned self-signed bundle creator, Keychain identity
     # diagnostic, and deterministic signature verification.
-    "scrybe-cli": 5350,
+    # Raised to 5550 after the first real meeting exposed the need for exact
+    # input-device pinning, live transcript/finalization output, resumable
+    # notes generation, stale-lock cleanup, and bounded bundle shutdown.
+    "scrybe-cli": 5550,
     # Raised to 2700 for M6's opt-in transactional VoiceProcessingIO path:
     # explicit device/format/processing configuration, ducking suppression,
     # RAII cleanup, and a plain-input fallback proved against forced failures.

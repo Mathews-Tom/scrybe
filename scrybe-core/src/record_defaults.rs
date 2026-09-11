@@ -14,10 +14,10 @@
 //! - **Source**: `mic+system` on macOS, `mic` elsewhere. The ergonomic
 //!   command is meant for capturing both sides of a conversation;
 //!   mic-only is the fallback when a system tap isn't available.
-//! - **Whisper model**: `ggml-medium.en.bin` at the platform
-//!   project-data path, but only if it exists on disk. The caller
-//!   surfaces a clear setup error when the file is missing rather
-//!   than letting the session fail at first use.
+//! - **Whisper model**: `ggml-small.en.bin` at the platform
+//!   project-data path, but only if it exists on disk. This is the
+//!   English accuracy/latency default; callers can override it with an
+//!   exact model path.
 //! - **LLM**: `openai-compat` if a TCP connect to `127.0.0.1:11434`
 //!   succeeds within 100 ms (typically a local Ollama), otherwise the
 //!   stub provider so the session still completes with a templated
@@ -32,32 +32,33 @@
 //! ergonomic entry point.
 
 use std::net::{Shutdown, TcpStream, ToSocketAddrs};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use directories::ProjectDirs;
 
 use crate::config::{
-    RecordConfig, RECORD_LLM_OPENAI_COMPAT, RECORD_LLM_STUB, RECORD_SOURCE_MIC,
+    RecordConfig, SttConfig, RECORD_LLM_OPENAI_COMPAT, RECORD_LLM_STUB, RECORD_SOURCE_MIC,
     RECORD_SOURCE_MIC_SYSTEM, RECORD_SOURCE_SYNTHETIC,
 };
 
 const OLLAMA_PROBE_HOST: &str = "127.0.0.1";
 const OLLAMA_PROBE_PORT: u16 = 11434;
 const OLLAMA_PROBE_TIMEOUT: Duration = Duration::from_millis(100);
-const DEFAULT_WHISPER_MODEL_FILENAME: &str = "ggml-medium.en.bin";
+const DEFAULT_WHISPER_MODEL_FILENAME: &str = "ggml-small.en.bin";
 
 /// Resolve the Whisper model path for the ergonomic record command.
 ///
-/// Returns `cfg.whisper_model` if set; otherwise the platform default
-/// path only if the file exists on disk. Returns `None` if neither
-/// source produces a usable path; the caller surfaces a setup error.
+/// An explicit `[record].whisper_model` path wins. Otherwise `[stt].model`
+/// names a file under the platform model directory (`small.en` resolves to
+/// `ggml-small.en.bin`). The resolver returns only paths that exist so the
+/// caller can surface a setup error before capture starts.
 #[must_use]
-pub fn ergonomic_whisper_model(cfg: &RecordConfig) -> Option<PathBuf> {
-    if let Some(path) = &cfg.whisper_model {
+pub fn ergonomic_whisper_model(record: &RecordConfig, stt: &SttConfig) -> Option<PathBuf> {
+    if let Some(path) = &record.whisper_model {
         return Some(path.clone());
     }
-    let path = default_whisper_model_path()?;
+    let path = whisper_model_path(&stt.model)?;
     path.exists().then_some(path)
 }
 
@@ -65,12 +66,31 @@ pub fn ergonomic_whisper_model(cfg: &RecordConfig) -> Option<PathBuf> {
 /// Used by `scrybe setup` to know where to download the model to.
 #[must_use]
 pub fn default_whisper_model_path() -> Option<PathBuf> {
+    whisper_model_path(DEFAULT_WHISPER_MODEL_FILENAME)
+}
+
+/// Resolve a configured local Whisper model. Absolute paths are preserved.
+///
+/// Exact `.bin`/`.gguf` filenames are accepted under the platform model
+/// directory; short names gain the canonical `ggml-` prefix and `.bin` suffix.
+#[must_use]
+pub fn whisper_model_path(model: &str) -> Option<PathBuf> {
+    let configured = Path::new(model);
+    if configured.is_absolute() {
+        return Some(configured.to_path_buf());
+    }
     let dirs = ProjectDirs::from("dev", "scrybe", "scrybe")?;
-    Some(
-        dirs.data_dir()
-            .join("models")
-            .join(DEFAULT_WHISPER_MODEL_FILENAME),
-    )
+    let filename = if configured
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            extension.eq_ignore_ascii_case("bin") || extension.eq_ignore_ascii_case("gguf")
+        }) {
+        model.to_string()
+    } else {
+        format!("ggml-{model}.bin")
+    };
+    Some(dirs.data_dir().join("models").join(filename))
 }
 
 /// Resolve the capture source for the ergonomic record command.
@@ -133,7 +153,7 @@ fn probe_ollama_local() -> bool {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::config::RecordConfig;
+    use crate::config::{RecordConfig, SttConfig};
     use std::path::Path;
 
     #[test]
@@ -143,7 +163,7 @@ mod tests {
             ..RecordConfig::default()
         };
         assert_eq!(
-            ergonomic_whisper_model(&cfg).as_deref(),
+            ergonomic_whisper_model(&cfg, &SttConfig::default()).as_deref(),
             Some(Path::new("/explicit/path/model.bin"))
         );
     }
@@ -154,7 +174,7 @@ mod tests {
             whisper_model: None,
             ..RecordConfig::default()
         };
-        if let Some(path) = ergonomic_whisper_model(&cfg) {
+        if let Some(path) = ergonomic_whisper_model(&cfg, &SttConfig::default()) {
             assert!(
                 path.exists(),
                 "resolver returned non-existent path {path:?}"
@@ -171,6 +191,15 @@ mod tests {
             "path does not contain bundle id or scrybe segment: {path:?}"
         );
         assert!(path.ends_with(DEFAULT_WHISPER_MODEL_FILENAME));
+    }
+    #[test]
+    fn test_whisper_model_path_preserves_absolute_stt_model_path() {
+        let absolute = std::env::current_exe().unwrap();
+        let configured = absolute.to_str().unwrap();
+        assert_eq!(
+            whisper_model_path(configured).as_deref(),
+            Some(absolute.as_path())
+        );
     }
 
     #[test]

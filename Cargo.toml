@@ -88,7 +88,7 @@ version = "0.2"
 
 [workspace.dependencies.windows-sys]
 version = "0.59"
-features = ["Win32_Foundation", "Win32_Storage_FileSystem"]
+features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Threading"]
 
 # Apple bindings for the macOS Core Audio Taps adapter
 # (`scrybe-capture-mac`, feature `core-audio-tap`). Pinned to the 0.3
