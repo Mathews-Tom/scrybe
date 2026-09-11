@@ -106,18 +106,12 @@ jobs:
           - aarch64-apple-darwin
           - x86_64-apple-darwin
     env:
-      # Pin SOURCE_DATE_EPOCH and remap workspace paths so artifact bytes
-      # do not depend on the runner's working directory or wall-clock at
-      # build time. `-Wl,-no_uuid` suppresses the Mach-O LC_UUID load
-      # command, which the macOS linker otherwise populates with a
-      # cryptographic hash that is not derivable from the input bytes
-      # (it changes per link invocation). Without this flag, two
-      # otherwise-identical builds produce different binaries even
-      # under SOURCE_DATE_EPOCH + remap-path-prefix. The bit-equality
-      # contract is verified on every PR by
-      # `.github/workflows/reproducibility.yml`.
+      # Pin archive mtimes and strip runner-specific workspace paths from
+      # emitted DWARF and panic strings. Keep the linker's LC_UUID: current
+      # macOS dyld rejects executables without that load command. The
+      # reproducibility lane therefore remains advisory for UUID variance.
       SOURCE_DATE_EPOCH: "1714464000"
-      RUSTFLAGS: "--remap-path-prefix=${{ github.workspace }}=/build -C link-args=-Wl,-no_uuid"
+      RUSTFLAGS: "--remap-path-prefix=${{ github.workspace }}=/build"
       # audiopus_sys 0.2.2 vendors an Opus CMake project whose declared
       # minimum predates CMake 3.5. CMake 4 removed that compatibility
       # unless callers explicitly select the 3.5 policy floor.
