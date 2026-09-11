@@ -25,6 +25,7 @@ All notable changes to scrybe are documented here. The format follows [Keep a Ch
 - OpenAI-compatible completion requests cap output at 1,024 tokens, and generated notes remove redundant outer Markdown fences.
 - macOS release builds now include microphone, ScreenCaptureKit system-audio, Opus, local Whisper, and OpenAI-compatible provider support. The final CLI carries the system Swift-runtime rpath required by ScreenCaptureKit.
 - Offline journal merge validates each source against its own capture-clock interval, preventing local model startup and shutdown work from triggering false duration failures while preserving detection of source timestamp gaps.
+- Windows repair now checks the lock owner's process handle before classifying `pid.lock` as live, allowing recovery after abrupt termination without deleting a lock owned by a running process.
 
 ### Verification
 
