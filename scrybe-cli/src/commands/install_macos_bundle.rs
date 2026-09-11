@@ -16,9 +16,9 @@ use anyhow::Result;
 use clap::Args as ClapArgs;
 
 #[cfg(target_os = "macos")]
-const PLIST_TEMPLATE: &str = include_str!("../../../packaging/macos-app/Info.plist.template");
+const PLIST_TEMPLATE: &str = include_str!("../../assets/macos/Info.plist.template");
 #[cfg(target_os = "macos")]
-const ENTITLEMENTS: &str = include_str!("../../../packaging/macos-app/entitlements.plist");
+const ENTITLEMENTS: &str = include_str!("../../assets/macos/entitlements.plist");
 
 #[derive(ClapArgs, Debug)]
 pub struct Args {

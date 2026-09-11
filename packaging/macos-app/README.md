@@ -1,15 +1,15 @@
 # macOS `.app` bundle
 
-Source-of-truth artifacts for wrapping the `scrybe` CLI into a macOS application bundle. The bundle is required — not optional — for system-audio capture on macOS 14.4 and later: TCC (Transparency, Consent, and Control) refuses to surface an Audio Capture consent prompt against a bare CLI binary, so `--source mic+system` recordings made from `~/.cargo/bin/scrybe` directly receive zero-filled buffers from the Core Audio Tap.
+Source-checkout tooling for wrapping the `scrybe` CLI into a macOS application bundle. The bundle is required — not optional — for system-audio capture on macOS 14.4 and later: TCC (Transparency, Consent, and Control) refuses to surface an Audio Capture consent prompt against a bare CLI binary, so `--source mic+system` recordings made from `~/.cargo/bin/scrybe` directly receive zero-filled buffers from the Core Audio Tap.
 
-This directory holds the pieces; `build-app.sh` glues them together.
+`build-app.sh` consumes the canonical templates embedded in the publishable `scrybe` package under `scrybe-cli/assets/macos/`.
 
 ## Files
 
 | File | Purpose |
 |---|---|
-| `Info.plist.template` | Bundle metadata. Carries `NSAudioCaptureUsageDescription` and `NSMicrophoneUsageDescription`, the strings TCC reads when surfacing consent. `{{VERSION}}` is replaced at build time with the version reported by `scrybe --version`. |
-| `entitlements.plist` | Code-signing entitlements. Declares `com.apple.security.device.audio-input` for tap delivery under the hardened runtime, plus the JIT/library-validation relaxations whisper-rs needs at inference time. |
+| `../../scrybe-cli/assets/macos/Info.plist.template` | Bundle metadata. Carries `NSAudioCaptureUsageDescription` and `NSMicrophoneUsageDescription`, the strings TCC reads when surfacing consent. `{{VERSION}}` is replaced at build time with the version reported by `scrybe --version`. |
+| `../../scrybe-cli/assets/macos/entitlements.plist` | Code-signing entitlements. Declares `com.apple.security.device.audio-input` for tap delivery under the hardened runtime, plus the JIT/library-validation relaxations whisper-rs needs at inference time. |
 | `build-app.sh` | Renders the template, copies the binary into `Contents/MacOS/`, optionally code-signs against either a real Developer ID identity or a self-signed Keychain identity, and runs `codesign --verify`. |
 
 ## Why a bundle is required
