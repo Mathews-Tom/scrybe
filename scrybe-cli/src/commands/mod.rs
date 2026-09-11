@@ -16,6 +16,7 @@ mod bench_stt;
 pub mod devices;
 pub mod doctor;
 pub mod init;
+pub mod install_macos_bundle;
 pub mod list;
 #[cfg(feature = "agent-access")]
 pub mod mcp;
@@ -51,6 +52,8 @@ pub enum Command {
     /// Recover `audio.opus` from a crashed or `SIGKILL`ed session's
     /// journal.
     Repair(repair::Args),
+    /// Create a locally self-signed macOS app bundle for system-audio TCC.
+    InstallMacosBundle(install_macos_bundle::Args),
     /// Verify a completed macOS qualification session and write a redacted receipt.
     Qualify(qualify::Args),
     /// Read-only local-agent access server over stdio (M9). Refuses
@@ -77,6 +80,7 @@ pub async fn run(cmd: Command) -> Result<()> {
         Command::Bench(a) => bench::run(a).await,
         Command::Repair(a) => repair::run(a).await,
         Command::Qualify(a) => qualify::run(&a),
+        Command::InstallMacosBundle(a) => install_macos_bundle::run(&a),
         #[cfg(feature = "agent-access")]
         Command::Mcp(a) => mcp::run(a).await,
     }
