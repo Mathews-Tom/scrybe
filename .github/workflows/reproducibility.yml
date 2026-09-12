@@ -104,7 +104,7 @@ jobs:
         env:
           RUSTFLAGS: "--remap-path-prefix=${{ github.workspace }}/scrybe-rebuild=/build"
         run: dist build --artifacts=local --target=${{ matrix.target }}
-      # Advisory at v1.3.2. Mismatches surface as `::warning::`
+      # Advisory at v1.4.0. Mismatches surface as `::warning::`
       # annotations rather than job failures while required Mach-O UUID
       # variance and cargo-dist archive metadata remain unresolved. The
       # script still emits the per-asset SHA256 pair on mismatch so an

@@ -1,6 +1,6 @@
 [package]
 name = "scrybe-meeting-capture-mic"
-version = "1.3.2"
+version = "1.4.0"
 description = "Cross-platform microphone capture adapter for the Scrybe meeting recorder."
 publish = true
 authors.workspace = true
@@ -28,7 +28,7 @@ live-mic = ["dep:cpal"]
 async-trait.workspace = true
 cpal = { version = "0.15", optional = true }
 futures.workspace = true
-scrybe-core = { package = "scrybe-meeting-core", path = "../scrybe-core", version = "=1.3.2" }
+scrybe-core = { package = "scrybe-meeting-core", path = "../scrybe-core", version = "=1.4.0" }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 tracing.workspace = true
