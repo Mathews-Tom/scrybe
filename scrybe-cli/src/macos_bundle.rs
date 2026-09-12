@@ -86,6 +86,13 @@ pub fn find_existing_bundle() -> Option<PathBuf> {
     }
     default_bundle_path().ok().filter(|path| path.is_dir())
 }
+#[cfg(feature = "system-capture-mac")]
+pub fn repair_destination() -> Result<PathBuf> {
+    if let Some(path) = std::env::var_os(SCRYBE_BUNDLE_ENV).map(PathBuf::from) {
+        return Ok(path);
+    }
+    Ok(find_existing_bundle().map_or(default_bundle_path()?, |path| path))
+}
 
 #[cfg(feature = "system-capture-mac")]
 pub fn already_inside_bundle() -> bool {

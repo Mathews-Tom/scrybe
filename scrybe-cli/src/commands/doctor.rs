@@ -12,11 +12,13 @@
 //! - orphaned per-session pid locks (process not alive)
 //! - egress posture (which provider URLs the current config will hit)
 
+use std::io::{BufRead, IsTerminal, Write};
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::Args as ClapArgs;
-use scrybe_core::config::Config;
+use scrybe_core::config::{Config, RECORD_SOURCE_MIC_SYSTEM, RECORD_SYSTEM_BACKEND_TAP};
+use scrybe_core::record_defaults;
 use url::{Host, Url};
 
 use crate::runtime::{expand_root, load_or_default_config};
@@ -42,6 +44,15 @@ pub struct Args {
     /// end-to-end. Requires Screen & System Audio Recording permission.
     #[arg(long, default_value_t = false)]
     pub check_sck: bool,
+
+    /// Repair the configured Core Audio Tap bundle without prompting.
+    /// Requires `--sign-self`.
+    #[arg(long, default_value_t = false, requires = "sign_self")]
+    pub fix: bool,
+
+    /// Named self-signed Keychain identity used by `--fix`.
+    #[arg(long, requires = "fix")]
+    pub sign_self: Option<String>,
 }
 
 #[allow(clippy::unused_async)]
@@ -56,8 +67,8 @@ pub async fn run(args: Args) -> Result<()> {
     ));
 
     let cfg = load_or_default_config()?;
-    let root = match args.root {
-        Some(p) => expand_root(&p),
+    let root = match &args.root {
+        Some(path) => expand_root(path),
         None => expand_root(&cfg.storage.root),
     };
     report.lines.push(format!(
@@ -71,12 +82,7 @@ pub async fn run(args: Args) -> Result<()> {
     }
     report_egress_posture(&cfg, &mut report);
 
-    if args.check_tap {
-        check_tap(&mut report).await;
-    }
-    if args.check_sck {
-        check_sck(&mut report).await;
-    }
+    run_capture_onboarding(&cfg, &args, &mut report).await?;
 
     for line in &report.lines {
         println!("{line}");
@@ -96,6 +102,265 @@ pub async fn run(args: Args) -> Result<()> {
 struct Report {
     lines: Vec<String>,
     warnings: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OnboardingTarget {
+    MicrophoneOnly,
+    ScreenCaptureKit,
+    CoreAudioTap,
+}
+
+fn effective_onboarding_target(cfg: &Config) -> OnboardingTarget {
+    if record_defaults::ergonomic_source(&cfg.record) != RECORD_SOURCE_MIC_SYSTEM {
+        return OnboardingTarget::MicrophoneOnly;
+    }
+    if cfg.record.validated_system_backend() == Some(RECORD_SYSTEM_BACKEND_TAP) {
+        OnboardingTarget::CoreAudioTap
+    } else {
+        OnboardingTarget::ScreenCaptureKit
+    }
+}
+
+async fn run_capture_onboarding(cfg: &Config, args: &Args, report: &mut Report) -> Result<()> {
+    let target = effective_onboarding_target(cfg);
+    if args.check_sck {
+        check_sck(report).await;
+    }
+    if args.check_tap {
+        return run_tap_onboarding(args, report, true).await;
+    }
+    if args.fix {
+        if target == OnboardingTarget::CoreAudioTap {
+            return run_tap_onboarding(args, report, false).await;
+        }
+        report
+            .lines
+            .push("macOS onboarding: no Core Audio Tap bundle repair is applicable".to_string());
+        return Ok(());
+    }
+    if args.check_sck {
+        return Ok(());
+    }
+
+    match target {
+        OnboardingTarget::MicrophoneOnly => {
+            report.lines.push(
+                "capture onboarding: microphone-only; no system-audio probe required".to_string(),
+            );
+        }
+        OnboardingTarget::ScreenCaptureKit => {
+            report
+                .lines
+                .push("system audio backend: ScreenCaptureKit".to_string());
+            if terminal_is_interactive() {
+                if confirm_optional("Run the live system-audio permission check now? [y/N] ")
+                    .await?
+                {
+                    check_sck(report).await;
+                } else {
+                    report.lines.push(
+                        "sck probe: declined; run `scrybe doctor --check-sck` later".to_string(),
+                    );
+                }
+            } else {
+                report.lines.push(
+                    "sck probe: skipped (non-interactive); run `scrybe doctor --check-sck`"
+                        .to_string(),
+                );
+            }
+        }
+        OnboardingTarget::CoreAudioTap => {
+            run_tap_onboarding(args, report, false).await?;
+        }
+    }
+    Ok(())
+}
+
+fn terminal_is_interactive() -> bool {
+    std::io::stdin().is_terminal() && std::io::stderr().is_terminal()
+}
+
+async fn confirm_optional(prompt: &str) -> Result<bool> {
+    let prompt = prompt.to_string();
+    tokio::task::spawn_blocking(move || -> Result<bool> {
+        let stderr = std::io::stderr();
+        let mut writer = stderr.lock();
+        writer
+            .write_all(prompt.as_bytes())
+            .context("writing doctor prompt")?;
+        writer.flush().context("flushing doctor prompt")?;
+        drop(writer);
+
+        let stdin = std::io::stdin();
+        let mut answer = String::new();
+        stdin
+            .lock()
+            .read_line(&mut answer)
+            .context("reading doctor response")?;
+        Ok(crate::prompter::is_affirmative_response(&answer))
+    })
+    .await
+    .context("joining doctor prompt task")?
+}
+
+#[cfg(all(target_os = "macos", feature = "system-capture-mac"))]
+async fn run_tap_onboarding(args: &Args, report: &mut Report, explicit_probe: bool) -> Result<()> {
+    use crate::macos_bundle::BundleState;
+
+    report
+        .lines
+        .push("system audio backend: Core Audio Tap".to_string());
+    if crate::macos_bundle::already_inside_bundle() {
+        check_tap(report).await;
+        return Ok(());
+    }
+
+    let destination = crate::macos_bundle::repair_destination()?;
+    let state = crate::macos_bundle::inspect_bundle(&destination);
+    report.lines.push(bundle_state_line(&destination, &state));
+    let ready = matches!(state, BundleState::Ready);
+
+    if !ready {
+        if args.fix {
+            let identity =
+                crate::macos_bundle::resolve_signing_identity(args.sign_self.as_deref())?;
+            install_current_bundle(&destination, &identity)?;
+            report.lines.push(format!(
+                "tap bundle repaired: {} (identity={identity})",
+                destination.display()
+            ));
+        } else if terminal_is_interactive() {
+            let identity = match crate::macos_bundle::resolve_signing_identity(None) {
+                Ok(identity) => identity,
+                Err(error) => {
+                    report
+                        .lines
+                        .push(format!("tap bundle repair unavailable: {error}"));
+                    report.warnings += 1;
+                    return Ok(());
+                }
+            };
+            eprintln!(
+                "Core Audio Tap bundle repair:\n  destination: {}\n  identity: {identity}",
+                destination.display()
+            );
+            if !confirm_optional("Repair the Core Audio Tap bundle now? [y/N] ").await? {
+                report.lines.push(format!(
+                    "tap bundle repair: declined; run `scrybe doctor --check-tap --fix --sign-self {identity}`"
+                ));
+                report.warnings += 1;
+                return Ok(());
+            }
+            install_current_bundle(&destination, &identity)?;
+            report.lines.push(format!(
+                "tap bundle repaired: {} (identity={identity})",
+                destination.display()
+            ));
+        } else {
+            report.lines.push(
+                "tap bundle repair: skipped (non-interactive); run `scrybe doctor --check-tap --fix --sign-self <identity>`"
+                    .to_string(),
+            );
+            report.warnings += 1;
+            return Ok(());
+        }
+    }
+
+    if explicit_probe {
+        run_bundled_tap_probe(&destination, report).await;
+    } else if args.fix {
+        return Ok(());
+    } else if terminal_is_interactive() {
+        if confirm_optional("Run the live Core Audio Tap permission check now? [y/N] ").await? {
+            run_bundled_tap_probe(&destination, report).await;
+        } else {
+            report
+                .lines
+                .push("tap probe: declined; run `scrybe doctor --check-tap` later".to_string());
+        }
+    } else {
+        report.lines.push(
+            "tap probe: skipped (non-interactive); run `scrybe doctor --check-tap`".to_string(),
+        );
+    }
+    Ok(())
+}
+
+#[cfg(all(target_os = "macos", feature = "system-capture-mac"))]
+fn bundle_state_line(path: &std::path::Path, state: &crate::macos_bundle::BundleState) -> String {
+    use crate::macos_bundle::BundleState;
+
+    match state {
+        BundleState::Missing => format!("tap bundle: missing ({})", path.display()),
+        BundleState::Invalid { reason } => {
+            format!("tap bundle: invalid ({reason}; {})", path.display())
+        }
+        BundleState::Stale { found_version } => format!(
+            "tap bundle: stale (found {found_version}, need {}; {})",
+            env!("CARGO_PKG_VERSION"),
+            path.display()
+        ),
+        BundleState::Ready => format!("tap bundle: ready ({})", path.display()),
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "system-capture-mac"))]
+fn install_current_bundle(destination: &std::path::Path, identity: &str) -> Result<()> {
+    let binary = std::env::current_exe().context("resolving installed scrybe executable")?;
+    crate::macos_bundle::install_bundle(&binary, destination, identity)?;
+    match crate::macos_bundle::inspect_bundle(destination) {
+        crate::macos_bundle::BundleState::Ready => Ok(()),
+        state => anyhow::bail!("repaired Tap bundle failed final validation: {state:?}"),
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "system-capture-mac"))]
+async fn run_bundled_tap_probe(destination: &std::path::Path, report: &mut Report) {
+    eprintln!(
+        "scrybe: launching Core Audio Tap diagnostic via {}",
+        destination.display()
+    );
+    match crate::bundle_launcher::launch_doctor_probe_via_bundle(destination).await {
+        Ok(output) => {
+            report.lines.extend(
+                output
+                    .stdout
+                    .lines()
+                    .map(|line| format!("tap bundle stdout: {line}")),
+            );
+            report.lines.extend(
+                output
+                    .stderr
+                    .lines()
+                    .map(|line| format!("tap bundle stderr: {line}")),
+            );
+            if !output.success {
+                report.warnings += 1;
+                report.lines.push(
+                    "tap bundle probe: bundled diagnostic did not report success".to_string(),
+                );
+            }
+        }
+        Err(error) => {
+            report.warnings += 1;
+            report
+                .lines
+                .push(format!("tap bundle probe: launch failed: {error:#}"));
+        }
+    }
+}
+
+#[cfg(not(all(target_os = "macos", feature = "system-capture-mac")))]
+async fn run_tap_onboarding(args: &Args, report: &mut Report, _explicit_probe: bool) -> Result<()> {
+    report
+        .lines
+        .push("system audio backend: Core Audio Tap".to_string());
+    if args.fix {
+        anyhow::bail!("Tap bundle repair requires macOS and the `system-capture-mac` feature");
+    }
+    check_tap(report).await;
+    Ok(())
 }
 
 fn scan_root(root: &std::path::Path, report: &mut Report) -> Result<()> {
@@ -586,5 +851,33 @@ mod tests {
         // the test asserts that the scanner observes the lock without
         // panicking and reports a session.
         assert!(report.lines.iter().any(|l| l.contains("session-x")));
+    }
+
+    #[test]
+    fn onboarding_target_is_microphone_only_for_mic_source() {
+        let mut cfg = Config::default();
+        cfg.record.source = "mic".to_string();
+
+        assert_eq!(
+            effective_onboarding_target(&cfg),
+            OnboardingTarget::MicrophoneOnly
+        );
+    }
+
+    #[test]
+    fn onboarding_target_uses_configured_system_backend() {
+        let mut cfg = Config::default();
+        cfg.record.source = RECORD_SOURCE_MIC_SYSTEM.to_string();
+        cfg.record.system_backend = RECORD_SYSTEM_BACKEND_TAP.to_string();
+        assert_eq!(
+            effective_onboarding_target(&cfg),
+            OnboardingTarget::CoreAudioTap
+        );
+
+        cfg.record.system_backend = "sck".to_string();
+        assert_eq!(
+            effective_onboarding_target(&cfg),
+            OnboardingTarget::ScreenCaptureKit
+        );
     }
 }

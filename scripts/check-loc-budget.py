@@ -206,8 +206,10 @@ LOC_CEILINGS: dict[str, int] = {
     # Raised to 5750 for the shared macOS bundle lifecycle: single-source
     # discovery and identity policy, four-state validation, temporary sibling
     # construction, signature verification, and rollback-safe replacement.
-    # Doctor prompting and Launch Services handoff remain separately gated.
-    "scrybe-cli": 5750,
+    # Raised to 6200 for backend-aware doctor onboarding: TTY-gated SCK and
+    # Tap flows, explicit repair precedence, bounded Launch Services handoff,
+    # private diagnostic output capture, and corrected Tap-only CLI guidance.
+    "scrybe-cli": 6200,
     # Raised to 2700 for M6's opt-in transactional VoiceProcessingIO path:
     # explicit device/format/processing configuration, ducking suppression,
     # RAII cleanup, and a plain-input fallback proved against forced failures.

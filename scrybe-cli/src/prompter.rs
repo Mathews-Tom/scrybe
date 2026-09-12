@@ -50,9 +50,12 @@ fn render_prompt_body(mode: ConsentMode) -> String {
     )
 }
 
+pub fn is_affirmative_response(answer: &str) -> bool {
+    matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+}
+
 fn parse_consent_response(answer: &str) -> Result<(), ConsentError> {
-    let trimmed = answer.trim().to_ascii_lowercase();
-    if trimmed == "y" || trimmed == "yes" {
+    if is_affirmative_response(answer) {
         Ok(())
     } else {
         Err(ConsentError::UserAborted)

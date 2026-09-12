@@ -8,9 +8,9 @@
 //!
 //! Resolves capture source, Whisper model, and LLM kind from config
 //! defaults plus platform probes (see `scrybe_core::record_defaults`).
-//! On macOS with `mic+system` source, auto-launches via the `.app`
-//! bundle so `TCC`'s `AudioCapture` grant binds to the bundle's
-//! responsible process — see `.docs/handoff.md` §1 and §7 for why.
+//! On macOS, `mic+system` with the Core Audio Tap backend auto-launches
+//! via the `.app` bundle so `TCC`'s `AudioCapture` grant binds to the
+//! responsible process. `ScreenCaptureKit` runs directly.
 //!
 //! Power users and CI scripts that need explicit flag control should
 //! use `scrybe rec` instead; this command is the happy path for
@@ -75,8 +75,8 @@ pub struct Args {
     pub root: Option<PathBuf>,
 
     /// Force in-process invocation; do not auto-launch via the .app
-    /// bundle even on macOS. Used to bypass TCC binding for unit
-    /// testing or non-system-tap recordings.
+    /// bundle for Core Audio Tap. Used for unit tests and direct
+    /// troubleshooting of the legacy Tap path.
     #[arg(long, hide = true)]
     pub no_bundle: bool,
 }

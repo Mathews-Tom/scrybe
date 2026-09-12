@@ -35,8 +35,8 @@ pub enum Command {
     Devices(devices::Args),
     /// Record a session with sensible defaults: `scrybe record TITLE`.
     /// Resolves capture source, Whisper model, and LLM kind from
-    /// config plus platform probes; on macOS auto-launches via the
-    /// `.app` bundle so the `AudioCapture` `TCC` grant binds correctly.
+    /// config plus platform probes. On macOS, only the Core Audio Tap
+    /// backend auto-launches through the `.app` bundle for TCC.
     Record(record::Args),
     /// Record a session end-to-end with explicit flags. Used by CI,
     /// scripts, and advanced users; prefer `scrybe record TITLE` for
@@ -129,6 +129,8 @@ mod tests {
             root: Some(dir.path().to_path_buf()),
             check_tap: false,
             check_sck: false,
+            fix: false,
+            sign_self: None,
         }))
         .await
         .unwrap();
