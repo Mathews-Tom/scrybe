@@ -19,6 +19,10 @@
 //! inner binary silently zero-fills the system tap. PR #49
 //! (closed-unmerged) is the empirical confirmation.
 
+#[cfg(target_os = "macos")]
+use std::ffi::OsString;
+#[cfg(target_os = "macos")]
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -33,6 +37,129 @@ const STARTUP_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const STARTUP_POLL_TIMEOUT: Duration = Duration::from_secs(8);
 const EXIT_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const FINALIZATION_STATUS_INTERVAL: Duration = Duration::from_secs(10);
+#[cfg(target_os = "macos")]
+const DOCTOR_PROBE_TIMEOUT: Duration = Duration::from_secs(20);
+
+#[cfg(target_os = "macos")]
+#[derive(Debug)]
+pub struct DoctorProbeOutput {
+    pub success: bool,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+#[cfg(target_os = "macos")]
+pub async fn launch_doctor_probe_via_bundle(bundle_path: &Path) -> Result<DoctorProbeOutput> {
+    let output_dir = PrivateTempDir::new()?;
+    let stdout_path = output_dir.path().join("stdout.txt");
+    let stderr_path = output_dir.path().join("stderr.txt");
+    fs::File::create(&stdout_path).context("creating private doctor stdout capture")?;
+    fs::File::create(&stderr_path).context("creating private doctor stderr capture")?;
+
+    let args = doctor_open_args(bundle_path, &stdout_path, &stderr_path);
+    let mut command = Command::new("open");
+    command.args(&args).kill_on_drop(true);
+    let mut child = command
+        .spawn()
+        .context("invoking macOS `open` for the bundled Tap diagnostic")?;
+    let Ok(result) = tokio::time::timeout(DOCTOR_PROBE_TIMEOUT, child.wait()).await else {
+        child
+            .kill()
+            .await
+            .context("stopping timed-out bundled Tap diagnostic")?;
+        anyhow::bail!(
+            "bundled Tap diagnostic exceeded {} seconds; retry `scrybe doctor --check-tap`",
+            DOCTOR_PROBE_TIMEOUT.as_secs()
+        );
+    };
+    let status = result.context("waiting for the bundled Tap diagnostic")?;
+    let stdout = tokio::fs::read_to_string(&stdout_path)
+        .await
+        .context("reading bundled doctor stdout")?;
+    let stderr = tokio::fs::read_to_string(&stderr_path)
+        .await
+        .context("reading bundled doctor stderr")?;
+    output_dir.close()?;
+    Ok(DoctorProbeOutput {
+        success: status.success() && bundled_tap_probe_succeeded(&stdout),
+        stdout,
+        stderr,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn bundled_tap_probe_succeeded(stdout: &str) -> bool {
+    stdout
+        .lines()
+        .any(|line| line.starts_with("tap probe:") && line.ends_with("→ OK"))
+}
+
+#[cfg(target_os = "macos")]
+fn doctor_open_args(bundle_path: &Path, stdout_path: &Path, stderr_path: &Path) -> Vec<OsString> {
+    [
+        OsString::from("-W"),
+        OsString::from("-n"),
+        OsString::from("-o"),
+        stdout_path.as_os_str().to_owned(),
+        OsString::from("--stderr"),
+        stderr_path.as_os_str().to_owned(),
+        bundle_path.as_os_str().to_owned(),
+        OsString::from("--args"),
+        OsString::from("doctor"),
+        OsString::from("--check-tap"),
+    ]
+    .into()
+}
+
+#[cfg(target_os = "macos")]
+struct PrivateTempDir(PathBuf);
+
+#[cfg(target_os = "macos")]
+impl PrivateTempDir {
+    fn new() -> Result<Self> {
+        use std::io::ErrorKind;
+        use std::os::unix::fs::DirBuilderExt;
+
+        let root = std::env::temp_dir();
+        for attempt in 0_u8..100 {
+            let path = root.join(format!("scrybe-doctor-{}-{attempt}", std::process::id()));
+            let mut builder = fs::DirBuilder::new();
+            builder.mode(0o700);
+            match builder.create(&path) {
+                Ok(()) => return Ok(Self(path)),
+                Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("creating private directory {}", path.display()));
+                }
+            }
+        }
+        anyhow::bail!("could not reserve a private directory for bundled doctor output");
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+
+    fn close(mut self) -> Result<()> {
+        let path = std::mem::take(&mut self.0);
+        fs::remove_dir_all(&path).with_context(|| {
+            format!(
+                "removing private doctor output directory {}",
+                path.display()
+            )
+        })
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for PrivateTempDir {
+    fn drop(&mut self) {
+        if !self.0.as_os_str().is_empty() {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+}
 
 /// Launch the bundle via `open --args` with the given `rec` argv,
 /// forward SIGINT to the bundle's PID, and tail the session's
@@ -340,5 +467,63 @@ mod tests {
         );
         let result_no_floor = newest_session_dir_after(tmp.path(), None);
         assert_eq!(result_no_floor.as_deref(), Some(a.as_path()));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn doctor_open_args_capture_only_diagnostic_streams() {
+        let args = doctor_open_args(
+            Path::new("/tmp/scrybe.app"),
+            Path::new("/private/out.txt"),
+            Path::new("/private/err.txt"),
+        );
+        let rendered = args
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            rendered,
+            [
+                "-W",
+                "-n",
+                "-o",
+                "/private/out.txt",
+                "--stderr",
+                "/private/err.txt",
+                "/tmp/scrybe.app",
+                "--args",
+                "doctor",
+                "--check-tap",
+            ]
+        );
+        assert!(!rendered.iter().any(|arg| arg.contains("audio")));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn bundled_tap_result_requires_the_probe_success_verdict() {
+        assert!(bundled_tap_probe_succeeded(
+            "config: ok\ntap probe: frames=127 peak=0.00500 → OK\nscrybe doctor: ok"
+        ));
+        assert!(!bundled_tap_probe_succeeded(
+            "tap probe: frames=127 peak=0.00000 → FAIL: silent frames"
+        ));
+        assert!(!bundled_tap_probe_succeeded("scrybe doctor: ok"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn doctor_output_directory_is_private_and_removed_explicitly() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = PrivateTempDir::new().unwrap();
+        let path = directory.path().to_path_buf();
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
+
+        directory.close().unwrap();
+
+        assert!(!path.exists());
     }
 }
