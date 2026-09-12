@@ -4,6 +4,21 @@ All notable changes to scrybe are documented here. The format follows [Keep a Ch
 
 ## [Unreleased]
 
+### Added
+
+- `scrybe doctor` now resolves microphone-only, ScreenCaptureKit, and Core Audio Tap onboarding from the effective recording configuration. Interactive terminals can approve the applicable live probe; non-interactive runs remain read-only unless `--fix --sign-self <identity>` is supplied explicitly.
+- Core Audio Tap diagnostics can repair a missing, invalid, or stale local bundle through the shared bundle lifecycle and run the probe through Launch Services.
+
+### Changed
+
+- `cargo install scrybe` is the primary crates.io installation command. The locked variant remains the reproducibility and troubleshooting path, and release acceptance verifies both from separate empty Cargo homes.
+- ScreenCaptureKit guidance no longer claims that default macOS system-audio capture requires an application bundle. Only the legacy Core Audio Tap backend uses the signed-bundle handoff.
+- Bundle discovery, state validation, signing-identity policy, construction, verification, and replacement are single-sourced for recording, Doctor, and the direct install command.
+
+### Security
+
+- Doctor never creates a signing identity or auto-selects an unrelated Developer ID certificate. Bundle inspection reads signed metadata without executing a discovered bundle. Launch Services probe output uses a private temporary directory, carries diagnostics rather than audio, has a bounded wait, and is removed after forwarding.
+
 ## [1.3.2] — 2026-09-11
 
 ### Added

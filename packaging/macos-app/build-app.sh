@@ -168,8 +168,6 @@ codesign --verify --deep --strict --verbose=2 "$OUTPUT" 2>&1 | sed 's/^/    /'
 echo
 echo "==> bundle ready: $OUTPUT"
 echo "    next steps:"
-echo "      1. Remove any stale TCC entry for /Users/...../scrybe via"
-echo "         System Settings → Privacy & Security → Audio Recording"
-echo "      2. Launch:  open $OUTPUT --args doctor --check-tap"
-echo "      3. Click Allow on the Audio Capture prompt that appears"
-echo "      4. Re-run the probe; expect peak > 0.01"
+echo "      1. Run: SCRYBE_BUNDLE=\"$OUTPUT\" scrybe doctor --check-tap"
+echo "      2. Click Allow on the Audio Capture prompt that appears"
+echo "      3. Re-run the probe if the first result is not peak > 0.01"

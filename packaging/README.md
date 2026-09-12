@@ -6,6 +6,12 @@ Source-of-truth templates for the package-manager surfaces named in `.docs/devel
 
 Submitting a new version to Homebrew, Scoop, AUR, Flatpak, or F-Droid is a stop condition (per the runbook prompt for this branch). Each submission has real-world cost — pushes to a tap repo, an AUR account-bound `git push`, an F-Droid metadata pull request that is human-reviewed by the F-Droid team. Holding the templates in-tree lets the maintainer re-render and submit when the release is otherwise green, without the build pipeline doing it implicitly.
 
+## User installation contract
+
+The primary crates.io command is `cargo install scrybe`. `cargo install scrybe --locked` is the reproducibility and troubleshooting variant, not the default user path. Every release qualifies both commands from separate empty Cargo homes before publication is considered complete.
+
+Package-manager copy must direct users to run `scrybe doctor` after installation. ScreenCaptureKit is the macOS default and needs no application bundle or signing identity. Only the Core Audio Tap recovery backend requires the guided signed-bundle repair documented in `INSTALL.md`.
+
 ## Render workflow
 
 For any tag `vX.Y.Z`:

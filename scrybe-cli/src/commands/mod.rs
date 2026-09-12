@@ -55,7 +55,7 @@ pub enum Command {
     /// Recover `audio.opus` from a crashed or `SIGKILL`ed session's
     /// journal.
     Repair(repair::Args),
-    /// Create a locally self-signed macOS app bundle for system-audio TCC.
+    /// Create a locally self-signed macOS app bundle for Core Audio Tap TCC.
     InstallMacosBundle(install_macos_bundle::Args),
     /// Verify a completed macOS qualification session and write a redacted receipt.
     Qualify(qualify::Args),

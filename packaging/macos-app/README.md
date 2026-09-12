@@ -1,8 +1,8 @@
 # macOS `.app` bundle
 
-Source-checkout tooling for wrapping the `scrybe` CLI into a macOS application bundle. The bundle is required — not optional — for system-audio capture on macOS 14.4 and later: TCC (Transparency, Consent, and Control) refuses to surface an Audio Capture consent prompt against a bare CLI binary, so `--source mic+system` recordings made from `~/.cargo/bin/scrybe` directly receive zero-filled buffers from the Core Audio Tap.
+Source-checkout tooling for wrapping the `scrybe` CLI into a macOS application bundle. The bundle is required only for the Core Audio Tap recovery backend on macOS 14.4 and later: TCC (Transparency, Consent, and Control) refuses to surface an Audio Capture consent prompt against a bare CLI binary, so Tap recordings made from `~/.cargo/bin/scrybe` directly receive zero-filled buffers. The default ScreenCaptureKit backend runs from the invoking terminal and requires no bundle or signing identity.
 
-`build-app.sh` consumes the canonical templates embedded in the publishable `scrybe` package under `scrybe-cli/assets/macos/`.
+`build-app.sh` consumes the canonical templates embedded in the publishable `scrybe` package under `scrybe-cli/assets/macos/`. Normal users should run `scrybe doctor`; the script remains the source-checkout packaging surface.
 
 ## Files
 
@@ -12,7 +12,7 @@ Source-checkout tooling for wrapping the `scrybe` CLI into a macOS application b
 | `../../scrybe-cli/assets/macos/entitlements.plist` | Code-signing entitlements. Declares `com.apple.security.device.audio-input` for tap delivery under the hardened runtime, plus the JIT/library-validation relaxations whisper-rs needs at inference time. |
 | `build-app.sh` | Renders the template, copies the binary into `Contents/MacOS/`, optionally code-signs against either a real Developer ID identity or a self-signed Keychain identity, and runs `codesign --verify`. |
 
-## Why a bundle is required
+## Why Core Audio Tap requires a bundle
 
 A bare Mach-O at `~/.cargo/bin/scrybe` cannot receive Audio Capture consent. The OS-level chain is:
 
@@ -23,52 +23,48 @@ A bare Mach-O at `~/.cargo/bin/scrybe` cannot receive Audio Capture consent. The
 
 The result: `scrybe doctor --check-tap` reports `frames=141 peak=0.0000` — frames flow at the expected ~94 Hz cadence, but every sample is exactly `0.0`. That signature is unambiguous: the OS is stripping the audio at the entitlement boundary, not before it reaches us.
 
-## Self-signed cert workflow (free, no Apple Developer membership)
+## Self-signed certificate workflow (free, no Apple Developer membership)
 
-A self-signed certificate created in Keychain Access satisfies TCC's csreq check without paying Apple. The certificate has no chain of trust and Gatekeeper will warn on first launch, but for local development that is acceptable.
+A self-signed certificate created in Keychain Access satisfies TCC's csreq check without paying Apple. The certificate has no chain of trust and Gatekeeper will warn on first launch, but it gives rebuilt local bundles a stable designated requirement.
 
 ```text
 Keychain Access → Certificate Assistant → Create a Certificate
   Name: scrybe-local-signing
   Identity Type: Self Signed Root
   Certificate Type: Code Signing
-  ✓ Let me override defaults    → Continue
-  Validity period: 3650 days     → Continue through remaining defaults
+  Let me override defaults → Continue
+  Validity period: 3650 days → Continue through remaining defaults
 ```
 
-Verify the cert is in your keychain:
+Verify the certificate is in your keychain:
 
 ```sh
-security find-identity -v -p codesigning | grep scrybe-local-signing
+security find-identity -v -p codesigning
 ```
 
-Then build and sign the bundle:
+For a crates.io installation, let Doctor build, sign, verify, and launch the temporary bundle:
+
+```sh
+cargo install scrybe
+scrybe doctor --check-tap --fix --sign-self scrybe-local-signing
+```
+
+Doctor accepts only the named identity and never auto-selects an unrelated Developer ID certificate. It validates a temporary sibling bundle before replacement and preserves an existing valid bundle when candidate construction or validation fails.
+
+For development against a source checkout, install the current binary and invoke the same application-owned lifecycle:
 
 ```sh
 cargo install --path scrybe-cli --force --locked \
     --features cli-shell,hook-git,mic-capture,system-capture-mac,whisper-local,encoder-opus,llm-openai-compat
-packaging/macos-app/build-app.sh \
-    --binary "$HOME/.cargo/bin/scrybe" \
-    --output ./scrybe.app \
-    --sign-self scrybe-local-signing
+scrybe install-macos-bundle --sign-self scrybe-local-signing --output ./scrybe.app
+scrybe doctor --check-tap
 ```
 
-Remove any stale TCC entry, launch the bundle, and accept the prompt:
+A macOS dialog asks permission to capture system audio. Click **Allow**. Re-run the probe if the first grant flow does not yet return `peak > 0.01`.
 
-```text
-System Settings → Privacy & Security → Audio Recording
-  click scrybe (if listed)  → click `-`  → quit Settings
-```
+## Optional Developer ID workflow
 
-```sh
-open ./scrybe.app --args doctor --check-tap
-```
-
-A macOS dialog appears asking permission to capture system audio. Click **Allow**. Re-run the probe — `peak > 0.01` should appear in the verdict.
-
-## Developer ID workflow (for distribution)
-
-For builds intended to ship to other machines via the GitHub Releases tarball, replace `--sign-self` with `--sign` and pass the full Developer ID Application identity:
+If the project later enables Developer ID distribution, the source-checkout script accepts the full Developer ID Application identity:
 
 ```sh
 packaging/macos-app/build-app.sh \
@@ -77,20 +73,19 @@ packaging/macos-app/build-app.sh \
     --sign "Developer ID Application: Your Name (TEAMID)"
 ```
 
-The Developer ID requires a paid Apple Developer membership ($99/year). Notarization is a separate step and is currently out of scope for the v1 release line per `README.md:151`.
+The Developer ID requires a paid Apple Developer membership ($99/year). Notarization is a separate step and is currently out of scope for the v1 release line.
 
 ## Iteration loop
 
-Each `cargo install --path scrybe-cli --force` rewrites the binary at `~/.cargo/bin/scrybe`. Re-run `build-app.sh` after every install to refresh the bundle:
+Each `cargo install --path scrybe-cli --force` rewrites the binary at `~/.cargo/bin/scrybe`. Refresh and validate the development bundle through the application-owned command:
 
 ```sh
-alias scrybe-rebundle='packaging/macos-app/build-app.sh \
-    --binary "$HOME/.cargo/bin/scrybe" \
-    --output ./scrybe.app \
-    --sign-self scrybe-local-signing'
+scrybe install-macos-bundle \
+    --sign-self scrybe-local-signing \
+    --output ./scrybe.app
 ```
 
-Because the Subject Common Name in the cert is stable, the rebuilt bundle's designated requirement matches the existing TCC grant — no second permission prompt.
+Because the Subject Common Name in the certificate is stable, the rebuilt bundle's designated requirement matches the existing TCC grant and avoids an unnecessary second permission prompt.
 
 ## Verifying
 
