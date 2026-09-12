@@ -13,11 +13,11 @@ Install the complete application from crates.io without cloning the repository:
 ```sh
 xcode-select --install   # one-time; no-op when already installed
 rustup toolchain install 1.95.0
-rustup run 1.95.0 cargo install scrybe --locked
+rustup run 1.95.0 cargo install scrybe
 scrybe doctor
 ```
 
-The crates.io package enables microphone capture, ScreenCaptureKit system audio, local Whisper, Opus, OpenAI-compatible notes, and the desktop shell. Cargo builds native dependencies locally, so this path takes longer than the prebuilt installer.
+The crates.io package enables microphone capture, ScreenCaptureKit system audio, local Whisper, Opus, OpenAI-compatible notes, and the desktop shell. Cargo builds native dependencies locally, so this path takes longer than the prebuilt installer. Use `cargo install scrybe --locked` only to reproduce the exact dependency graph qualified for a release or troubleshoot a registry install. The release gate verifies both the normal dependency resolution and the locked package graph.
 
 ## macOS — prebuilt quick install
 
@@ -29,7 +29,7 @@ scrybe doctor
 
 The installer detects your CPU architecture, downloads the matching tarball, verifies its SHA256 against `dist-manifest.json`, installs `scrybe` into `~/.cargo/bin/` or `~/.local/bin/`, and updates `PATH` when required.
 
-`curl` does not attach `com.apple.quarantine`, so this path does not require a manual `xattr` command. `scrybe doctor` checks permission state, disk space, and prerequisites before the first session.
+`curl` does not attach `com.apple.quarantine`, so this path does not require a manual `xattr` command. On an interactive terminal, `scrybe doctor` resolves the configured capture backend, explains its permission scope, and offers the applicable live probe. It remains read-only when stdin or stderr is redirected unless `--fix --sign-self <identity>` is supplied explicitly.
 
 ---
 
@@ -88,7 +88,7 @@ scrybe --version
 scrybe doctor
 ```
 
-`scrybe doctor` checks permission state, disk space, and reports any missing prerequisites.
+`scrybe doctor` reports configuration, storage, egress posture, the selected capture backend, and any missing prerequisites. It asks before a live permission probe or Core Audio Tap bundle repair. Declining leaves the filesystem unchanged and prints the explicit command for later.
 
 ---
 
@@ -128,19 +128,21 @@ download quarantine attribute.
 The default application build already includes the live microphone and system-audio adapters:
 
 ```sh
-cargo install scrybe --locked
+cargo install scrybe
 ```
 
 ### ScreenCaptureKit default: macOS 13+
 
 `[record].system_backend = "sck"` is the default. It works from the invoking terminal and does not need an `.app` bundle, signing identity, or Launch Services.
 
-The first `scrybe doctor --check-sck` or `scrybe record "client-call"` run asks for **Screen & System Audio Recording**. This is broader than audio-only consent: macOS categorizes the grant as screen recording even though scrybe registers only an audio output handler. Grant it in System Settings → Privacy & Security → Screen & System Audio Recording, then verify the actual audio path:
+Run `scrybe doctor` from an interactive terminal after configuring Scrybe. Doctor reports `system audio backend: ScreenCaptureKit` and offers the live system-audio permission check. An affirmative response runs the existing probe directly; a decline performs no mutation and prints the explicit command:
 
 ```sh
 scrybe doctor --check-sck
 # expected: sck probe: frames=N peak=0.00… → OK
 ```
+
+The first probe or `scrybe record "client-call"` asks for **Screen & System Audio Recording**. This is broader than audio-only consent: macOS categorizes the grant as screen recording even though Scrybe registers only an audio output handler. Grant it in System Settings → Privacy & Security → Screen & System Audio Recording.
 
 Do not grant this permission when its screen-recording scope is unacceptable. Use microphone-only capture instead:
 
@@ -150,14 +152,31 @@ scrybe record "client-call" --source mic
 
 ### Core Audio Tap recovery path: macOS 14.4+
 
-Set `[record].system_backend = "tap"` or pass `scrybe rec --system-backend tap` only to recover from a ScreenCaptureKit failure or compare adapters. Tap requires the narrower Audio Capture permission but also needs a signed `.app` bundle because TCC cannot attach its grant to a bare CLI binary.
+Set `[record].system_backend = "tap"` or pass `scrybe rec --system-backend tap` only to recover from a ScreenCaptureKit failure or compare adapters. Tap requires the narrower Audio Capture permission and a signed `.app` bundle because TCC cannot attach its grant to a bare CLI binary. ScreenCaptureKit and microphone-only use do not require this bundle.
+
+Run `scrybe doctor`. Doctor inspects the Tap bundle, reports whether it is missing, invalid, stale, or ready, and offers repair before the live probe. Repair looks only for the project identity `scrybe-local-signing`; it never creates an identity or auto-selects an unrelated Developer ID certificate.
+
+Create the identity once when Doctor reports that it is unavailable:
+
+```text
+Keychain Access → Certificate Assistant → Create a Certificate
+  Name: scrybe-local-signing
+  Identity Type: Self Signed Root
+  Certificate Type: Code Signing
+  Let me override defaults → Continue
+  Validity period: 3650 days → Continue through remaining defaults
+```
+
+Then rerun `scrybe doctor` and confirm the displayed destination and identity. For an explicit probe with non-interactive repair:
 
 ```sh
-open ./scrybe.app --args doctor --check-tap
+scrybe doctor --check-tap --fix --sign-self scrybe-local-signing
 # expected: tap probe: frames=N peak=0.00… → OK
 ```
 
-`scrybe record` detects the legacy Tap backend and relaunches through an available bundle. Direct `scrybe rec --system-backend tap` remains for advanced diagnosis. If Tap fails to start or emits only zero-valued frames during its 1.5 s startup window, scrybe stops it and switches once to ScreenCaptureKit; a quiet desktop can therefore switch before external audio begins.
+`--fix` and `--sign-self` are a pair: each requires the other. The direct `scrybe install-macos-bundle --sign-self scrybe-local-signing` operation remains available for packaging and advanced diagnosis. Both paths build and verify a temporary sibling bundle before replacing the destination, preserving an existing valid bundle if candidate creation or validation fails.
+
+`scrybe record` detects the legacy Tap backend and relaunches through an available bundle. Direct `scrybe rec --system-backend tap` remains for advanced diagnosis. If Tap fails to start or emits only zero-valued frames during its 1.5 s startup window, Scrybe stops it and switches once to ScreenCaptureKit; a quiet desktop can therefore switch before external audio begins.
 
 ---
 
@@ -366,7 +385,7 @@ A `--no-default-features` source build rejects `--llm openai-compat` rather than
 `scrybe mcp` serves `list_recent_meetings`, `search_meetings`, `get_meeting`, `get_meeting_notes`, and `get_meeting_transcript` as MCP tools over newline-delimited JSON-RPC on stdin/stdout. It is off by default at two layers: the binary needs the `agent-access` build feature, and the running config needs an explicit opt-in.
 
 ```sh
-cargo install scrybe --locked --features agent-access
+cargo install scrybe --features agent-access
 ```
 
 Enable it in `config.toml`:

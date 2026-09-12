@@ -126,17 +126,23 @@ cargo publish -p scrybe --dry-run --locked
 cargo publish -p scrybe --locked
 ```
 
-Do not proceed to the GitHub tag until crates.io installs the application from the registry:
+Do not proceed to the GitHub tag until crates.io installs the application twice from separate empty Cargo homes. The first command verifies the documented default resolver; the second verifies the package lockfile qualified for publication:
 
 ```sh
-INSTALL_ROOT="$(mktemp -d)"
-CARGO_HOME="$(mktemp -d)" rustup run 1.95.0 cargo install scrybe --version 1.3.2 --locked --root "$INSTALL_ROOT"
-"$INSTALL_ROOT/bin/scrybe" --version
-"$INSTALL_ROOT/bin/scrybe" doctor
-"$INSTALL_ROOT/bin/scrybe" record --help
+UNLOCKED_CARGO_HOME="$(mktemp -d)"
+UNLOCKED_INSTALL_ROOT="$(mktemp -d)"
+CARGO_HOME="$UNLOCKED_CARGO_HOME" rustup run 1.95.0 cargo install scrybe --root "$UNLOCKED_INSTALL_ROOT"
+"$UNLOCKED_INSTALL_ROOT/bin/scrybe" --version
+"$UNLOCKED_INSTALL_ROOT/bin/scrybe" doctor
+"$UNLOCKED_INSTALL_ROOT/bin/scrybe" record --help
+
+LOCKED_CARGO_HOME="$(mktemp -d)"
+LOCKED_INSTALL_ROOT="$(mktemp -d)"
+CARGO_HOME="$LOCKED_CARGO_HOME" rustup run 1.95.0 cargo install scrybe --locked --root "$LOCKED_INSTALL_ROOT"
+"$LOCKED_INSTALL_ROOT/bin/scrybe" --version
 ```
 
-The version must be `scrybe 1.3.2`; `doctor` and `record --help` must execute without a repository checkout.
+Both version commands must report `scrybe 1.3.2`. `doctor` and `record --help` must execute without a repository checkout. Run Doctor from a terminal and decline the optional live permission probe during this registry-only acceptance; the release's hardware qualification covers the real probes separately.
 
 ## Publish the GitHub Release
 

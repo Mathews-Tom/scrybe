@@ -4,16 +4,14 @@
 // You may obtain a copy of the License at
 //     https://www.apache.org/licenses/LICENSE-2.0
 
-//! macOS bundle launcher for the ergonomic `scrybe record <title>`
-//! subcommand.
+//! macOS Launch Services handoff for Core Audio Tap recording and diagnostics.
 //!
-//! Wraps `open --args` to launch the `.app` bundle through Launch
-//! Services so `TCC`'s `AudioCapture` grant binds to the bundle's
-//! responsible process, then forwards SIGINT from the controlling
-//! terminal to the launched bundle process. The launcher polls the
-//! session storage root for the new session folder and tails its
-//! `transcript.md` so the user sees per-chunk transcription progress
-//! during the recording.
+//! Recording launches the `.app` bundle through `open --args` so `TCC`'s
+//! `AudioCapture` grant binds to the responsible process, forwards SIGINT from
+//! the controlling terminal, locates the new session, and tails its transcript.
+//! Doctor launches a bounded bundled Tap probe, captures diagnostic stdout and
+//! stderr in a private temporary directory, and forwards the result without
+//! persisting audio.
 //!
 //! See `.docs/handoff.md` §1 and §7 for why direct invocation of the
 //! inner binary silently zero-fills the system tap. PR #49

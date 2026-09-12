@@ -13,8 +13,8 @@
 #                              from the release's `SHA256SUMS.txt`.
 #
 # `brew install` from a tap is the prebuilt alternative to
-# `cargo install scrybe --locked`. Tap-installed binaries inherit the tap's
-# trust posture; no Gatekeeper "Apple cannot verify" prompt fires.
+# `cargo install scrybe`. Tap-installed binaries inherit the tap's trust
+# posture; no Gatekeeper "Apple cannot verify" prompt fires.
 
 class Scrybe < Formula
   desc "Local-first meeting transcription — capture, transcribe, summarize on device"

@@ -609,7 +609,7 @@ async fn check_tap(report: &mut Report) {
         "FAIL: IOProc never fired (entitlement, sandbox, or aggregate-device construction failure)"
     } else if peak < PROBE_CHIME_PASS_THRESHOLD {
         report.warnings += 1;
-        "FAIL: tap delivered silent frames (TCC cannot consent because this binary has no `.app` bundle + Info.plist)"
+        "FAIL: tap delivered silent frames (Audio Capture permission denied, stale, or routed away)"
     } else {
         "OK"
     };
@@ -617,13 +617,10 @@ async fn check_tap(report: &mut Report) {
         "tap probe: frames={frame_count} peak={peak:.5} → {verdict}"
     ));
 
-    // When the tap is silent, surface concrete remediation steps so the
-    // user can act without leaving the terminal. The dominant root cause
-    // (per Reddit r/rust 1t4y3bd) is missing bundle structure: TCC
-    // cannot attach an Audio Capture grant to a bare CLI binary without
-    // an Info.plist declaring `NSAudioCaptureUsageDescription`. The
-    // signing identity matters too — ad-hoc identities don't survive
-    // rebuilds because the designated requirement is hash-pinned.
+    // A running tap with zero-valued samples most often means macOS withheld
+    // Audio Capture data from an otherwise valid bundle. Keep remediation on
+    // the guided doctor path rather than asking users to invoke the app or
+    // packaging script directly.
     if frame_count > 0 && peak < PROBE_CHIME_PASS_THRESHOLD {
         emit_silent_tap_remediation(report);
     }
@@ -636,23 +633,18 @@ async fn check_tap(report: &mut Report) {
 fn emit_silent_tap_remediation(report: &mut Report) {
     report.lines.push("  remediation:".to_string());
     report.lines.push(
-        "    1. Build a `.app` bundle: packaging/macos-app/build-app.sh \
-         --binary $(which scrybe) --output ./scrybe.app --sign-self <cert>"
-            .to_string(),
-    );
-    report.lines.push(
-        "    2. Self-signed cert: Keychain Access → Certificate Assistant \
-         → Create a Certificate (Self Signed Root, Code Signing)"
-            .to_string(),
-    );
-    report.lines.push(
-        "    3. Remove stale TCC entry: System Settings → Privacy & Security \
+        "    1. Remove stale TCC entry: System Settings → Privacy & Security \
          → Audio Recording → click `-` next to scrybe"
             .to_string(),
     );
     report.lines.push(
-        "    4. Launch the bundle: open ./scrybe.app --args doctor --check-tap \
-         (Allow the prompt, then re-probe)"
+        "    2. Re-run `scrybe doctor --check-tap` and click Allow on the \
+         Audio Capture prompt"
+            .to_string(),
+    );
+    report.lines.push(
+        "    3. If Doctor reports a bundle problem, repair it with \
+         `scrybe doctor --check-tap --fix --sign-self scrybe-local-signing`"
             .to_string(),
     );
 
@@ -663,7 +655,7 @@ fn emit_silent_tap_remediation(report: &mut Report) {
     // remediation steps still work via the System Settings UI.
     if let Some(service) = discover_tcc_audio_service() {
         report.lines.push(format!(
-            "    5. (alternative reset) sudo tccutil reset {service} dev.scrybe.scrybe"
+            "    4. (alternative reset) sudo tccutil reset {service} dev.scrybe.scrybe"
         ));
     }
 }

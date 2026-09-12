@@ -32,11 +32,11 @@ Linux, Windows, and Android crates are present in the workspace as adapter surfa
 Install the full macOS application from crates.io:
 
 ```sh
-cargo install scrybe --locked
+cargo install scrybe
 scrybe doctor
 ```
 
-This builds Scrybe locally with microphone capture, ScreenCaptureKit system audio, Whisper, Opus, and OpenAI-compatible notes enabled. It requires Rust 1.95 and Xcode Command Line Tools.
+This builds Scrybe locally with microphone capture, ScreenCaptureKit system audio, Whisper, Opus, and OpenAI-compatible notes enabled. It requires Rust 1.95 and Xcode Command Line Tools. Use `cargo install scrybe --locked` only when reproducing the exact dependency graph qualified for a release or troubleshooting a registry install; releases qualify both forms.
 
 For a faster prebuilt installation:
 
@@ -46,7 +46,7 @@ curl --proto '=https' --tlsv1.2 -LsSf \
 scrybe doctor
 ```
 
-The GitHub installer downloads the matching macOS tarball, verifies the release checksum manifest, and installs `scrybe` on `PATH`. Both installation paths provide the same production capabilities. Manual tarball installation, release verification, and source builds are documented in [`INSTALL.md`](INSTALL.md).
+The GitHub installer downloads the matching macOS tarball, verifies the release checksum manifest, and installs `scrybe` on `PATH`. Both installation paths provide the same production capabilities. On an interactive terminal, `scrybe doctor` reads the configured capture mode, explains the required macOS permission, and offers the applicable live probe. It does not modify the system or create signing identities without an explicit confirmation. Manual tarball installation, release verification, and source builds are documented in [`INSTALL.md`](INSTALL.md).
 
 ## First Local Recording Setup
 ```sh
@@ -56,6 +56,7 @@ curl -L -o ~/Library/Application\ Support/dev.scrybe.scrybe/models/ggml-small.en
 
 ollama pull gemma4:latest
 scrybe init
+scrybe doctor
 ```
 
 On macOS, bare `scrybe init` writes the local recording profile:
@@ -86,7 +87,7 @@ scrybe list
 scrybe show <session-id>
 ```
 
-The ergonomic `scrybe record TITLE` resolves capture source, system-audio backend, Whisper model, and LLM kind from your config and platform probes. ScreenCaptureKit runs directly from the invoking terminal; the legacy `tap` backend auto-launches through the `.app` bundle so its Audio Capture TCC grant binds correctly. Use `scrybe rec --title TITLE --source … --system-backend … --whisper-model … --llm …` when you need explicit flag control (CI, debugging, alternate hardware setups).
+The ergonomic `scrybe record TITLE` resolves capture source, system-audio backend, Whisper model, and LLM kind from your config and platform probes. ScreenCaptureKit runs directly from the invoking terminal; the legacy `tap` backend auto-launches through the `.app` bundle so its Audio Capture TCC grant binds correctly. Run `scrybe doctor` after configuration to inspect the selected backend and accept or decline its live permission probe. Use `scrybe rec --title TITLE --source … --system-backend … --whisper-model … --llm …` when you need explicit flag control (CI, debugging, alternate hardware setups).
 
 Select a microphone explicitly:
 
@@ -162,8 +163,8 @@ python3 scripts/check-egress-baseline.py
 ## Current Limitations
 
 - macOS is the only polished binary distribution target today.
-- `--source mic+system` defaults to ScreenCaptureKit on macOS 13+ and requires **Screen & System Audio Recording**. This privacy permission covers screen recording in addition to system audio; deny it if that scope is unacceptable.
-- The macOS 14.4+ Core Audio Tap backend remains available as `[record].system_backend = "tap"` for recovery. It requires the narrower Audio Capture permission and a signed `.app` bundle. A failed or silent Tap switches once to ScreenCaptureKit after a 1.5 s startup window, so a quiet desktop can switch before external audio begins.
+- `--source mic+system` defaults to ScreenCaptureKit on macOS 13+ and requires **Screen & System Audio Recording**. This privacy permission covers screen recording in addition to system audio; deny it if that scope is unacceptable. ScreenCaptureKit runs from the invoking terminal and does not require an application bundle or signing identity.
+- The macOS 14.4+ Core Audio Tap backend remains available as `[record].system_backend = "tap"` for recovery. It requires the narrower Audio Capture permission and a signed `.app` bundle. `scrybe doctor` reports bundle state and offers repair with the project self-signed identity; it never creates or auto-selects a signing identity. A failed or silent Tap switches once to ScreenCaptureKit after a 1.5 s startup window, so a quiet desktop can switch before external audio begins.
 - Tray and global-hotkey shell support exists behind `cli-shell`; the headless `record` path remains the reliable path.
 - crates.io installation supports the polished macOS application. Linux and Windows recording remain parked until hardware-qualified release paths exist.
 - Native macOS notarization and Windows Authenticode signing are out of scope for the v1 line. Release artifacts are verified with checksums and cosign provenance instead.
