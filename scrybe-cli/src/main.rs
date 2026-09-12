@@ -14,6 +14,8 @@ use tokio::runtime::{Builder, Runtime};
 mod bundle_launcher;
 mod capture_control;
 mod commands;
+#[cfg(target_os = "macos")]
+mod macos_bundle;
 mod prompter;
 mod runtime;
 
