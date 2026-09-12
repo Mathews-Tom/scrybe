@@ -1,6 +1,6 @@
 [package]
 name = "scrybe-meeting-core"
-version = "1.3.2"
+version = "1.4.0"
 description = "Core session, storage, provider, and pipeline library for the Scrybe meeting recorder."
 publish = true
 authors.workspace = true

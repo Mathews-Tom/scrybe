@@ -4,6 +4,8 @@ All notable changes to scrybe are documented here. The format follows [Keep a Ch
 
 ## [Unreleased]
 
+## [1.4.0] — 2026-09-12
+
 ### Added
 
 - `scrybe doctor` now resolves microphone-only, ScreenCaptureKit, and Core Audio Tap onboarding from the effective recording configuration. Interactive terminals can approve the applicable live probe; non-interactive runs remain read-only unless `--fix --sign-self <identity>` is supplied explicitly.
@@ -119,6 +121,7 @@ This release completes the macOS capture-liveness train. A dead or wrong input d
 
 - 8 crates. Publish posture unchanged: `scrybe` is the crates.io placeholder; distribution uses cargo-dist release artifacts.
 
+[1.4.0]: https://github.com/Mathews-Tom/scrybe/releases/tag/v1.4.0
 [1.3.2]: https://github.com/Mathews-Tom/scrybe/releases/tag/v1.3.2
 [1.3.1]: https://github.com/Mathews-Tom/scrybe/releases/tag/v1.3.1
 [1.3.0]: https://github.com/Mathews-Tom/scrybe/releases/tag/v1.3.0
