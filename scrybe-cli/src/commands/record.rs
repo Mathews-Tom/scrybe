@@ -16,11 +16,11 @@
 //! use `scrybe rec` instead; this command is the happy path for
 //! end-user recording with sensible defaults.
 
-#[cfg(feature = "system-capture-mac")]
+#[cfg(all(target_os = "macos", feature = "system-capture-mac"))]
 use std::path::Path;
 use std::path::PathBuf;
 
-#[cfg(feature = "system-capture-mac")]
+#[cfg(all(target_os = "macos", feature = "system-capture-mac"))]
 use anyhow::Context;
 use anyhow::Result;
 use clap::Args as ClapArgs;
@@ -34,11 +34,6 @@ use scrybe_core::record_defaults;
 
 use crate::commands::rec::{self, CaptureSourceArg, LlmBackendArg};
 use crate::runtime::load_or_default_config;
-
-#[cfg(feature = "system-capture-mac")]
-const SCRYBE_BUNDLE_ENV: &str = "SCRYBE_BUNDLE";
-#[cfg(feature = "system-capture-mac")]
-const BUNDLE_FILE_NAME: &str = "scrybe.app";
 
 #[derive(ClapArgs, Clone, Debug)]
 pub struct Args {
@@ -97,16 +92,16 @@ pub async fn run(args: Args) -> Result<()> {
     let resolved = resolve(&cfg, &args);
 
     if should_use_bundle(&resolved, &args) {
-        #[cfg(feature = "system-capture-mac")]
+        #[cfg(all(target_os = "macos", feature = "system-capture-mac"))]
         {
-            let bundle = resolve_bundle_path()
+            let bundle = crate::macos_bundle::find_existing_bundle()
                 .context("no scrybe.app bundle found; install one or pass `--no-bundle`")?;
             let session_root = effective_session_root(&cfg, args.root.as_deref());
             let rec_argv = build_rec_argv(&resolved);
             return crate::bundle_launcher::launch_via_bundle(&bundle, &rec_argv, &session_root)
                 .await;
         }
-        #[cfg(not(feature = "system-capture-mac"))]
+        #[cfg(not(all(target_os = "macos", feature = "system-capture-mac")))]
         {
             anyhow::bail!(
                 "bundle auto-launch requires the `system-capture-mac` feature (needed for \
@@ -184,50 +179,28 @@ fn resolve(cfg: &Config, args: &Args) -> Resolved {
     }
 }
 
+// Calls `current_exe` when the macOS system-capture feature is enabled.
+#[allow(clippy::missing_const_for_fn)]
 fn should_use_bundle(resolved: &Resolved, args: &Args) -> bool {
     if args.no_bundle || !cfg!(target_os = "macos") {
         return false;
     }
-    matches!(resolved.source, CaptureSourceArg::MicSystem)
-        && matches!(resolved.system_backend, super::rec::SystemBackendArg::Tap)
-        && !already_inside_bundle()
+    let uses_tap = matches!(resolved.source, CaptureSourceArg::MicSystem)
+        && matches!(resolved.system_backend, super::rec::SystemBackendArg::Tap);
+    if !uses_tap {
+        return false;
+    }
+    #[cfg(all(target_os = "macos", feature = "system-capture-mac"))]
+    {
+        !crate::macos_bundle::already_inside_bundle()
+    }
+    #[cfg(not(all(target_os = "macos", feature = "system-capture-mac")))]
+    {
+        false
+    }
 }
 
-fn already_inside_bundle() -> bool {
-    std::env::current_exe()
-        .ok()
-        .and_then(|p| p.into_os_string().into_string().ok())
-        .is_some_and(|s| s.contains(".app/Contents/MacOS/"))
-}
-
-#[cfg(feature = "system-capture-mac")]
-fn resolve_bundle_path() -> Option<PathBuf> {
-    if let Ok(path) = std::env::var(SCRYBE_BUNDLE_ENV) {
-        let p = PathBuf::from(path);
-        if p.is_dir() {
-            return Some(p);
-        }
-    }
-    if let Ok(cwd) = std::env::current_dir() {
-        let dev = cwd.join(BUNDLE_FILE_NAME);
-        if dev.is_dir() {
-            return Some(dev);
-        }
-    }
-    let sys = PathBuf::from("/Applications").join(BUNDLE_FILE_NAME);
-    if sys.is_dir() {
-        return Some(sys);
-    }
-    if let Some(home) = directories::UserDirs::new() {
-        let user = home.home_dir().join("Applications").join(BUNDLE_FILE_NAME);
-        if user.is_dir() {
-            return Some(user);
-        }
-    }
-    None
-}
-
-#[cfg(feature = "system-capture-mac")]
+#[cfg(all(target_os = "macos", feature = "system-capture-mac"))]
 fn effective_session_root(cfg: &Config, override_root: Option<&Path>) -> PathBuf {
     if let Some(root) = override_root {
         return crate::runtime::expand_root(root);
@@ -443,25 +416,5 @@ mod tests {
         assert!(argv.iter().any(|a| a == "--whisper-model"));
         assert!(argv.iter().any(|a| a == "/m.bin"));
         assert!(argv.iter().any(|a| a == "--yes"));
-    }
-
-    #[cfg(feature = "system-capture-mac")]
-    #[test]
-    fn test_resolve_bundle_path_honors_env_override_when_dir_exists() {
-        let tmp = tempfile::tempdir().unwrap();
-        let bundle = tmp.path().join("scrybe.app");
-        std::fs::create_dir(&bundle).unwrap();
-        std::env::set_var(SCRYBE_BUNDLE_ENV, &bundle);
-        let resolved = resolve_bundle_path();
-        std::env::remove_var(SCRYBE_BUNDLE_ENV);
-        assert_eq!(resolved.as_deref(), Some(bundle.as_path()));
-    }
-
-    #[cfg(feature = "system-capture-mac")]
-    #[test]
-    fn test_resolve_bundle_path_ignores_env_when_not_a_dir() {
-        std::env::set_var(SCRYBE_BUNDLE_ENV, "/no/such/path/scrybe.app");
-        let _ = resolve_bundle_path();
-        std::env::remove_var(SCRYBE_BUNDLE_ENV);
     }
 }
