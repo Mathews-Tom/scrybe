@@ -20,8 +20,8 @@
 //! 3. Polls tray and hotkey receivers in a tight, non-async loop on
 //!    the main thread, pumping `CFRunLoopRunInMode` on macOS so
 //!    Carbon hotkey events and `NSStatusItem` menu callbacks land.
-//! 4. Translates a tray `Quit` or hotkey `Toggle` into a `watch`
-//!    stop signal consumed by the recording task.
+//! 4. Routes tray and hotkey stop requests through one idempotent
+//!    coordinator shared by every native control.
 //! 5. Joins the task once it finishes.
 //!
 //! ## Platform validation
@@ -37,7 +37,7 @@
 //! best-effort path until self-hosted Tier-3 runners come online
 //! (`.docs/development-plan.md` §11, §15.5).
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use tokio::runtime::Runtime;
@@ -52,6 +52,96 @@ use crate::tray::{IndicatorState, RecordingIndicator, TrayCommand};
 /// passed to `CFRunLoopRunInMode`; on other platforms it bounds the
 /// `thread::sleep` between event polls.
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
+
+/// Recording-shell lifecycle shown by every configured surface.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum ShellState {
+    Recording,
+    Saving,
+}
+
+/// Native control that won the stop race.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum StopSource {
+    Tray,
+    Hotkey,
+}
+
+impl StopSource {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Tray => "tray",
+            Self::Hotkey => "hotkey",
+        }
+    }
+}
+
+/// One rendering-independent snapshot for all shell surfaces.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct ShellView {
+    pub state: ShellState,
+    pub elapsed: Duration,
+    pub stop_enabled: bool,
+}
+
+impl ShellView {
+    pub fn elapsed_label(self) -> String {
+        let total_seconds = self.elapsed.as_secs();
+        let seconds = total_seconds % 60;
+        let minutes = (total_seconds / 60) % 60;
+        let hours = total_seconds / 3_600;
+        if hours == 0 {
+            format!("{minutes:02}:{seconds:02}")
+        } else {
+            format!("{hours:02}:{minutes:02}:{seconds:02}")
+        }
+    }
+}
+
+/// Owns the only Recording -> Saving transition and stop signal.
+struct StopCoordinator {
+    started_at: Instant,
+    frozen_elapsed: Option<Duration>,
+    first_source: Option<StopSource>,
+    stop_tx: watch::Sender<bool>,
+}
+
+impl StopCoordinator {
+    const fn new(started_at: Instant, stop_tx: watch::Sender<bool>) -> Self {
+        Self {
+            started_at,
+            frozen_elapsed: None,
+            first_source: None,
+            stop_tx,
+        }
+    }
+
+    fn request_stop(&mut self, source: StopSource, now: Instant) -> Option<ShellView> {
+        if self.frozen_elapsed.is_some() {
+            return None;
+        }
+        self.frozen_elapsed = Some(now.saturating_duration_since(self.started_at));
+        self.first_source = Some(source);
+        let _ = self.stop_tx.send(true);
+        Some(self.view(now))
+    }
+
+    fn view(&self, now: Instant) -> ShellView {
+        let elapsed = self
+            .frozen_elapsed
+            .unwrap_or_else(|| now.saturating_duration_since(self.started_at));
+        let state = if self.frozen_elapsed.is_some() {
+            ShellState::Saving
+        } else {
+            ShellState::Recording
+        };
+        ShellView {
+            state,
+            elapsed,
+            stop_enabled: state == ShellState::Recording,
+        }
+    }
+}
 
 /// Run a recording session under a desktop shell.
 ///
@@ -74,9 +164,10 @@ pub fn run_record_with_shell(args: Args, runtime: &Runtime) -> Result<()> {
     indicator.set_state(IndicatorState::Recording);
 
     let (stop_tx, stop_rx) = watch::channel(false);
+    let mut stop = StopCoordinator::new(Instant::now(), stop_tx);
     let task = runtime.spawn(run_with_stop(args, stop_rx));
 
-    pump_until_finished(&indicator, &hotkey, &stop_tx, &task);
+    pump_until_finished(&indicator, &hotkey, &mut stop, &task);
 
     indicator.set_state(IndicatorState::Idle);
 
@@ -89,17 +180,34 @@ pub fn run_record_with_shell(args: Args, runtime: &Runtime) -> Result<()> {
 fn pump_until_finished(
     indicator: &RecordingIndicator,
     hotkey: &HotkeyListener,
-    stop_tx: &watch::Sender<bool>,
+    stop: &mut StopCoordinator,
     task: &tokio::task::JoinHandle<Result<()>>,
 ) {
     while !task.is_finished() {
         if matches!(indicator.poll(), Some(TrayCommand::Quit)) {
-            let _ = stop_tx.send(true);
+            apply_stop_request(stop, indicator, StopSource::Tray);
         }
         if matches!(hotkey.poll(), Some(HotkeyEvent::Toggle)) {
-            let _ = stop_tx.send(true);
+            apply_stop_request(stop, indicator, StopSource::Hotkey);
         }
         pump_platform(POLL_INTERVAL);
+    }
+}
+
+fn apply_stop_request(
+    stop: &mut StopCoordinator,
+    indicator: &RecordingIndicator,
+    source: StopSource,
+) {
+    if let Some(view) = stop.request_stop(source, Instant::now()) {
+        debug_assert_eq!(view.state, ShellState::Saving);
+        debug_assert!(!view.stop_enabled);
+        indicator.set_state(IndicatorState::Saving);
+        tracing::debug!(
+            source = source.label(),
+            elapsed = view.elapsed_label(),
+            "recording stop accepted"
+        );
     }
 }
 
@@ -134,5 +242,64 @@ mod tests {
     #[test]
     fn test_poll_interval_is_at_most_50_ms_to_keep_ui_responsive() {
         assert!(POLL_INTERVAL <= Duration::from_millis(50));
+    }
+
+    #[test]
+    fn elapsed_label_uses_minutes_then_hours_without_allocating_state() {
+        let view = ShellView {
+            state: ShellState::Recording,
+            elapsed: Duration::from_secs(65),
+            stop_enabled: true,
+        };
+        assert_eq!(view.elapsed_label(), "01:05");
+        assert_eq!(
+            ShellView {
+                elapsed: Duration::from_secs(3_661),
+                ..view
+            }
+            .elapsed_label(),
+            "01:01:01"
+        );
+    }
+
+    #[test]
+    fn first_stop_source_freezes_elapsed_and_disables_every_control() {
+        let started_at = Instant::now();
+        let (stop_tx, mut stop_rx) = watch::channel(false);
+        let mut stop = StopCoordinator::new(started_at, stop_tx);
+
+        assert!(stop
+            .request_stop(StopSource::Tray, started_at + Duration::from_secs(7))
+            .is_some());
+        assert!(stop
+            .request_stop(StopSource::Tray, started_at + Duration::from_secs(9))
+            .is_none());
+        assert!(stop
+            .request_stop(StopSource::Hotkey, started_at + Duration::from_secs(11))
+            .is_none());
+        assert!(stop_rx.has_changed().unwrap());
+        assert!(*stop_rx.borrow_and_update());
+        assert!(!stop_rx.has_changed().unwrap());
+        assert_eq!(stop.first_source, Some(StopSource::Tray));
+        let view = stop.view(started_at + Duration::from_secs(20));
+        assert_eq!(view.state, ShellState::Saving);
+        assert_eq!(view.elapsed, Duration::from_secs(7));
+        assert!(!view.stop_enabled);
+    }
+
+    #[test]
+    fn recording_elapsed_advances_until_the_first_stop() {
+        let started_at = Instant::now();
+        let (stop_tx, _stop_rx) = watch::channel(false);
+        let stop = StopCoordinator::new(started_at, stop_tx);
+
+        assert_eq!(
+            stop.view(started_at + Duration::from_secs(4)),
+            ShellView {
+                state: ShellState::Recording,
+                elapsed: Duration::from_secs(4),
+                stop_enabled: true,
+            }
+        );
     }
 }

@@ -173,13 +173,10 @@ pub struct Args {
     #[arg(long, value_enum)]
     pub llm: Option<LlmBackendArg>,
 
-    /// Attach the desktop status-bar indicator (tray icon with a Quit
-    /// menu) and register the global hotkey from `[capture] hotkey`
-    /// in `config.toml`. The integrated main-thread shell driver that
-    /// surfaces tray and hotkey events into this loop lands in a
-    /// follow-up; this flag currently logs an advisory and otherwise
-    /// runs the headless path. Without `--shell` the recorder stops on
-    /// SIGINT or when the synthetic stream completes.
+    /// Show native recording indicators and accept tray, floating-window,
+    /// and global-hotkey stop requests. The shell is opt-in; without this
+    /// flag the recorder remains headless and stops on SIGINT or when the
+    /// synthetic stream completes. Requires the `cli-shell` build feature.
     #[arg(long, default_value_t = false)]
     pub shell: bool,
 }

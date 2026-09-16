@@ -32,6 +32,7 @@ pub enum TrayCommand {
 pub enum IndicatorState {
     Idle,
     Recording,
+    Saving,
 }
 
 impl IndicatorState {
@@ -41,6 +42,7 @@ impl IndicatorState {
         match self {
             Self::Idle => "scrybe — idle",
             Self::Recording => "scrybe — recording",
+            Self::Saving => "scrybe — saving",
         }
     }
 }
@@ -116,5 +118,10 @@ mod tests {
     #[test]
     fn test_indicator_state_recording_returns_recording_tooltip() {
         assert_eq!(IndicatorState::Recording.tooltip(), "scrybe — recording");
+    }
+
+    #[test]
+    fn test_indicator_state_saving_returns_saving_tooltip() {
+        assert_eq!(IndicatorState::Saving.tooltip(), "scrybe — saving");
     }
 }
