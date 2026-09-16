@@ -102,7 +102,43 @@ version = "0.6"
 [workspace.dependencies.objc2-foundation]
 version = "0.3"
 default-features = false
-features = ["std", "NSObject", "NSArray", "NSDictionary", "NSString", "NSValue"]
+features = [
+    "std",
+    "NSArray",
+    "NSDate",
+    "NSDictionary",
+    "NSObject",
+    "NSObjCRuntime",
+    "NSRunLoop",
+    "NSString",
+    "NSValue",
+]
+
+[workspace.dependencies.objc2-app-kit]
+version = "0.3"
+default-features = false
+features = [
+    "std",
+    "NSAccessibility",
+    "NSApplication",
+    "NSAccessibilityProtocols",
+    "NSAppearance",
+    "NSButton",
+    "NSBox",
+    "NSButtonCell",
+    "NSColor",
+    "NSControl",
+    "NSEvent",
+    "NSGraphics",
+    "NSResponder",
+    "NSPanel",
+    "NSScreen",
+    "NSText",
+    "NSTextField",
+    "NSView",
+    "NSWindow",
+    "NSWorkspace",
+]
 
 [workspace.dependencies.objc2-core-foundation]
 version = "0.3"
