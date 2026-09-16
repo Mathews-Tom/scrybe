@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/scrybe.svg" alt="Scrybe feather logo" width="320">
+</p>
+
 # scrybe
 
 [![Crates.io](https://img.shields.io/crates/v/scrybe.svg?label=version)](https://crates.io/crates/scrybe)
