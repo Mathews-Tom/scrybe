@@ -4,6 +4,12 @@ All notable changes to scrybe are documented here. The format follows [Keep a Ch
 
 ## [Unreleased]
 
+## [1.6.0] — 2026-09-17
+
+### Changed
+
+- Repository presentation now uses the new Scrybe banner and canonical PNG logo, while the macOS menu-bar branding slot uses a purpose-sized transparent 18×18 RGBA8 derivative.
+
 ## [1.5.0] — 2026-09-16
 
 ### Added
@@ -132,7 +138,8 @@ This release completes the macOS capture-liveness train. A dead or wrong input d
 
 - 8 crates. Publish posture unchanged: `scrybe` is the crates.io placeholder; distribution uses cargo-dist release artifacts.
 
-[Unreleased]: https://github.com/Mathews-Tom/scrybe/compare/v1.5.0...HEAD
+[Unreleased]: https://github.com/Mathews-Tom/scrybe/compare/v1.6.0...HEAD
+[1.6.0]: https://github.com/Mathews-Tom/scrybe/releases/tag/v1.6.0
 [1.5.0]: https://github.com/Mathews-Tom/scrybe/releases/tag/v1.5.0
 [1.4.0]: https://github.com/Mathews-Tom/scrybe/releases/tag/v1.4.0
 [1.3.2]: https://github.com/Mathews-Tom/scrybe/releases/tag/v1.3.2

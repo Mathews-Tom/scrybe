@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/scrybe.svg" alt="Scrybe feather logo" width="320">
+  <img src="assets/banner.png" alt="Scrybe banner" width="100%">
 </p>
 
 # scrybe
@@ -11,7 +11,7 @@
 
 scrybe is an open-source meeting transcription tool built around one constraint: the meeting artifacts belong on the user's machine as ordinary files. It captures audio locally, transcribes it with either local Whisper or a user-configured OpenAI-compatible provider, generates Markdown notes, and writes everything under `~/scrybe/`.
 
-Current release: `v1.5.0`.
+Current release: `v1.6.0`.
 
 ## What Works Today
 
