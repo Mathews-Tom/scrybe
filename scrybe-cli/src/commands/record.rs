@@ -31,6 +31,8 @@ use scrybe_core::config::{
 #[cfg(feature = "system-capture-mac")]
 use scrybe_core::config::{RECORD_LLM_STUB, RECORD_SOURCE_SYNTHETIC};
 use scrybe_core::record_defaults;
+#[cfg(feature = "cli-shell")]
+use tokio::runtime::Runtime;
 
 use crate::commands::rec::{self, CaptureSourceArg, LlmBackendArg};
 use crate::runtime::load_or_default_config;
@@ -74,6 +76,11 @@ pub struct Args {
     #[arg(long)]
     pub root: Option<PathBuf>,
 
+    /// Show native recording indicators and accept tray, floating-window,
+    /// and global-hotkey stop requests.
+    #[arg(long, default_value_t = false)]
+    pub shell: bool,
+
     /// Force in-process invocation; do not auto-launch via the .app
     /// bundle for Core Audio Tap. Used for unit tests and direct
     /// troubleshooting of the legacy Tap path.
@@ -97,7 +104,7 @@ pub async fn run(args: Args) -> Result<()> {
             let bundle = crate::macos_bundle::find_existing_bundle()
                 .context("no scrybe.app bundle found; install one or pass `--no-bundle`")?;
             let session_root = effective_session_root(&cfg, args.root.as_deref());
-            let rec_argv = build_rec_argv(&resolved);
+            let rec_argv = build_rec_argv(&resolved, false);
             return crate::bundle_launcher::launch_via_bundle(&bundle, &rec_argv, &session_root)
                 .await;
         }
@@ -110,7 +117,33 @@ pub async fn run(args: Args) -> Result<()> {
             );
         }
     }
-    rec::run(resolved.into_rec_args()).await
+    rec::run(resolved.into_rec_args(false)).await
+}
+
+/// Dispatch the ergonomic record subcommand through the native shell.
+///
+/// # Errors
+///
+/// Surfaces config, bundle-launch, native-surface, and recording errors.
+#[cfg(feature = "cli-shell")]
+pub fn run_with_shell(args: &Args, runtime: &Runtime) -> Result<()> {
+    let cfg = load_or_default_config()?;
+    let resolved = resolve(&cfg, args);
+
+    #[cfg(all(target_os = "macos", feature = "system-capture-mac"))]
+    if should_use_bundle(&resolved, args) {
+        let bundle = crate::macos_bundle::find_existing_bundle()
+            .context("no scrybe.app bundle found; install one or pass `--no-bundle`")?;
+        let session_root = effective_session_root(&cfg, args.root.as_deref());
+        let rec_argv = build_rec_argv(&resolved, true);
+        return runtime.block_on(crate::bundle_launcher::launch_via_bundle(
+            &bundle,
+            &rec_argv,
+            &session_root,
+        ));
+    }
+
+    crate::shell::run_record_with_shell(resolved.into_rec_args(true), runtime)
 }
 
 #[derive(Clone, Debug)]
@@ -126,7 +159,7 @@ struct Resolved {
 }
 
 impl Resolved {
-    fn into_rec_args(self) -> rec::Args {
+    fn into_rec_args(self, shell: bool) -> rec::Args {
         rec::Args {
             title: Some(self.title),
             root: self.root,
@@ -139,7 +172,7 @@ impl Resolved {
             sherpa_model: self.sherpa_model,
             llm: Some(self.llm),
             input_device: self.input_device,
-            shell: false,
+            shell,
         }
     }
 }
@@ -209,7 +242,7 @@ fn effective_session_root(cfg: &Config, override_root: Option<&Path>) -> PathBuf
 }
 
 #[cfg(feature = "system-capture-mac")]
-fn build_rec_argv(resolved: &Resolved) -> Vec<String> {
+fn build_rec_argv(resolved: &Resolved, shell: bool) -> Vec<String> {
     let mut argv = vec!["--title".to_string(), resolved.title.clone()];
     argv.push("--source".to_string());
     argv.push(capture_source_arg_to_str(resolved.source).to_string());
@@ -234,6 +267,9 @@ fn build_rec_argv(resolved: &Resolved) -> Vec<String> {
         argv.push(root.to_string_lossy().into_owned());
     }
     argv.push("--yes".to_string());
+    if shell {
+        argv.push("--shell".to_string());
+    }
     argv
 }
 
@@ -301,6 +337,7 @@ mod tests {
             sherpa_model: None,
             llm: None,
             root: None,
+            shell: false,
             no_bundle: false,
         }
     }
@@ -406,7 +443,7 @@ mod tests {
             root: None,
             input_device: None,
         };
-        let argv = build_rec_argv(&resolved);
+        let argv = build_rec_argv(&resolved, false);
         assert_eq!(argv[0], "--title");
         assert_eq!(argv[1], "client-call");
         assert!(argv.iter().any(|a| a == "--source"));
@@ -416,5 +453,9 @@ mod tests {
         assert!(argv.iter().any(|a| a == "--whisper-model"));
         assert!(argv.iter().any(|a| a == "/m.bin"));
         assert!(argv.iter().any(|a| a == "--yes"));
+        assert!(!argv.iter().any(|arg| arg == "--shell"));
+        assert!(build_rec_argv(&resolved, true)
+            .iter()
+            .any(|arg| arg == "--shell"));
     }
 }

@@ -209,7 +209,10 @@ LOC_CEILINGS: dict[str, int] = {
     # Raised to 6200 for backend-aware doctor onboarding: TTY-gated SCK and
     # Tap flows, explicit repair precedence, bounded Launch Services handoff,
     # private diagnostic output capture, and corrected Tap-only CLI guidance.
-    "scrybe-cli": 6200,
+    # Raised to 7300 for the native recording shell: strict indicator config,
+    # one stop/finalization coordinator, deterministic status-bar rendering,
+    # a non-activating AppKit panel, ergonomic dispatch, and focused regressions.
+    "scrybe-cli": 7300,
     # Raised to 2700 for M6's opt-in transactional VoiceProcessingIO path:
     # explicit device/format/processing configuration, ducking suppression,
     # RAII cleanup, and a plain-input fallback proved against forced failures.

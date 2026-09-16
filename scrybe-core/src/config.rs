@@ -49,6 +49,8 @@ pub struct Config {
     #[serde(default)]
     pub record: RecordConfig,
     #[serde(default)]
+    pub shell: ShellConfig,
+    #[serde(default)]
     pub stt: SttConfig,
     #[serde(default)]
     pub llm: LlmConfig,
@@ -111,6 +113,7 @@ impl Default for Config {
             storage: StorageConfig::default(),
             capture: CaptureConfig::default(),
             record: RecordConfig::default(),
+            shell: ShellConfig::default(),
             stt: SttConfig::default(),
             llm: LlmConfig::default(),
             notes: NotesConfig::default(),
@@ -280,6 +283,103 @@ impl RecordConfig {
             _ => None,
         }
     }
+}
+
+/// Native recording indicators enabled by `--shell`.
+#[derive(Copy, Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ShellIndicator {
+    MenuBarWaveform,
+    MenuBarLabel,
+    FloatingWindow,
+}
+
+impl ShellIndicator {
+    const fn index(self) -> usize {
+        match self {
+            Self::MenuBarWaveform => 0,
+            Self::MenuBarLabel => 1,
+            Self::FloatingWindow => 2,
+        }
+    }
+
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::MenuBarWaveform => "menu-bar-waveform",
+            Self::MenuBarLabel => "menu-bar-label",
+            Self::FloatingWindow => "floating-window",
+        }
+    }
+}
+
+/// Configuration for the opt-in desktop recording shell.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ShellConfig {
+    #[serde(
+        default = "default_shell_indicators",
+        deserialize_with = "deserialize_shell_indicators"
+    )]
+    indicators: Vec<ShellIndicator>,
+}
+
+impl ShellConfig {
+    /// Return the enabled indicators in canonical display order.
+    #[must_use]
+    pub fn indicators(&self) -> &[ShellIndicator] {
+        &self.indicators
+    }
+
+    /// Whether one native indicator is enabled.
+    #[must_use]
+    pub fn is_enabled(&self, indicator: ShellIndicator) -> bool {
+        self.indicators.contains(&indicator)
+    }
+}
+
+impl Default for ShellConfig {
+    fn default() -> Self {
+        Self {
+            indicators: default_shell_indicators(),
+        }
+    }
+}
+
+fn default_shell_indicators() -> Vec<ShellIndicator> {
+    vec![
+        ShellIndicator::MenuBarWaveform,
+        ShellIndicator::MenuBarLabel,
+        ShellIndicator::FloatingWindow,
+    ]
+}
+
+fn deserialize_shell_indicators<'de, D>(deserializer: D) -> Result<Vec<ShellIndicator>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let indicators = Vec::<ShellIndicator>::deserialize(deserializer)?;
+    if indicators.is_empty() {
+        return Err(<D::Error as serde::de::Error>::custom(
+            "`shell.indicators` must contain at least one indicator",
+        ));
+    }
+
+    let mut seen = [false; 3];
+    for indicator in indicators {
+        let index = indicator.index();
+        if seen[index] {
+            return Err(<D::Error as serde::de::Error>::custom(format!(
+                "duplicate shell indicator `{}`",
+                indicator.as_str()
+            )));
+        }
+        seen[index] = true;
+    }
+
+    Ok(default_shell_indicators()
+        .into_iter()
+        .filter(|indicator| seen[indicator.index()])
+        .collect())
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

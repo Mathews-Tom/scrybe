@@ -44,20 +44,37 @@ fn main() -> Result<()> {
 
     let runtime = build_runtime()?;
 
-    if let commands::Command::Rec(args) = &cli.command {
-        if args.shell {
-            #[cfg(feature = "cli-shell")]
-            return shell::run_record_with_shell(args.clone(), &runtime);
-
-            #[cfg(not(feature = "cli-shell"))]
-            tracing::info!(
-                "scrybe rec --shell: this binary was built without the cli-shell \
-                 feature; running headless and stopping on SIGINT only."
-            );
-        }
+    match cli.command {
+        commands::Command::Rec(args) if args.shell => run_rec_shell(args, &runtime),
+        commands::Command::Record(args) if args.shell => run_record_shell(&args, &runtime),
+        command => runtime.block_on(commands::run(command)),
     }
+}
 
-    runtime.block_on(commands::run(cli.command))
+#[cfg(feature = "cli-shell")]
+fn run_rec_shell(args: commands::rec::Args, runtime: &Runtime) -> Result<()> {
+    shell::run_record_with_shell(args, runtime)
+}
+
+#[cfg(not(feature = "cli-shell"))]
+fn run_rec_shell(_args: commands::rec::Args, _runtime: &Runtime) -> Result<()> {
+    anyhow::bail!(
+        "`scrybe rec --shell` requires the `cli-shell` build feature; install the standard \
+         binary or rebuild with `--features cli-shell`"
+    )
+}
+
+#[cfg(feature = "cli-shell")]
+fn run_record_shell(args: &commands::record::Args, runtime: &Runtime) -> Result<()> {
+    commands::record::run_with_shell(args, runtime)
+}
+
+#[cfg(not(feature = "cli-shell"))]
+fn run_record_shell(_args: &commands::record::Args, _runtime: &Runtime) -> Result<()> {
+    anyhow::bail!(
+        "`scrybe record --shell` requires the `cli-shell` build feature; install the standard \
+         binary or rebuild with `--features cli-shell`"
+    )
 }
 
 fn build_runtime() -> Result<Runtime> {
@@ -76,4 +93,29 @@ fn init_tracing() {
         .compact()
         .with_writer(std::io::stderr)
         .init();
+}
+
+#[cfg(test)]
+#[allow(clippy::panic)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn both_recording_commands_parse_the_shell_flag() {
+        let rec = Cli::try_parse_from(["scrybe", "rec", "--shell"]);
+        assert!(matches!(
+            rec,
+            Ok(Cli {
+                command: commands::Command::Rec(commands::rec::Args { shell: true, .. })
+            })
+        ));
+
+        let record = Cli::try_parse_from(["scrybe", "record", "standup", "--shell"]);
+        assert!(matches!(
+            record,
+            Ok(Cli {
+                command: commands::Command::Record(commands::record::Args { shell: true, .. })
+            })
+        ));
+    }
 }
