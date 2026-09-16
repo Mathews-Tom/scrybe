@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/scrybe.svg" alt="Scrybe feather logo" width="320">
+  <img src="assets/banner.png" alt="Scrybe banner" width="100%">
 </p>
 
 # scrybe
