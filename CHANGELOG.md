@@ -4,6 +4,15 @@ All notable changes to scrybe are documented here. The format follows [Keep a Ch
 
 ## [Unreleased]
 
+### Added
+
+- `scrybe record TITLE --shell` and `scrybe rec --shell` now provide a configurable native macOS recording shell. `[shell].indicators` accepts any non-empty subset of `menu-bar-waveform`, `menu-bar-label`, and `floating-window`, with all three enabled when the table is omitted.
+- The default status item combines a deterministic five-bar waveform that cycles between the current macOS appearance foreground and recording red with the Scrybe image mark. A compact non-activating floating pill shows recording state, elapsed time, and `Stop & save`.
+
+### Changed
+
+- Tray, floating-pill, global-hotkey, Ctrl-C, and SIGTERM stop requests now converge on one idempotent Recording → Saving transition. Visible timers freeze, stop controls disable immediately, and native surfaces remain visible until the ordinary finalization path completes.
+
 ## [1.4.0] — 2026-09-12
 
 ### Added

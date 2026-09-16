@@ -194,7 +194,7 @@ These are not hypothetical personas. They are the testable hypotheses that justi
 
 ### Example 1 — Solo consultant on a client call
 
-A consultant joins a Google Meet with a new client. They press a global hotkey. scrybe posts a one-line courtesy message into the chat ("I'm taking notes locally with scrybe — speak up if you'd prefer I didn't") and starts capture. The call ends; they press the hotkey again. Within ~30 seconds, `~/scrybe/2026-04-29-1500-acme-discovery/notes.md` exists with action items, decisions, and follow-ups. The notes never left the laptop.
+A consultant joins a Google Meet with a new client and runs `scrybe record "acme-discovery" --shell` after the required consent step. A menu-bar waveform and floating elapsed-time panel make recording state visible without exposing the title, transcript, notes, or participants. When the call ends, they choose `Stop & save` from the panel or tray, or press the global hotkey; every control enters the same Saving state. When finalization completes, `~/scrybe/2026-04-29-1500-acme-discovery/notes.md` contains the action items, decisions, and follow-ups. The notes never left the laptop unless they explicitly configured a network provider.
 
 ### Example 2 — Clinician dictation, post-consult
 

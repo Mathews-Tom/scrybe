@@ -122,6 +122,29 @@ download quarantine attribute.
 
 ---
 
+## macOS — native recording shell
+
+The default application build includes the native recording shell. Enable it per recording:
+
+```sh
+scrybe record "client-call" --shell
+```
+
+With no `[shell]` table, Scrybe shows all three indicators:
+
+```toml
+[shell]
+indicators = ["menu-bar-waveform", "menu-bar-label", "floating-window"]
+```
+
+`indicators` accepts any non-empty subset of those three exact values. Duplicate, unknown, or empty entries are configuration errors and stop the command before capture starts. Omit `--shell` for the ordinary headless recording path.
+
+The menu bar animates a deterministic five-bar waveform at 4 Hz, cycling between the current macOS appearance foreground and recording red. The optional `menu-bar-label` indicator renders the Scrybe image mark beside it; the status item never contains elapsed time. The tray menu and the non-activating 240×44 floating pill show elapsed time and `Stop & save`. The global hotkey, tray item, pill button, and first termination signal all request the same idempotent Recording → Saving transition. Saving freezes elapsed time and disables repeat stop actions until finalization completes. macOS Reduce Motion freezes the waveform on a static red frame.
+
+The native surfaces receive only recording state, elapsed time, and stop availability. Audio samples, transcript text, notes, prompts, file paths, meeting titles, participants, and provider names never enter UI state. The shell needs no Accessibility permission during ordinary use; Accessibility access is required only when an operator automates the installed interaction qualification in [`docs/macos-shell-interaction.md`](docs/macos-shell-interaction.md).
+
+---
+
 ## macOS — system audio capture (`--source mic+system`)
 
 

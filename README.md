@@ -22,6 +22,7 @@ The supported user path today is macOS:
 - `--source mic+system` records microphone plus macOS system audio through ScreenCaptureKit when built with `mic-capture,system-capture-mac` on macOS 13+. It requires the broader **Screen & System Audio Recording** permission.
 - `--whisper-model <PATH>` enables local whisper.cpp transcription when built with `whisper-local`.
 - `--llm openai-compat` enables real notes through Ollama, vLLM, OpenAI, Groq, Together, or any compatible `/chat/completions` endpoint when built with `llm-openai-compat`.
+- `scrybe record TITLE --shell` enables the native macOS recording shell: a five-bar 4 Hz waveform cycling between the current macOS appearance foreground and recording red, an optional Scrybe image mark, a compact floating elapsed-time pill, and one shared `Stop & save` path for the tray, pill, and global hotkey.
 - `scrybe list`, `scrybe show <id>`, `scrybe doctor`, `scrybe repair <session>`, `scrybe notes <session>`, and `scrybe bench` are available in the CLI.
 - `scrybe bench stt --corpus <MANIFEST> --whisper-model <FILE> --sherpa-model <DIR>` compares both local providers on a checksum-validated English paired corpus when built with `whisper-local,stt-sherpa` and an explicitly provisioned native runtime. [Manual acquisition and measurement scope](INSTALL.md#optional-streaming-zipformer-and-english-paired-stt-benchmark). Whisper remains the default; the historical multilingual corpus is Whisper-only.
 
@@ -67,6 +68,7 @@ On macOS, bare `scrybe init` writes the local recording profile:
 - `[record].system_backend = "sck"` (ScreenCaptureKit; use `"tap"` only for the macOS 14.4+ legacy Core Audio Tap recovery path)
 - `[stt].model = "small.en"` and `[stt].language = "en"`
 - `[llm].model = "gemma4:latest"`
+- `[shell].indicators = ["menu-bar-waveform", "menu-bar-label", "floating-window"]` (the default when `[shell]` is omitted)
 
 The macOS platform data path is
 `~/Library/Application Support/dev.scrybe.scrybe/`. Other platforms resolve
@@ -78,16 +80,16 @@ If a config file already exists, `scrybe init` refuses to overwrite it; pass
 `--force` only when you intentionally want to replace the existing config with
 fresh profile defaults.
 
-Record:
+Record with the native macOS shell:
 
 ```sh
-scrybe record "client-call"
-# Press Ctrl-C to stop.
+scrybe record "client-call" --shell
+# Stop from the menu bar, floating panel, global hotkey, or Ctrl-C.
 scrybe list
 scrybe show <session-id>
 ```
 
-The ergonomic `scrybe record TITLE` resolves capture source, system-audio backend, Whisper model, and LLM kind from your config and platform probes. ScreenCaptureKit runs directly from the invoking terminal; the legacy `tap` backend auto-launches through the `.app` bundle so its Audio Capture TCC grant binds correctly. Run `scrybe doctor` after configuration to inspect the selected backend and accept or decline its live permission probe. Use `scrybe rec --title TITLE --source … --system-backend … --whisper-model … --llm …` when you need explicit flag control (CI, debugging, alternate hardware setups).
+The ergonomic `scrybe record TITLE` resolves capture source, system-audio backend, Whisper model, and LLM kind from your config and platform probes. Add `--shell` to construct the configured indicators before capture starts; without it, recording remains headless. ScreenCaptureKit runs directly from the invoking terminal; the legacy `tap` backend auto-launches through the `.app` bundle so its Audio Capture TCC grant binds correctly. Run `scrybe doctor` after configuration to inspect the selected backend and accept or decline its live permission probe. Use `scrybe rec --title TITLE --source … --system-backend … --whisper-model … --llm … --shell` when you need explicit flag control (CI, debugging, alternate hardware setups).
 
 Select a microphone explicitly:
 
@@ -96,7 +98,7 @@ scrybe devices
 scrybe rec --title "client-call" --source mic --input-device <uid>
 ```
 
-The terminal prints each accepted transcript chunk while recording, then reports transcript flush, audio encoding, notes generation, and metadata-writing progress after the first `Ctrl-C` or `SIGTERM`. A second signal aborts finalization immediately. Run `scrybe repair <session-folder>` to recover unfinished audio or reconstruct missing metadata, then `scrybe notes <session-folder>` to regenerate missing notes.
+The terminal prints each accepted transcript chunk while recording, then reports transcript flush, audio encoding, notes generation, and metadata-writing progress after the first stop request. During a shell recording, the menu and panel change to Saving, freeze the elapsed time, and disable `Stop & save` until finalization returns. A second `Ctrl-C` aborts finalization immediately. Run `scrybe repair <session-folder>` to recover unfinished audio or reconstruct missing metadata, then `scrybe notes <session-folder>` to regenerate missing notes.
 
 For cloud or hosted-compatible LLMs, configure `[llm]` with a base URL, model, and an environment-variable name for the API key. Secrets stay in the environment, not in `config.toml`.
 
@@ -165,7 +167,7 @@ python3 scripts/check-egress-baseline.py
 - macOS is the only polished binary distribution target today.
 - `--source mic+system` defaults to ScreenCaptureKit on macOS 13+ and requires **Screen & System Audio Recording**. This privacy permission covers screen recording in addition to system audio; deny it if that scope is unacceptable. ScreenCaptureKit runs from the invoking terminal and does not require an application bundle or signing identity.
 - The macOS 14.4+ Core Audio Tap backend remains available as `[record].system_backend = "tap"` for recovery. It requires the narrower Audio Capture permission and a signed `.app` bundle. `scrybe doctor` reports bundle state and offers repair with the project self-signed identity; it never creates or auto-selects a signing identity. A failed or silent Tap switches once to ScreenCaptureKit after a 1.5 s startup window, so a quiet desktop can switch before external audio begins.
-- Tray and global-hotkey shell support exists behind `cli-shell`; the headless `record` path remains the reliable path.
+- The native recording shell requires the default `cli-shell` feature and explicit `--shell`; headless recording remains available. The `menu-bar-label` indicator is the Scrybe branding slot, and the status item never includes elapsed time. Configured indicators contain only recording state, elapsed time, and the stop control—never captured or generated meeting content.
 - crates.io installation supports the polished macOS application. Linux and Windows recording remain parked until hardware-qualified release paths exist.
 - Native macOS notarization and Windows Authenticode signing are out of scope for the v1 line. Release artifacts are verified with checksums and cosign provenance instead.
 
