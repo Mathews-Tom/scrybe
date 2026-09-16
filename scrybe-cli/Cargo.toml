@@ -69,9 +69,8 @@ encoder-opus = ["scrybe-core/encoder-opus"]
 # `reqwest` with rustls-only TLS. Included in the published application;
 # runtime configuration still controls whether any network provider runs.
 llm-openai-compat = ["scrybe-core/openai-compat"]
-# Desktop shell: tray-icon + global-hotkey wired to a main-thread event
-# pump so `scrybe record --shell` toggles capture from a global hotkey
-# and a status-bar Quit menu.
+# Desktop shell: native status-bar and floating-window indicators plus
+# a global hotkey, all wired to one main-thread stop/finalization path.
 #
 # Included by default for the supported macOS application. Cross-platform
 # workspace validation uses `--no-default-features` because Linux requires
@@ -82,6 +81,10 @@ cli-shell = [
     "dep:keyboard-types",
     "dep:crossbeam-channel",
     "dep:core-foundation",
+    "dep:png",
+    "dep:objc2",
+    "dep:objc2-app-kit",
+    "dep:objc2-foundation",
 ]
 
 [dependencies]
@@ -94,6 +97,7 @@ directories.workspace = true
 futures.workspace = true
 global-hotkey = { version = "0.7", optional = true }
 keyboard-types = { version = "0.8", optional = true }
+png = { version = "0.18", optional = true }
 scrybe-capture-mac = { package = "scrybe-meeting-capture-mac", path = "../scrybe-capture-mac", version = "=1.4.0" }
 scrybe-capture-mic = { package = "scrybe-meeting-capture-mic", path = "../scrybe-capture-mic", version = "=1.4.0" }
 scrybe-core = { package = "scrybe-meeting-core", path = "../scrybe-core", version = "=1.4.0" }
@@ -114,6 +118,9 @@ windows-sys.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = { version = "0.10", optional = true }
+objc2 = { workspace = true, optional = true }
+objc2-app-kit = { workspace = true, optional = true }
+objc2-foundation = { workspace = true, optional = true, features = ["NSGeometry"] }
 
 [dev-dependencies]
 pretty_assertions = "1"

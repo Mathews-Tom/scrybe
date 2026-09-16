@@ -90,7 +90,6 @@ use scrybe_core::types::{
     TranscriptChunk,
 };
 use tokio::sync::watch;
-use tokio::task::JoinHandle;
 
 use crate::prompter::TtyPrompter;
 use crate::runtime::{expand_root, load_or_default_config};
@@ -352,7 +351,9 @@ impl From<ConsentModeArg> for ConsentMode {
 
 pub async fn run(args: Args) -> Result<()> {
     let (stop_tx, stop_rx) = watch::channel(false);
-    let signal_handle = spawn_signal_listener(stop_tx);
+    let signal_handle = tokio::spawn(monitor_signals(move || {
+        let _ = stop_tx.send(true);
+    }));
     let result = run_with_stop(args, stop_rx).await;
     signal_handle.abort();
     result
@@ -809,42 +810,41 @@ fn resolve_macos_input_device(requested_uid: Option<&str>) -> Result<InputDevice
 
 /// Future that completes the first time `stop_rx` flips to `true`,
 /// or when every `Sender` has been dropped. Used as the `take_until`
-/// argument so the synthetic stream tears down deterministically
-/// when SIGINT, the global hotkey, or the tray Quit menu fires.
+/// argument so capture tears down deterministically when a shell
+/// control requests Stop & save.
 async fn wait_for_stop(mut stop_rx: watch::Receiver<bool>) {
     let _ = stop_rx.wait_for(|stopped| *stopped).await;
 }
 
-/// First `SIGINT` or `SIGTERM` requests ordered shutdown. A second signal
-/// terminates immediately, leaving the independently-written journal for
-/// `scrybe repair`.
-fn spawn_signal_listener(stop_tx: watch::Sender<bool>) -> JoinHandle<()> {
-    tokio::spawn(async move {
+/// First `SIGINT` or `SIGTERM` requests ordered shutdown through
+/// `request_graceful_stop`. A second signal terminates immediately, leaving the
+/// independently-written journal for `scrybe repair`.
+pub async fn monitor_signals<F>(mut request_graceful_stop: F)
+where
+    F: FnMut() + Send + 'static,
+{
+    #[cfg(unix)]
+    let Ok(mut sigterm) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) else {
+        tracing::error!("installing SIGTERM listener failed");
+        return;
+    };
+    let mut graceful_requested = false;
+    loop {
         #[cfg(unix)]
-        let Ok(mut sigterm) =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        else {
-            tracing::error!("installing SIGTERM listener failed");
-            return;
-        };
-        let mut graceful_requested = false;
-        loop {
-            #[cfg(unix)]
-            tokio::select! {
-                _ = tokio::signal::ctrl_c() => {}
-                _ = sigterm.recv() => {}
-            }
-            #[cfg(not(unix))]
-            if tokio::signal::ctrl_c().await.is_err() {
-                return;
-            }
-            if graceful_requested {
-                std::process::exit(130);
-            }
-            graceful_requested = true;
-            let _ = stop_tx.send(true);
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = sigterm.recv() => {}
         }
-    })
+        #[cfg(not(unix))]
+        if tokio::signal::ctrl_c().await.is_err() {
+            return;
+        }
+        if graceful_requested {
+            std::process::exit(130);
+        }
+        graceful_requested = true;
+        request_graceful_stop();
+    }
 }
 
 /// Synthetic in-process capture source.

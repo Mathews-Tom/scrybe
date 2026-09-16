@@ -4,7 +4,7 @@
 // You may obtain a copy of the License at
 //     https://www.apache.org/licenses/LICENSE-2.0
 
-//! Global hotkey listener for record start/stop toggle.
+//! Global hotkey listener for one-shot recording stop requests.
 //!
 //! Compiled only with the `cli-shell` cargo feature. Wraps
 //! `global_hotkey::GlobalHotKeyManager` (`!Send` on macOS — the
@@ -23,16 +23,16 @@ use anyhow::{anyhow, Context, Result};
 use crossbeam_channel::Receiver;
 use global_hotkey::{hotkey::HotKey, GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 
-/// Default toggle accelerator when the user has not customised
+/// Default stop accelerator when the user has not customised
 /// `[capture] hotkey` in `config.toml`. Modifiers map to the platform
 /// primary metakey: `Cmd` on macOS, `Ctrl` on Linux/Windows.
-pub const DEFAULT_TOGGLE_ACCELERATOR: &str = "CmdOrCtrl+Shift+R";
+pub const DEFAULT_STOP_ACCELERATOR: &str = "CmdOrCtrl+Shift+R";
 
 /// Events surfaced by the global hotkey to the recording loop.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum HotkeyEvent {
-    /// User pressed the configured toggle accelerator.
-    Toggle,
+    /// User pressed the configured stop accelerator.
+    StopRequested,
 }
 
 /// Global hotkey listener. Constructed on the thread that owns the
@@ -75,12 +75,12 @@ impl HotkeyListener {
     }
 
     /// Drain pending hotkey events without blocking, returning the
-    /// first `HotkeyEvent::Toggle` that matches the registered ID and
-    /// the press half-cycle. Returns `None` when the queue is empty.
+    /// first stop request that matches the registered ID and press
+    /// half-cycle. Returns `None` when the queue is empty.
     pub fn poll(&self) -> Option<HotkeyEvent> {
         while let Ok(event) = self.events.try_recv() {
             if event.id == self.hotkey_id && event.state == HotKeyState::Pressed {
-                return Some(HotkeyEvent::Toggle);
+                return Some(HotkeyEvent::StopRequested);
             }
         }
         None
@@ -141,8 +141,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_validate_accelerator_syntax_accepts_default_toggle() {
-        validate_accelerator_syntax(DEFAULT_TOGGLE_ACCELERATOR).unwrap();
+    fn test_validate_accelerator_syntax_accepts_default_stop() {
+        validate_accelerator_syntax(DEFAULT_STOP_ACCELERATOR).unwrap();
     }
 
     #[test]
@@ -187,8 +187,8 @@ mod tests {
     }
 
     #[test]
-    fn test_default_toggle_accelerator_constant_validates_as_a_well_formed_accelerator() {
-        validate_accelerator_syntax(DEFAULT_TOGGLE_ACCELERATOR).unwrap();
-        assert!(DEFAULT_TOGGLE_ACCELERATOR.contains('+'));
+    fn test_default_stop_accelerator_constant_validates_as_a_well_formed_accelerator() {
+        validate_accelerator_syntax(DEFAULT_STOP_ACCELERATOR).unwrap();
+        assert!(DEFAULT_STOP_ACCELERATOR.contains('+'));
     }
 }
