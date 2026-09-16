@@ -454,7 +454,7 @@ brew install cosign            # macOS
 Download the manifest, its signature, and its certificate from the release page:
 
 ```sh
-TAG=v1.4.0   # the release you are verifying
+TAG=v1.5.0   # the release you are verifying
 BASE="https://github.com/Mathews-Tom/scrybe/releases/download/${TAG}"
 curl -LO "${BASE}/SHA256SUMS.txt"
 curl -LO "${BASE}/SHA256SUMS.txt.sig"
@@ -498,7 +498,7 @@ The lane remains advisory because Mach-O UUIDs and cargo-dist archive metadata a
 Local reproduction recipe (matches the CI inputs):
 
 ```sh
-git clone --branch v1.4.0 https://github.com/Mathews-Tom/scrybe.git scrybe
+git clone --branch v1.5.0 https://github.com/Mathews-Tom/scrybe.git scrybe
 cd scrybe
 SOURCE_DATE_EPOCH=1714464000 \
   RUSTFLAGS="--remap-path-prefix=$(pwd)=/build" \
@@ -512,4 +512,4 @@ Comparison against a published release tag's `SHA256SUMS.txt` is informative but
 
 ## Linux and Windows
 
-Linux and Windows recording remain parked until each platform has a maintainer-owned hardware qualification path. The v1.4.0 crates.io installation contract is macOS-only; do not present a successful cross-platform compile as recording support.
+Linux and Windows recording remain parked until each platform has a maintainer-owned hardware qualification path. The v1.5.0 crates.io installation contract is macOS-only; do not present a successful cross-platform compile as recording support.
