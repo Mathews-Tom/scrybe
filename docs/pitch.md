@@ -7,9 +7,9 @@
 
 ## The thing I'm building
 
-A single Rust binary you install on your laptop. Press a hotkey when a meeting starts. It captures the meeting audio and your microphone, transcribes locally with whisper.cpp (or via any OpenAI-compatible API you point it at), and produces a structured markdown summary at the end. Files land in `~/scrybe/<date>-<title>/`. Everything stays on your machine.
+A single Rust binary you install on your laptop. Run `scrybe record TITLE --shell` when a meeting starts. On macOS, a native menu-bar waveform and floating elapsed-time panel keep recording state visible without displaying meeting content; the panel, tray, hotkey, and first termination signal share one `Stop & save` path. Scrybe captures the meeting audio and microphone, transcribes locally with whisper.cpp or a user-configured OpenAI-compatible provider, and produces structured Markdown notes under `~/scrybe/`.
 
-macOS, Windows, Linux, and Android. iOS is excluded because Apple's sandbox makes it impossible.
+The qualified product path is macOS. Linux, Windows, and Android adapters remain in-tree, but their end-user recording paths stay parked until maintainer-owned hardware qualification resumes.
 
 ## Why I think this is worth building
 
@@ -127,10 +127,10 @@ If this lands and the persona is real, v1 is a project I'll maintain for years. 
 
 ## Where this lives
 
-GitHub: `github.com/<my-handle>/scrybe` (claimed shortly).
+GitHub: `github.com/Mathews-Tom/scrybe`.
 License: Apache-2.0.
 Docs: `system-overview.md`, `system-design.md`, this pitch.
-Status: pre-code. Architecture docs are the artifact. First commit lands within 2 weeks of getting feedback from this round.
+Status: v1.4.0 is released with the qualified macOS capture and local-processing path; the native recording shell is tracked in Unreleased. Linux and Windows recording remain parked pending maintainer-owned hardware qualification.
 
 ---
 

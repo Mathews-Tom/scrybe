@@ -71,7 +71,7 @@ flowchart TB
     end
 
     subgraph shells["UI shells"]
-        Cli["CLI + tray icon"]
+        Cli["CLI + macOS recording shell"]
         Compose["Android: Jetpack Compose<br/>+ Foreground Service"]
     end
 
@@ -90,6 +90,16 @@ flowchart TB
 ```
 
 The contract that crosses platform boundaries is small: four traits and one struct. Everything else is implementation detail.
+
+### 2.1 Desktop recording shell
+
+The CLI owns a thin, optional desktop shell behind `cli-shell`. `scrybe record TITLE --shell` constructs the configured native surfaces on the macOS main thread before capture starts; omitting `--shell` keeps the command headless. `[shell].indicators` accepts any non-empty subset of `menu-bar-waveform`, `menu-bar-label`, and `floating-window`, and defaults to all three when the table is absent. Invalid, duplicate, or empty entries fail configuration loading.
+
+One monotonic shell model exposes only `Recording` or `Saving`, frozen elapsed time, and whether stop is available. The 4 Hz menu-bar waveform selects from eight precomputed five-bar frames whose color cycles between the current macOS appearance foreground and recording red; Reduce Motion and Saving select the static red middle frame. The optional `menu-bar-label` branding slot composites a purpose-sized Scrybe image mark beside the waveform. No elapsed value reaches the status item. The tray menu and compact AppKit pill show elapsed time and one `Stop & save` action. Tray, pill, hotkey, and first-signal requests converge on the same idempotent Recording → Saving coordinator, while a second signal remains the explicit immediate-abort path.
+
+The floating `NSPanel` is a 240×44 borderless, non-activating dark pill, movable by its background, visible across spaces without joining every space, and positioned near the active screen's top center. It displays a red recording dot, current state, elapsed time, and a circular Stop button. Native surfaces remain alive during finalization and are released only when the recording task returns. Configured-surface construction failure aborts before capture; a runtime surface failure requests orderly stop without replacing a recording or finalization error.
+
+The shell state boundary excludes captured samples, transcript text, notes, prompts, file paths, meeting titles, participant identity, and provider identity. `objc2-app-kit` is used directly rather than introducing a general GUI runtime.
 
 ## 3. Workspace layout
 
@@ -1044,7 +1054,7 @@ These are performance targets, not measurements from the English paired STT benc
 | Malicious dependency in supply chain | Code execution | Cargo audit in CI; minimal dependency surface; `cargo-vet` for transitive review |
 | Local-machine attacker with disk access | Reads recorded audio + transcripts | Out of scope. User's disk encryption is the right layer |
 | Network attacker | MITM on cloud provider call | TLS via `rustls`; certificate pinning not done (would break BYO cloud) |
-| Curious colleague glancing at screen | Sees transcript appearing live | Tray icon shows recording state; `transcript.md` is in user-only perms (0700/0600) |
+| Curious colleague glancing at screen | Sees recording status or elapsed time | The menu bar and floating panel expose only recording state, elapsed time, and `Stop & save`; meeting content and identity never enter shell state. `transcript.md` remains in user-only perms (0700/0600) |
 | Bad actor in scrybe itself (compromised release) | Trojan binary | Reproducible builds; release artifacts SLSA-attested; `cosign` keyless signing of release tarballs via GitHub Actions OIDC (artifact-level CI provenance, not OS-level code signing). macOS Developer ID and Windows code-signing certificates are explicitly out of scope through v1.0 (`.docs/development-plan.md` §13.1) |
 | Participant who did not get a courtesy notice | Trust gap with the other party | Mandatory courtesy-notification step (§5); `ConsentAttestation` in `meta.toml` records the mode and timestamp; `LEGAL.md` covers the user-facing reference matrix |
 | Author held responsible for how someone else uses scrybe | Civil or regulatory exposure | Low. See `LEGAL.md` for the publisher-posture summary. Mitigations: neutral marketing, explicit intended-use statement in README, no managed service, Apache-2.0 §7 (warranty disclaimer) and §8 (limitation of liability) |

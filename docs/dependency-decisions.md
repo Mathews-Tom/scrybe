@@ -36,8 +36,10 @@ Indirect (transitive) dependencies inherit the same rules but are vetted lazily:
 
 | Crate | Version | License | Host | Role | Notes |
 |---|---|---|---|---|---|
-| `objc2` | `0.5` | MIT | github.com/madsmtm/objc2 | macOS Objective-C bindings; replaces `cocoa`/`objc` (both unmaintained) | Active 2026; minimal unsafe surface; well-typed |
-| `objc2-foundation` | `0.2` | MIT | madsmtm/objc2 | Foundation framework bindings | Same upstream as `objc2` |
+| `objc2` | `0.6` | MIT | github.com/madsmtm/objc2 | macOS Objective-C bindings; replaces `cocoa`/`objc` (both unmaintained) | Active 2026; minimal unsafe surface; well-typed |
+| `objc2-foundation` | `0.3` | MIT | madsmtm/objc2 | Foundation framework bindings | Same upstream as `objc2` |
+| `objc2-app-kit` | `0.3` | MIT | madsmtm/objc2 | Thin native `NSPanel`, controls, screen placement, Reduce Motion lookup, and Accessibility-backed semantics for the macOS recording shell | Minimal feature set; no general GUI runtime |
+| `png` | `0.18` | MIT OR Apache-2.0 | github.com/image-rs/image-png | Decode the embedded purpose-sized Scrybe status image when `cli-shell` is enabled | Narrow decoder only; no runtime file access, network path, or general image toolkit |
 | `coreaudio-tap-rs` | TBD | Apache-2.0 | **to-be-written** in scrybe org | macOS Core Audio Taps binding (`CATapDescription`, `AudioHardwareCreateProcessTap`) | No published crate exists. v0.1 deliverable; vendor in-tree first, publish standalone after v0.1 stabilization. Tracking issue to be opened. |
 | `screencapturekit` | `0.3` | MIT OR Apache-2.0 | github.com/svtlabs/screencapturekit-rs | macOS 13.0–14.3 fallback for system audio | Less preferred than Core Audio Taps; only used when `cfg!(target_os="macos")` and OS version below 14.4 |
 | `wasapi` | `0.16` | MIT OR Apache-2.0 | github.com/HEnquist/wasapi-rs | Windows WASAPI bindings, including per-process loopback | `cpal` does not expose loopback; we use `wasapi` directly for system audio and `cpal` only for the mic device |
@@ -106,7 +108,7 @@ Indirect (transitive) dependencies inherit the same rules but are vetted lazily:
 | `hmac` | `0.12` | MIT OR Apache-2.0 | RustCrypto/MACs | Webhook HMAC-SHA256 signing | RustCrypto family; `cargo-vet` audited. |
 | `sha2` | `0.10` | MIT OR Apache-2.0 | RustCrypto/hashes | Model-checksum verification + HMAC | Same family. |
 | `global-hotkey` | `0.7` | Apache-2.0 OR MIT | github.com/tauri-apps/global-hotkey | Cross-platform global hotkey | Used by `scrybe-cli` desktop binaries; has its own permission model on macOS but does not require Screen Recording. |
-| `tray-icon` | `0.20` | Apache-2.0 OR MIT | github.com/tauri-apps/tray-icon | Cross-platform system-tray icon | macOS uses `objc2` under the hood; Windows uses NotifyIcon; Linux uses libappindicator. |
+| `tray-icon` | `0.23` | Apache-2.0 OR MIT | github.com/tauri-apps/tray-icon | macOS system-status item | Uses a fixed sequence of precomputed five-bar frames that cycles from the active macOS appearance foreground to recording red, composites the purpose-sized Scrybe image mark when configured, and exposes elapsed time plus `Stop & save` only in the opened menu. |
 
 ### 3.7 Test and dev dependencies
 
@@ -165,7 +167,7 @@ Vendored sources are subject to the same `cargo-vet` audits as direct deps. Upda
 | `cpal` (for system audio) | Does not expose Windows loopback or macOS Core Audio Taps; only used for mic input |
 | `tokio` `["full"]` feature | ~200 KB binary cost; we don't need the full feature set, and listing the subset documents what we *do* need |
 | `native-tls` (via reqwest) | OS trust store divergence between platforms creates non-reproducible TLS behavior; `rustls` is preferred |
-| GUI toolkits (`egui`, `iced`, `tauri`, etc.) | Not building a GUI in v1.0; tray icon and CLI are the entire desktop UX |
+| GUI toolkits (`egui`, `iced`, `tauri`, etc.) | The desktop UX remains a CLI plus a thin native status item and AppKit panel; a general GUI runtime would add an unnecessary process, dependency, and event-loop surface. |
 | Embedded databases (`sqlite`, `sled`, `redb`, `libsql`) | Filesystem-as-database is the architectural commitment; introducing an embedded DB is a Tier-1 architecture change, not a dependency tweak |
 | `chrono-tz` / `time-tz` | Timestamps stored in UTC; timezone display is the renderer's concern |
 | OpenSSL bindings | Conflicts with `rustls`; would force a second TLS stack |
