@@ -206,6 +206,39 @@ describe("SessionsView", () => {
     expect(rows[2]?.textContent).toContain("Needs repair");
   });
 
+  it("test_a_full_page_of_sessions_gives_each_one_exactly_one_stop_in_the_keyboard_order", async () => {
+    // Each row is one control, not a region with a control inside it. A
+    // separate `Open` button beside every row would double the number of
+    // stops between the top of the list and the bottom of it.
+    const user = userEvent.setup();
+    const rows = Array.from({ length: 20 }, (_unused, index) =>
+      session({ id: `session-${index.toString()}`, title: `Session ${index.toString()}` }),
+    );
+    await renderWith(
+      <SessionsView />,
+      servicesReturning({
+        listSessions: () => Promise.resolve(page(rows, { total: 200, has_more: true })),
+      }),
+    );
+    const reached: Element[] = [];
+
+    for (let stop = 0; stop < 21; stop += 1) {
+      await user.tab();
+      if (document.activeElement !== null) {
+        reached.push(document.activeElement);
+      }
+    }
+
+    expect(
+      reached.slice(0, 20).map((stop) => stop.textContent.split("Complete")[0]),
+    ).toEqual(rows.map((row) => row.title));
+    // The twenty-first tab leaves the list rather than finding a
+    // twenty-first stop in it: the page held twenty, and the count
+    // beside it is what says there are more.
+    expect(reached[20]).toBe(document.body);
+    expect(screen.getByText("Showing the first 20 of 200.")).toBeDefined();
+  });
+
   it("test_returning_to_the_window_re_reads_the_storage_root", async () => {
     // Ordinary files on disk are the source of truth and anything may
     // write to them, so a list that only ever read once would go stale

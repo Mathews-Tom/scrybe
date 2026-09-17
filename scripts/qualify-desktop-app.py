@@ -69,7 +69,7 @@ What this cannot establish, stated plainly:
   artifact written somewhere else under `~/Library` would not be seen
   by it.
 
-Two scenarios, one build. Both compile the shape the application
+Three scenarios, one build. All of them compile the shape the application
 ships — default features, which include the model transport — and
 there is no per-scenario feature selection at all. There used to be:
 `setup` named `model-download` explicitly while the host's default set
@@ -101,6 +101,7 @@ Run locally:
 
     python3 scripts/qualify-desktop-app.py --hermetic --scenario lifecycle
     python3 scripts/qualify-desktop-app.py --hermetic --scenario setup
+    python3 scripts/qualify-desktop-app.py --hermetic --scenario library
 
 Exit status 0 means every check held. Exit status 1 means at least one
 did not; each failing check prints what was expected and what was
@@ -1526,12 +1527,258 @@ def is_loopback_host(host: str) -> bool:
         return False
 
 
+# -- the library scenario ------------------------------------------
+
+# The sessions a library run seeds, and what each one is for.
+#
+# Fixture audio, not a decodable Opus stream. Nothing in the path under
+# test decodes anything: what is asserted is which bytes the protocol
+# handler served, and a known repeating pattern makes an off-by-one in
+# the range arithmetic visible where a real recording would not.
+PLAYABLE = "2026-04-29-1430-acme-01HXYZ"
+NO_PLAYBACK = "2026-04-28-0900-onevoice-01AAAAA"
+UNFINISHED = "2026-04-27-1100-abandoned-01BBBBB"
+PLAYBACK_BYTES = bytes(range(256)) * 16
+
+# Paths on the scheme that the player never builds, and that a run must
+# see refused against a tree where the thing each one aims at is really
+# there. A refusal against a missing file would prove nothing.
+FORBIDDEN_PATHS = [
+    f"/{PLAYABLE}/transcript.md",
+    f"/{PLAYABLE}/notes.md",
+    f"/{PLAYABLE}/audio.opus",
+    f"/{PLAYABLE}/meta.toml",
+    "/../../etc/passwd/playback",
+    "/~/playback",
+]
+
+# What a successful media response looks like. WebKit asks for metadata
+# first and the representation after, so a run sees several.
+SERVED_STATUSES = (200, 206)
+
+
+def session_meta(title: str, session_id: str) -> str:
+    return (
+        f'session_id = "{session_id}"\n'
+        f'title = "{title}"\n'
+        'started_at = "2026-04-29T14:30:00Z"\n'
+        'ended_at = "2026-04-29T15:00:00Z"\n'
+        "duration_secs = 1800\n"
+    )
+
+
+def seed_library(candidate: Candidate) -> None:
+    """Writes the sessions a library run reads.
+
+    Four of them, because the interesting answers are the ones that
+    differ: one complete session with playback audio, one complete
+    session with audio and no playback artifact — which is what a mono
+    capture actually leaves behind — one that never finished, and a
+    transcript long enough that a view reading it whole would be
+    visible.
+    """
+    playable = candidate.root / PLAYABLE
+    playable.mkdir(parents=True)
+    (playable / "meta.toml").write_text(session_meta("Acme sync", "01HXYZ"))
+    (playable / "audio.opus").write_bytes(b"")
+    (playable / "playback.opus").write_bytes(PLAYBACK_BYTES)
+    (playable / "notes.md").write_text("## TL;DR\n- covered widgets\n")
+    (playable / "transcript.md").write_text(
+        "# Acme sync\n*2026-04-29 14:30*\n\n"
+        + "".join(f"[00:00:{line % 60:02}] Speaker: line {line}\n" for line in range(4000))
+    )
+
+    mono = candidate.root / NO_PLAYBACK
+    mono.mkdir(parents=True)
+    (mono / "meta.toml").write_text(session_meta("One voice", "01AAAAA"))
+    (mono / "audio.opus").write_bytes(b"")
+    (mono / "transcript.md").write_text("# One voice\nhello\n")
+
+    abandoned = candidate.root / UNFINISHED
+    abandoned.mkdir(parents=True)
+    (abandoned / "audio.opus").write_bytes(b"")
+    # The artifact is there and the session is not complete. Refusing
+    # this one is a decision about the session, not about the file.
+    (abandoned / "playback.opus").write_bytes(PLAYBACK_BYTES)
+
+
+def served(candidate: Candidate) -> list[tuple[str, int, int]]:
+    """Every response the protocol handler recorded, as `(path, status, bytes)`."""
+    found = []
+    for record in candidate.records():
+        if record["event"] != "playback-served":
+            continue
+        detail = record.get("detail", "")
+        path, status, size = detail.rsplit(" ", 2)
+        found.append((path, int(status), int(size)))
+    return found
+
+
+def drive(candidate: Candidate, run: Run, path: str) -> list[tuple[str, int, int]]:
+    """Asks the webview for `path`, and returns what the handler served.
+
+    A run that sees nothing here cannot distinguish a handler that
+    refused from a policy that never let the request out of the webview,
+    so the empty case is reported as its own failure rather than folded
+    into the status assertion below.
+    """
+    before = len(served(candidate))
+    candidate.control(f"{playback_probe_verb()} {path}")
+    candidate.wait_for_event("playback-served", count=before + 1, timeout=15.0)
+    # One media load is several responses: the player asks for metadata
+    # first and the representation after. Waiting for the first and
+    # moving on would leave the rest of them counted against whatever
+    # the next probe asked for.
+    time.sleep(SETTLE_SECONDS)
+    responses = served(candidate)[before:]
+    run.assert_that(
+        f"playback: the webview reached the scheme for {path}",
+        bool(responses),
+        "the policy admitted no media load at all",
+    )
+    return responses
+
+
+def playback_probe_verb() -> str:
+    return PLAYBACK_PROBE_STRINGS[0]
+
+
+def library(candidate: Candidate, run: Run) -> None:
+    """Reading, playing, and refusing, driven on the real application.
+
+    What this establishes that the unit tests cannot. The content
+    security policy decides whether a media element may load a
+    `scrybe-audio://` URL at all, and a policy naming the scheme under
+    the wrong directive blocks the load before the handler is asked.
+    Nothing in Rust can see that, and neither can the policy comparison
+    a few lines below — it reads a constant this file also declares, so
+    it passes for whatever string is written in both places. Only
+    driving the real webview at a real URL and reading back what the
+    handler served tells the two apart.
+
+    Every refusal below aims at something that is really in the fixture
+    tree: a transcript, notes, merged audio, metadata, and a second
+    session's folder. A refusal earned by a missing file would say
+    nothing about confinement.
+    """
+    untouched = [
+        ("the real configuration file", REAL_CONFIG, snapshot(REAL_CONFIG)),
+        ("the default storage root", REAL_STORAGE_ROOT, snapshot(REAL_STORAGE_ROOT)),
+    ]
+    seed_library(candidate)
+    _library_checks(candidate, run)
+
+    run.record(
+        "confinement: the run read the disposable storage root and no other",
+        True,
+        candidate.root.is_dir() and candidate.root.is_relative_to(candidate.workspace),
+    )
+    hermeticity(candidate, run, untouched)
+    webview_state(run)
+
+    # The probe is a debug affordance, not a shipped one.
+    release_strings = strings_in(build_release_binary())
+    run.record(
+        "release: the playback probe is compiled out of a release build",
+        [],
+        sorted(name for name in PLAYBACK_PROBE_STRINGS if name in release_strings),
+    )
+
+    # The policy the bundle ships, read back out of it. The behavioural
+    # checks above are what give this one meaning.
+    policies = shipped_policies(candidate.bundle / "Contents" / "MacOS" / EXECUTABLE)
+    run.record("policy: the bundle carries exactly one content security policy", 1, len(policies))
+    run.record(
+        "policy: the policy the bundle carries is the expected one, directive for directive",
+        EXPECTED_CSP,
+        policies[0] if len(policies) == 1 else policies,
+    )
+
+
+def _library_checks(candidate: Candidate, run: Run) -> None:
+    """Everything that needs the application running."""
+    candidate.launch()
+    sockets = SocketSampler(candidate)
+    sockets.start()
+    opened = candidate.wait_for_control_socket()
+    run.assert_that(
+        "launch: the control channel opens",
+        opened,
+        f"no control socket appeared at {candidate.root / CONTROL_SOCKET}",
+    )
+    if not opened:
+        run.record("no network: every destination the application reached", [], sockets.stop())
+        return
+
+    # (a) The one URL the player builds, for the one session that has
+    # something to play.
+    responses = drive(candidate, run, f"/{PLAYABLE}/playback")
+    run.record(
+        "playback: every response to the player was a success",
+        [],
+        sorted({status for _, status, _ in responses} - set(SERVED_STATUSES)),
+    )
+    run.record(
+        "playback: at least as many bytes were served as the artifact holds",
+        True,
+        sum(size for _, _, size in responses) >= len(PLAYBACK_BYTES),
+    )
+
+    # (b) A completed session whose capture was mono. The artifact is
+    # genuinely absent, which is the case that used to be reported as
+    # playable because availability was read off `audio.opus`.
+    refusal = drive(candidate, run, f"/{NO_PLAYBACK}/playback")
+    run.record(
+        "playback: a session with no playback artifact is refused as absent",
+        [404],
+        sorted({status for _, status, _ in refusal}),
+    )
+
+    # (c) A session that never finished. Its artifact is there; what it
+    # has no established duration or channel attribution for is the
+    # recording as a whole.
+    refusal = drive(candidate, run, f"/{UNFINISHED}/playback")
+    run.record(
+        "playback: an unfinished session is refused as unfinished",
+        [409],
+        sorted({status for _, status, _ in refusal}),
+    )
+
+    # (d) Every path the player never builds, each aimed at something
+    # that really exists.
+    for path in FORBIDDEN_PATHS:
+        refusal = drive(candidate, run, path)
+        run.record(
+            f"confinement: {path} is refused",
+            [404],
+            sorted({status for _, status, _ in refusal}),
+        )
+        run.record(
+            f"confinement: {path} served no document",
+            [],
+            sorted({size for _, _, size in refusal if size >= 256}),
+        )
+
+    # (e) Nothing on this path reaches the network. Reading a session
+    # and playing it are filesystem work; a socket opened during either
+    # would be a capability this surface has no mandate for.
+    run.record("no network: every destination the application reached", [], sockets.stop())
+
+    candidate.control(TRAY_QUIT)
+    run.assert_that(
+        "quit: the process exits",
+        candidate.wait_for_exit(),
+        "the application was still running after quit",
+    )
+
+
 # Scenarios are registered here rather than enumerated at each call
 # site, so later work adds `recording` or `library` by adding one entry
 # and its function.
 SCENARIOS: dict[str, Callable[[Candidate, Run], None]] = {
     "lifecycle": lifecycle,
     "setup": setup,
+    "library": library,
 }
 
 
@@ -1549,6 +1796,13 @@ SCENARIO_COVERAGE: dict[str, str] = {
         "free-space rejection, digest failure, cancellation, atomic promotion, "
         "existing-model preservation, disposable model and configuration roots, "
         "the shipped content security policy, and every socket the process opened"
+    ),
+    "library": (
+        "the webview reaching the playback scheme at all, the bytes served for a "
+        "session that has playback audio, the refusals for one that has none and "
+        "for one that never finished, every path the player never builds aimed at "
+        "a file that is really there, a disposable storage root, the shipped "
+        "content security policy, and every socket the process opened"
     ),
 }
 

@@ -170,6 +170,25 @@ body {
   .app-shell__main {
     padding: 1rem 1.25rem;
   }
+
+  /*
+   * A two-column term list and a fixed-width explanation both assume
+   * room this window does not have at its floor. At 720 the term and
+   * its value stack, and a blocked action's reason takes the width it
+   * is given rather than the width it asked for.
+   */
+  .session-facts__row {
+    flex-direction: column;
+    gap: 0.125rem;
+  }
+
+  .session-facts__row dt {
+    flex-basis: auto;
+  }
+
+  .session-actions__why {
+    max-width: none;
+  }
 }
 
 .session-list {

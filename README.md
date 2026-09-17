@@ -68,6 +68,25 @@ Setup never asks for an account or an API key. Recording remains unavailable whi
 
 Settings carries the same model storage, the same readiness report, and a diagnostics list whose repairs run only when you choose one. `Open advanced configuration` opens `config.toml` for the settings no form models.
 
+### Reading what is already recorded
+
+**Sessions** lists what is under the storage root, grouped by the day each meeting was recorded and newest first. A session that never finished, and one that can still be recovered, are marked as such in words as well as by the edge beside them; a session that never wrote a start time is filed under *Undated* rather than dropped. Only the first page is read, and the list says how many there are when there are more.
+
+**Search** matches folder names and titles for every session, and notes and transcript text for completed ones. Searching again abandons the search still running, so a slower answer to an earlier question can never replace a newer one.
+
+Opening a session shows what is actually on disk for it: its state, identity, times and length, how it was captured, which providers produced its text, and which of the five artifacts are present and which are not. Notes open first. The transcript is one button away and is read fifty lines at a time — the whole document never crosses into the window, so a long meeting costs the same to show as a short one.
+
+Five actions, each offered only when the session accepts it and each saying why beside itself when it does not:
+
+- **Regenerate notes** — replaces `notes.md` from the durable transcript, through the provider `config.toml` names. Offered only for a completed session that has a transcript.
+- **Repair recording** — completes a recording that was interrupted. Offered only when durable state survives for it to recover.
+- **Reveal in Finder** — opens the session's folder. The folder is resolved in Rust beneath the storage root; the window never handles a path.
+- **Copy notes** and **Copy transcript** — read the document and put it on the clipboard, both in Rust. The transcript is never assembled in the window, for the same reason it is never read there whole.
+
+A session with a `playback.opus` gets a player, using the platform's own controls. One without gets no player at all rather than a control that does nothing: `playback.opus` is written only for a two-channel capture, so a mono session is complete, has audio, and has nothing to play. The audio reaches the window through a scheme that serves that one file and no other — a URL on it names a session and the word `playback`, and anything else is refused before any file is opened.
+
+Nothing on these screens edits a note or a transcript, and nothing deletes, archives, or moves a session. The files on disk stay the source of truth; the window is a way to read them.
+
 ### From the terminal
 
 ```sh
@@ -194,6 +213,8 @@ python3 scripts/check-egress-baseline.py
 - macOS is the only polished binary distribution target today.
 - `--source mic+system` defaults to ScreenCaptureKit on macOS 13+ and requires **Screen & System Audio Recording**. This privacy permission covers screen recording in addition to system audio; deny it if that scope is unacceptable. ScreenCaptureKit runs from the invoking terminal and does not require an application bundle or signing identity.
 - The macOS 14.4+ Core Audio Tap backend remains available as `[record].system_backend = "tap"` for recovery. It requires the narrower Audio Capture permission and a signed `.app` bundle. `scrybe doctor` reports bundle state and offers repair with the project self-signed identity; it never creates or auto-selects a signing identity. A failed or silent Tap switches once to ScreenCaptureKit after a 1.5 s startup window, so a quiet desktop can switch before external audio begins.
+- The application reads sessions; it does not record one yet. Recording remains a terminal command.
+- Reading a session offers no paging control: the first twenty are shown and the count says how many there are. Search is submitted rather than run per keystroke.
 - The native recording shell requires the default `cli-shell` feature and explicit `--shell`; headless recording remains available. The `menu-bar-label` indicator is the Scrybe branding slot, and the status item never includes elapsed time. Configured indicators contain only recording state, elapsed time, and the stop control—never captured or generated meeting content.
 - crates.io installation supports the polished macOS application. Linux and Windows recording remain parked until hardware-qualified release paths exist.
 - Native macOS notarization and Windows Authenticode signing are out of scope for the v1 line. Release artifacts are verified with checksums and cosign provenance instead.
@@ -210,6 +231,16 @@ cargo test --workspace --all-targets --no-default-features
 ```
 
 Additional gates used by CI include `cargo audit`, `cargo deny check`, coverage, LoC budget, egress audit, release planning, and advisory reproducibility checks.
+
+The desktop application is qualified against the built bundle rather than against a test harness, which needs a real macOS login session and so runs locally rather than in CI:
+
+```sh
+python3 scripts/qualify-desktop-app.py --hermetic --scenario lifecycle
+python3 scripts/qualify-desktop-app.py --hermetic --scenario setup
+python3 scripts/qualify-desktop-app.py --hermetic --scenario library
+```
+
+Each drives the shipped shape of the application against a disposable storage root and configuration, and reports what it observed rather than what it assumed. `library` is the one that answers a question no unit test can: whether the webview may load a `scrybe-audio://` URL at all. That is decided by the content security policy, and the policy check in that script compares the built artifact against a constant the same file declares — so it passes for any string written in both places. Driving the real webview at a real URL and reading back what the protocol handler served is what tells a correctly-admitted scheme from one admitted under a directive that does nothing.
 
 Project docs:
 

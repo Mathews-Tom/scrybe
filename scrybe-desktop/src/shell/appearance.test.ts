@@ -75,4 +75,32 @@ describe("appearance, as declared", () => {
     expect(minWidth).toBeGreaterThan(0);
     expect(minHeight).toBeGreaterThan(0);
   });
+
+  it("test_no_rule_outside_the_palette_names_a_colour_of_its_own", () => {
+    // Both appearances are expressed as two sets of values for the same
+    // variables, so a rule that names a colour directly has exactly one
+    // appearance and is invisible in the other. What is asserted is the
+    // text of the stylesheet outside the two palette blocks; no colour
+    // is resolved and nothing is rendered.
+    const palette = STYLES.indexOf(":root {");
+    const afterLight = STYLES.indexOf("}", palette);
+    const dark = STYLES.indexOf("@media (prefers-color-scheme: dark) {");
+    const afterDark = STYLES.indexOf("\n}", dark);
+    const rest =
+      STYLES.slice(0, palette) + STYLES.slice(afterLight, dark) + STYLES.slice(afterDark);
+
+    expect(rest.match(/#[0-9a-fA-F]{3,8}\b|\b(?:rgba?|hsla?)\(/g)).toBeNull();
+  });
+
+  it("test_the_narrow_layout_covers_the_surfaces_that_assume_a_wide_one", () => {
+    // The session facts are a two-column term list and a blocked
+    // action's reason is a fixed-width column; both assume room the
+    // window does not have at its declared floor. This asserts the rules
+    // are inside the breakpoint's body, not that either one reflows.
+    const narrow = STYLES.slice(STYLES.indexOf("@media (max-width: 900px)"));
+    const body = narrow.slice(0, narrow.indexOf("\n}\n") + 3);
+
+    expect(body).toContain(".session-facts__row");
+    expect(body).toContain(".session-actions__why");
+  });
 });
