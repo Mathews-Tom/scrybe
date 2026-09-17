@@ -47,10 +47,18 @@ unwrap_used = "warn"
 expect_used = "warn"
 panic = "warn"
 
-# `toml` is already resolved in this graph by `tauri-build`, so naming it
-# here adds no crate to the audited surface. It is what lets
-# `tests/capability_audit.rs` read a TOML capability file rather than
-# skip one, which `tauri-utils` loads unconditionally.
+# `toml` 0.8 is already resolved in this graph by `scrybe-application`
+# and the `scrybe-meeting-core` beneath it, both of which depend on the
+# workspace `toml`, so naming it here unifies onto `toml 0.8.23` and
+# adds no crate to the audited surface. It is not `tauri-build` that
+# supplies it: `tauri-utils` resolves `toml 1.1.6`, a different major
+# that would not satisfy this requirement. The distinction is worth
+# stating because this lockfile is now read by `cargo audit`, `cargo
+# deny`, and `cargo vet`, which makes a claim about what a dependency
+# costs a claim those gates are relied on to keep true.
+#
+# It is what lets `tests/capability_audit.rs` read a TOML capability
+# file rather than skip one, which `tauri-utils` loads unconditionally.
 [dev-dependencies]
 tempfile = "3.27.0"
 toml = "0.8"
