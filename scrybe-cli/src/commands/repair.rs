@@ -80,15 +80,27 @@ fn clear_stale_session_lock(folder: &std::path::Path) -> Result<()> {
     if !lock_path.exists() {
         return Ok(());
     }
-    if crate::commands::doctor::pid_alive_from_lock(&lock_path)? {
-        anyhow::bail!(
+    // Three outcomes, not two. `None` means the lock body could not be
+    // read or parsed, so whether a recorder still owns the session is
+    // undecidable — and deleting a lock on that answer would clear the
+    // way for a second recorder to write into a session the first may
+    // still be holding. Only a lock whose owner is known to be gone is
+    // safe to remove.
+    match scrybe_application::diagnostics::lock_owner_alive(&lock_path) {
+        Some(true) => anyhow::bail!(
             "session at {} is still owned by the process in {}",
             folder.display(),
             lock_path.display()
-        );
+        ),
+        None => anyhow::bail!(
+            "session at {} holds a lock in {} that carries no readable process id; \
+             whether a recorder still owns it cannot be decided, so it was left in place",
+            folder.display(),
+            lock_path.display()
+        ),
+        Some(false) => std::fs::remove_file(&lock_path)
+            .with_context(|| format!("removing stale session lock {}", lock_path.display())),
     }
-    std::fs::remove_file(&lock_path)
-        .with_context(|| format!("removing stale session lock {}", lock_path.display()))
 }
 
 #[cfg(test)]
@@ -127,6 +139,31 @@ mod tests {
         clear_stale_session_lock(dir.path()).unwrap();
 
         assert!(!lock.exists());
+    }
+
+    #[tokio::test]
+    async fn test_run_refuses_a_session_whose_lock_carries_no_readable_pid() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("2026-04-29-1430-locked-01HQQQ");
+        std::fs::create_dir(&folder).unwrap();
+        let lock = folder.join(scrybe_core::storage::PID_LOCK_NAME);
+        std::fs::write(&lock, b"not-a-pid").unwrap();
+
+        let error = run(Args {
+            id_or_folder: "2026-04-29-1430-locked-01HQQQ".into(),
+            root: Some(dir.path().to_path_buf()),
+        })
+        .await
+        .unwrap_err();
+
+        assert!(
+            error.to_string().contains("cannot be decided"),
+            "unexpected refusal: {error}"
+        );
+        // Deleting a lock whose owner is unknown would clear the way
+        // for a second recorder to write into a session a live one may
+        // still hold, so the file has to survive the refusal.
+        assert!(lock.exists());
     }
 
     #[tokio::test]

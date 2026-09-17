@@ -17,11 +17,12 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::Args as ClapArgs;
+use scrybe_application::diagnostics::{DiagnosticCode, DiagnosticReport, Severity};
+use scrybe_application::{ConfigService, DiagnosticsService, StorageRoot};
 use scrybe_core::config::{Config, RECORD_SOURCE_MIC_SYSTEM, RECORD_SYSTEM_BACKEND_TAP};
 use scrybe_core::record_defaults;
-use url::{Host, Url};
 
-use crate::runtime::{expand_root, load_or_default_config};
+use crate::runtime::{load_or_default_config, session_repository};
 
 #[derive(ClapArgs, Debug)]
 pub struct Args {
@@ -67,20 +68,18 @@ pub async fn run(args: Args) -> Result<()> {
     ));
 
     let cfg = load_or_default_config()?;
-    let root = match &args.root {
-        Some(path) => expand_root(path),
-        None => expand_root(&cfg.storage.root),
-    };
+    let sessions = session_repository(args.root.as_deref())?;
+    let root = sessions.root().path().to_path_buf();
     report.lines.push(format!(
         "storage root: {} (exists={})",
         root.display(),
         root.exists()
     ));
 
-    if root.exists() {
-        scan_root(&root, &mut report)?;
-    }
-    report_egress_posture(&cfg, &mut report);
+    let diagnosis = DiagnosticsService::new(StorageRoot::new(root))
+        .diagnose(&ConfigService::new(config_path), &sessions)
+        .map_err(anyhow::Error::from)?;
+    absorb(&diagnosis, &mut report);
 
     run_capture_onboarding(&cfg, &args, &mut report).await?;
 
@@ -96,6 +95,29 @@ pub async fn run(args: Args) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Folds one read-only diagnosis into the textual report this command
+/// has always printed.
+///
+/// Severity decides the warning count, so what counts as a warning is
+/// the diagnosis's judgement rather than a second one made here.
+fn absorb(diagnosis: &DiagnosticReport, report: &mut Report) {
+    for found in &diagnosis.findings {
+        let line = match found.code {
+            DiagnosticCode::SttEgressLocal | DiagnosticCode::SttEgressRemote => {
+                format!("stt egress: {}", found.summary)
+            }
+            DiagnosticCode::LlmEgressLocal | DiagnosticCode::LlmEgressRemote => {
+                format!("llm egress: {}", found.summary)
+            }
+            _ => found.summary.clone(),
+        };
+        report.lines.push(line);
+        if found.severity >= Severity::Warning {
+            report.warnings += 1;
+        }
+    }
 }
 
 #[derive(Default, Debug)]
@@ -363,108 +385,6 @@ async fn run_tap_onboarding(args: &Args, report: &mut Report, _explicit_probe: b
     Ok(())
 }
 
-fn scan_root(root: &std::path::Path, report: &mut Report) -> Result<()> {
-    let mut session_count = 0_u32;
-    let mut orphaned_locks = 0_u32;
-    let mut orphaned_partials = 0_u32;
-
-    let entries = std::fs::read_dir(root).with_context(|| format!("reading {}", root.display()))?;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            session_count += 1;
-            let lock = path.join(scrybe_core::storage::PID_LOCK_NAME);
-            if lock.exists() {
-                if pid_alive_from_lock(&lock).unwrap_or(false) {
-                    report
-                        .lines
-                        .push(format!("session in progress: {}", path.display()));
-                } else {
-                    orphaned_locks += 1;
-                    report
-                        .lines
-                        .push(format!("orphaned pid.lock: {}", lock.display()));
-                }
-            }
-        } else {
-            let is_partial = path
-                .file_name()
-                .and_then(|s| s.to_str())
-                .is_some_and(|name| name.ends_with(".partial"));
-            if is_partial {
-                orphaned_partials += 1;
-                report
-                    .lines
-                    .push(format!("orphaned partial download: {}", path.display()));
-            }
-        }
-    }
-
-    report
-        .lines
-        .push(format!("sessions found: {session_count}"));
-    if orphaned_locks > 0 {
-        report.warnings += orphaned_locks;
-    }
-    if orphaned_partials > 0 {
-        report.warnings += orphaned_partials;
-    }
-    Ok(())
-}
-
-pub(super) fn pid_alive_from_lock(lock_path: &std::path::Path) -> Result<bool> {
-    let body = std::fs::read_to_string(lock_path).context("reading pid.lock")?;
-    let pid: u32 = body
-        .trim()
-        .parse()
-        .with_context(|| format!("parsing pid in {}", lock_path.display()))?;
-    Ok(is_pid_alive(pid))
-}
-
-#[cfg(unix)]
-#[allow(clippy::cast_possible_wrap)]
-fn is_pid_alive(pid: u32) -> bool {
-    // SAFETY: kill(pid, 0) does not send a signal; it returns 0 if
-    // the process exists and is signalable, ESRCH otherwise. No
-    // mutation of process state, no allocation.
-    #[allow(unsafe_code)]
-    let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
-    rc == 0
-}
-
-#[cfg(windows)]
-fn is_pid_alive(pid: u32) -> bool {
-    use windows_sys::Win32::Foundation::{
-        CloseHandle, GetLastError, ERROR_ACCESS_DENIED, WAIT_OBJECT_0,
-    };
-    use windows_sys::Win32::System::Threading::{
-        OpenProcess, WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
-    };
-
-    // SAFETY: OpenProcess returns an owned query-and-synchronize handle.
-    // Waiting with a zero timeout only reads its signalled state, and every
-    // non-null handle is closed before this function returns.
-    #[allow(unsafe_code)]
-    unsafe {
-        let handle = OpenProcess(
-            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
-            0,
-            pid,
-        );
-        if handle.is_null() {
-            return GetLastError() == ERROR_ACCESS_DENIED;
-        }
-        let wait = WaitForSingleObject(handle, 0);
-        let _ = CloseHandle(handle);
-        wait != WAIT_OBJECT_0
-    }
-}
-
-#[cfg(not(any(unix, windows)))]
-const fn is_pid_alive(_pid: u32) -> bool {
-    true
-}
-
 /// Capture window during the tap probe. Long enough to outlast
 /// `CoreAudio`'s `IOProc` startup delay (~200 ms in practice) and to
 /// hear the calibration chime loop at least once, short enough that
@@ -716,133 +636,79 @@ async fn check_sck(report: &mut Report) {
     report.warnings += 1;
 }
 
-fn report_egress_posture(cfg: &Config, report: &mut Report) {
-    let stt = match cfg.stt.provider.as_str() {
-        "whisper-local" => "no egress (local Whisper)".to_string(),
-        other => cfg.stt.base_url.as_deref().map_or_else(
-            || format!("STT provider {other} configured without base_url"),
-            |url| format!("egress to STT provider {other} at {url}"),
-        ),
-    };
-    let llm = if is_loopback_url(&cfg.llm.base_url) {
-        format!("no egress (local LLM at {})", cfg.llm.base_url)
-    } else {
-        format!(
-            "egress to LLM provider {} at {}",
-            cfg.llm.provider, cfg.llm.base_url
-        )
-    };
-    report.lines.push(format!("stt egress: {stt}"));
-    report.lines.push(format!("llm egress: {llm}"));
-}
-
-fn is_loopback_url(value: &str) -> bool {
-    Url::parse(value)
-        .ok()
-        .and_then(|url| {
-            url.host().map(|host| match host {
-                Host::Domain(host) => host.eq_ignore_ascii_case("localhost"),
-                Host::Ipv4(address) => address.is_loopback(),
-                Host::Ipv6(address) => address.is_loopback(),
-            })
-        })
-        .unwrap_or(false)
-}
-
-#[cfg(unix)]
-extern crate libc;
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
 
-    #[test]
-    fn test_report_egress_posture_local_only_emits_no_egress_lines() {
-        let cfg = Config::default();
-        let mut report = Report::default();
-
-        report_egress_posture(&cfg, &mut report);
-
-        assert_eq!(report.lines.len(), 2);
-        assert!(report.lines[0].contains("no egress"));
-        assert!(report.lines[1].contains("no egress"));
+    fn diagnose(dir: &std::path::Path) -> DiagnosticReport {
+        let root = StorageRoot::new(dir.to_path_buf());
+        DiagnosticsService::new(root.clone())
+            .diagnose(
+                &ConfigService::new(dir.join("absent-config.toml")),
+                &scrybe_application::SessionRepository::new(root),
+            )
+            .unwrap()
     }
 
     #[test]
-    fn test_report_egress_posture_openai_compat_loopback_is_local() {
-        let mut cfg = Config::default();
-        cfg.llm.provider = "openai-compat".into();
-        cfg.llm.base_url = "http://127.0.0.1:11434/v1".into();
-        let mut report = Report::default();
-
-        report_egress_posture(&cfg, &mut report);
-
-        assert!(report.lines[1].contains("no egress"));
-    }
-
-    #[test]
-    fn test_report_egress_posture_hosted_llm_remains_egress() {
-        let mut cfg = Config::default();
-        cfg.llm.provider = "openai-compat".into();
-        cfg.llm.base_url = "https://openrouter.ai/api/v1".into();
-        let mut report = Report::default();
-
-        report_egress_posture(&cfg, &mut report);
-
-        assert!(report.lines[1].contains("egress"));
-    }
-
-    #[test]
-    fn test_report_egress_posture_openai_compat_stt_reports_base_url() {
-        let mut cfg = Config::default();
-        cfg.stt.provider = "openai-compat".into();
-        cfg.stt.base_url = Some("https://api.groq.com/openai/v1".into());
-        let mut report = Report::default();
-
-        report_egress_posture(&cfg, &mut report);
-
-        assert!(report.lines[0].contains("https://api.groq.com/openai/v1"));
-    }
-
-    #[test]
-    fn test_scan_root_for_empty_root_reports_zero_sessions() {
+    fn test_absorb_renders_egress_findings_under_their_established_prefixes() {
         let dir = tempfile::tempdir().unwrap();
         let mut report = Report::default();
 
-        scan_root(dir.path(), &mut report).unwrap();
+        absorb(&diagnose(dir.path()), &mut report);
 
-        assert_eq!(report.warnings, 0);
-        assert!(report.lines.iter().any(|l| l.contains("sessions found: 0")));
+        assert!(report
+            .lines
+            .iter()
+            .any(|line| line.starts_with("stt egress: ")));
+        assert!(report
+            .lines
+            .iter()
+            .any(|line| line.starts_with("llm egress: ")));
     }
 
     #[test]
-    fn test_scan_root_flags_orphaned_partial_downloads() {
+    fn test_absorb_leaves_a_clean_install_free_of_warnings() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut report = Report::default();
+
+        absorb(&diagnose(dir.path()), &mut report);
+
+        assert_eq!(report.warnings, 0);
+    }
+
+    #[test]
+    fn test_absorb_counts_one_warning_per_orphaned_partial_download() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("model.gguf.partial"), b"abc").unwrap();
         let mut report = Report::default();
 
-        scan_root(dir.path(), &mut report).unwrap();
+        absorb(&diagnose(dir.path()), &mut report);
 
         assert_eq!(report.warnings, 1);
-        assert!(report.lines.iter().any(|l| l.contains("orphaned partial")));
+        assert!(report
+            .lines
+            .iter()
+            .any(|line| line.contains("orphaned partial")));
     }
 
     #[test]
-    fn test_scan_root_flags_orphaned_pid_lock_for_dead_process() {
+    fn test_absorb_reports_a_session_holding_a_lock() {
         let dir = tempfile::tempdir().unwrap();
-        let folder = dir.path().join("session-x");
+        let folder = dir.path().join("2026-04-29-1430-session-01HXYZ");
         std::fs::create_dir(&folder).unwrap();
+        std::fs::create_dir(folder.join("journal")).unwrap();
         std::fs::write(folder.join(scrybe_core::storage::PID_LOCK_NAME), b"1\n").unwrap();
         let mut report = Report::default();
 
-        scan_root(dir.path(), &mut report).unwrap();
+        absorb(&diagnose(dir.path()), &mut report);
 
-        // pid 1 may or may not be considered alive on this platform;
-        // the test asserts that the scanner observes the lock without
-        // panicking and reports a session.
-        assert!(report.lines.iter().any(|l| l.contains("session-x")));
+        assert!(report
+            .lines
+            .iter()
+            .any(|line| line.contains("2026-04-29-1430-session-01HXYZ")));
     }
 
     #[test]

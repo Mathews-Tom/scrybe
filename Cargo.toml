@@ -63,6 +63,12 @@ thiserror = "1"
 tokenizers = { version = "=0.23.2", default-features = false, features = ["fancy-regex"] }
 tokio = { version = "1.42", default-features = false, features = ["fs", "io-util", "macros", "rt-multi-thread", "signal", "sync", "time"] }
 toml = "0.8"
+# Format-preserving TOML document model. Already in the resolved graph as
+# `toml 0.8`'s own backend, so promoting it to a direct dependency adds no
+# crate: `scrybe-application`'s configuration writer needs the document
+# model rather than the serde round-trip, which would discard every comment
+# and reorder every table.
+toml_edit = "0.20"
 tracing = "0.1"
 ulid = { version = "1", features = ["serde"] }
 # `=2.5.0` precise pin: `url 2.5.x` past .0 pulls `idna 1.x` →
