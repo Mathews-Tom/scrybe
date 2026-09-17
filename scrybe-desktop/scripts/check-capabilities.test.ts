@@ -47,7 +47,7 @@ function hostRoot({ files = {}, inlineCapabilities }: HostRoot): string {
     security.capabilities = inlineCapabilities;
   }
   const written: Record<string, string> = {
-    "Cargo.toml": '[dependencies]\ntauri = "2"\ntauri-plugin-single-instance = "2"\n',
+    "Cargo.toml": '[dependencies]\ntauri = "2"\n',
     "tauri.conf.json": JSON.stringify({
       app: { windows: [{ label: "main" }], security },
     }),

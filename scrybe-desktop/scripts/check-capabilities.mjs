@@ -67,14 +67,9 @@ const FORBIDDEN_NAMESPACES = [
 // naming, so an unexpected one fails rather than passes quietly.
 const ALLOWED_CORE_PERMISSIONS = ["core:event:allow-listen", "core:event:allow-unlisten"];
 
-// Tauri plugins this application is allowed to depend on.
-//
-// `single-instance` registers no command, so it widens nothing the
-// frontend can reach; it exists so a second launch activates this
-// process instead of creating a second owner of the same storage root.
-// Every other capability the application needs is a command it defines
-// itself.
-const ALLOWED_PLUGINS = ["tauri-plugin-single-instance"];
+// Tauri plugins this application is allowed to depend on. Empty: every
+// capability it needs is a command it defines itself.
+const ALLOWED_PLUGINS = [];
 
 // The formats `tauri_utils::acl::capability::CapabilityFile::load`
 // parses. `toml` is unconditional; `json5` is behind the `config-json5`
@@ -384,14 +379,10 @@ function auditCapability(where, capability, sets) {
       if (forbidden !== undefined) {
         fail(reached, `no \`${forbidden}\` capability`, permission);
       }
-      // Anything that is neither a named core permission nor a grant for
-      // one of this application's own commands is a plugin surface
-      // reaching the WebView, whether or not its namespace is on the list
-      // above.
-      if (!ALLOWED_CORE_PERMISSIONS.includes(permission) && !permission.startsWith("allow-")) {
+      if (permission.startsWith("core:") && !ALLOWED_CORE_PERMISSIONS.includes(permission)) {
         fail(
           reached,
-          `an application command grant, or a core permission from [${ALLOWED_CORE_PERMISSIONS.join(", ")}]`,
+          `a core permission from [${ALLOWED_CORE_PERMISSIONS.join(", ")}]`,
           permission,
         );
       }
