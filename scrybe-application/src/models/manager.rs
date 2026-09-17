@@ -30,10 +30,12 @@
 //! it is the user's decision, and a manager that silently overwrote it
 //! would be indistinguishable from one that lost their data.
 
+use std::collections::HashMap;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 
 use scrybe_core::storage::full_fsync;
 use sha2::{Digest, Sha256};
@@ -72,6 +74,28 @@ pub struct ModelManager {
     /// concurrent attempts at the same model cannot pick the same
     /// name even within one second.
     attempts: AtomicU64,
+    /// Digests already computed for files that have not changed since.
+    ///
+    /// Deciding whether an installed artifact is the catalog's means
+    /// hashing it, and the catalog's artifact is half a gigabyte. That
+    /// is a quarter of a second of work, which is fine once and not
+    /// fine on every readiness read — and a settings screen reads
+    /// readiness, diagnostics, and the model plan together, so an
+    /// unmemoised answer would hash it three times to render one page.
+    ///
+    /// Keyed on length and modification time as well as path, so a file
+    /// that was replaced is hashed again. That is the same evidence
+    /// every build system trusts for the same purpose, and the
+    /// alternative — trusting the path alone — would report a
+    /// substituted artifact as the one that was verified.
+    verified: Mutex<HashMap<PathBuf, Verified>>,
+}
+
+/// One file's digest, and what the file looked like when it was taken.
+struct Verified {
+    len: u64,
+    modified: Option<SystemTime>,
+    digest: String,
 }
 
 impl ModelManager {
@@ -88,6 +112,7 @@ impl ModelManager {
             models_dir: models_dir.into(),
             source,
             attempts: AtomicU64::new(0),
+            verified: Mutex::new(HashMap::new()),
         }
     }
 
@@ -336,7 +361,7 @@ impl ModelManager {
                 },
             });
         }
-        let observed = digest_of(&destination)?;
+        let observed = self.digest_of_unchanged(&destination, &metadata)?;
         if observed == manifest.sha256 {
             return Ok(ModelState::Ready);
         }
@@ -348,6 +373,36 @@ impl ModelManager {
                 ),
             },
         })
+    }
+
+    /// The digest of `path`, reusing the last one taken when the file
+    /// has not changed since.
+    ///
+    /// A poisoned lock falls through to hashing rather than failing:
+    /// the memo is an optimisation, and the answer it caches is
+    /// recomputable.
+    fn digest_of_unchanged(&self, path: &Path, metadata: &std::fs::Metadata) -> Result<String> {
+        let len = metadata.len();
+        let modified = metadata.modified().ok();
+        if let Ok(memo) = self.verified.lock() {
+            if let Some(entry) = memo.get(path) {
+                if entry.len == len && entry.modified == modified {
+                    return Ok(entry.digest.clone());
+                }
+            }
+        }
+        let digest = digest_of(path)?;
+        if let Ok(mut memo) = self.verified.lock() {
+            memo.insert(
+                path.to_path_buf(),
+                Verified {
+                    len,
+                    modified,
+                    digest: digest.clone(),
+                },
+            );
+        }
+        Ok(digest)
     }
 
     fn ensure_directory(&self) -> Result<()> {
