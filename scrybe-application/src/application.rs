@@ -175,7 +175,11 @@ mod tests {
         assert_eq!(
             application
                 .diagnostics()
-                .diagnose(application.config(), application.sessions())
+                .diagnose(
+                    application.config(),
+                    application.sessions(),
+                    application.models(),
+                )
                 .unwrap()
                 .findings
                 .iter()

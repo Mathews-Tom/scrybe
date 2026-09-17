@@ -74,6 +74,26 @@ pub enum DiagnosticCode {
     LlmEgressRemote,
     /// Read-only agent access over the storage root is enabled.
     AgentAccessEnabled,
+    /// The configured local transcription model is installed and its
+    /// bytes are the ones the catalog describes.
+    TranscriptionModelPresent,
+    /// Local transcription is configured but no model is installed.
+    TranscriptionModelAbsent,
+    /// Something occupies the model's destination that the catalog does
+    /// not describe, or the catalog itself is unusable.
+    TranscriptionModelUnreadable,
+    /// An interrupted download left a `.partial` in the models
+    /// directory. Distinct from [`Self::OrphanedPartialFile`], which is
+    /// about the storage root.
+    ModelDownloadPartial,
+    /// A local notes provider answered.
+    NotesProviderUnreachable,
+    /// Nothing answered at the configured local notes endpoint.
+    NotesProviderReachable,
+    /// The microphone permission has been refused.
+    MicrophonePermissionDenied,
+    /// The Screen & System Audio Recording permission has been refused.
+    SystemAudioPermissionDenied,
 }
 
 /// A mutation a user can explicitly choose in response to a finding.
@@ -94,6 +114,58 @@ pub enum RecoveryAction {
     /// Edit the configuration; not something the service can do for the
     /// user, because only they know the intended value.
     ReviewConfiguration,
+    /// Fetch and verify one catalog model. Reaches the network, and
+    /// only after the user has confirmed the artifact they were shown,
+    /// so it is never taken from a diagnosis.
+    InstallTranscriptionModel { id: String },
+    /// Delete one `.partial` from the models directory. Offered rather
+    /// than taken: a partial may be the tail of a download the user
+    /// still wants.
+    RemoveModelPartial { name: String },
+    /// Open the platform screen where a refused capability is granted.
+    /// Not a mutation this application performs — it hands the user to
+    /// the place where they perform it.
+    OpenSystemSettings { capability: Capability },
+    /// Open the configuration file in whatever the platform opens it
+    /// with, for the advanced settings no form models.
+    OpenAdvancedConfiguration,
+}
+
+/// A platform capability a recording needs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Capability {
+    Microphone,
+    SystemAudioRecording,
+}
+
+impl Capability {
+    /// What the platform calls it, as it appears in System Settings.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Microphone => "Microphone",
+            Self::SystemAudioRecording => "Screen & System Audio Recording",
+        }
+    }
+
+    /// The System Settings pane that grants it.
+    ///
+    /// A URL rather than a description, because a recovery instruction
+    /// a user has to navigate by hand is one most of them will not
+    /// complete. The `x-apple.systempreferences` scheme is the
+    /// platform's own and names the pane directly.
+    #[must_use]
+    pub const fn settings_url(self) -> &'static str {
+        match self {
+            Self::Microphone => {
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
+            }
+            Self::SystemAudioRecording => {
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+            }
+        }
+    }
 }
 
 /// One thing diagnosis found.

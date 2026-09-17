@@ -76,7 +76,7 @@ pub async fn run(args: Args) -> Result<()> {
 
     let diagnosis = app
         .diagnostics()
-        .diagnose(app.config(), app.sessions())
+        .diagnose(app.config(), app.sessions(), app.models())
         .map_err(anyhow::Error::from)?;
     absorb(&diagnosis, &mut report);
 
@@ -641,13 +641,30 @@ mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
 
+    /// A diagnosis of `dir` that depends on nothing but `dir`.
+    ///
+    /// The built-in defaults name a locally managed transcription model
+    /// and a loopback notes endpoint, and both are probed. Whether
+    /// something is listening on that endpoint is a property of the
+    /// machine the test runs on, so the configuration here names a
+    /// remote one, which is reported from its URL and never dialled.
+    /// The models directory is disposable for the same reason: the
+    /// platform one holds whatever this workstation happens to have
+    /// installed.
     fn diagnose(dir: &std::path::Path) -> DiagnosticReport {
-        let app = scrybe_application::ScrybeApplication::new(
+        let config = dir.join("config.toml");
+        std::fs::write(
+            &config,
+            "schema_version = 1\n\n[llm]\nbase_url = \"https://notes.example/v1\"\n",
+        )
+        .unwrap();
+        let app = scrybe_application::ScrybeApplication::with_models_dir(
             scrybe_application::StorageRoot::new(dir.to_path_buf()),
-            dir.join("absent-config.toml"),
+            config,
+            dir.join("models"),
         );
         app.diagnostics()
-            .diagnose(app.config(), app.sessions())
+            .diagnose(app.config(), app.sessions(), app.models())
             .unwrap()
     }
 
@@ -668,14 +685,25 @@ mod tests {
             .any(|line| line.starts_with("llm egress: ")));
     }
 
+    /// A fresh install configured for local transcription warns about
+    /// exactly one thing: it has no model yet.
+    ///
+    /// This used to assert no warnings at all. Local transcription
+    /// against a model that is not installed fails when transcription
+    /// starts, part way through a recording, and Doctor now says so
+    /// beforehand — which is a warning a clean install genuinely has.
     #[test]
-    fn test_absorb_leaves_a_clean_install_free_of_warnings() {
+    fn test_a_fresh_install_warns_only_that_it_has_no_transcription_model() {
         let dir = tempfile::tempdir().unwrap();
         let mut report = Report::default();
 
         absorb(&diagnose(dir.path()), &mut report);
 
-        assert_eq!(report.warnings, 0);
+        assert_eq!(report.warnings, 1);
+        assert!(report
+            .lines
+            .iter()
+            .any(|line| line.contains("no model is installed")));
     }
 
     #[test]
@@ -684,9 +712,12 @@ mod tests {
         std::fs::write(dir.path().join("model.gguf.partial"), b"abc").unwrap();
         let mut report = Report::default();
 
+        let empty = tempfile::tempdir().unwrap();
+        let mut without = Report::default();
+        absorb(&diagnose(empty.path()), &mut without);
         absorb(&diagnose(dir.path()), &mut report);
 
-        assert_eq!(report.warnings, 1);
+        assert_eq!(report.warnings, without.warnings + 1);
         assert!(report
             .lines
             .iter()
