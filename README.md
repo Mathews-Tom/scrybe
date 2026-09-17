@@ -62,9 +62,9 @@ Open Scrybe. An installation that cannot record yet opens on guided setup, which
 1. **Welcome** — where recordings are kept, that no meeting bot joins a call, and that the transcription-model download is the only network request setup makes.
 2. **Recording** — the microphone, and what the Microphone and Screen & System Audio Recording permissions are for. macOS raises its own dialog the first time a recording needs one; if you have already refused a capability, each has a button that opens the System Settings pane where it is granted.
 3. **Transcription and notes** — the transcription model, shown with its source, upstream revision, licence, exact byte count, SHA-256, destination, and disk requirement *before* anything is requested. Nothing is fetched until you confirm it; the download is cancellable, and it is promoted to its final name only after its size and digest both match exactly. Local notes are checked separately, and setup can be finished without them.
-4. **Ready** — capture, transcription, notes, storage, and privacy reported separately.
+4. **Ready** — capture, transcription, notes, storage, and privacy reported separately. Capture is reported as *not checked*: Scrybe does not read whether macOS has granted microphone and system-audio recording, because no way to read it without prompting exists in this release. macOS asks the first time a recording needs the grant.
 
-Setup never asks for an account or an API key. Recording remains unavailable until capture, transcription, and storage are all unblocked; notes are optional and visibly so.
+Setup never asks for an account or an API key. Recording remains unavailable while transcription or storage is blocked; notes are optional and visibly so.
 
 Settings carries the same model storage, the same readiness report, and a diagnostics list whose repairs run only when you choose one. `Open advanced configuration` opens `config.toml` for the settings no form models.
 
