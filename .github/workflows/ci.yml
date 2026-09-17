@@ -191,6 +191,14 @@ jobs:
       # keep both lists in sync when adding or dropping ignores.
       - name: cargo audit
         run: cargo audit --ignore RUSTSEC-2024-0421
+      # The desktop host is a Cargo workspace of its own with its own
+      # lockfile, so the step above — which reads `./Cargo.lock` — does
+      # not see a single one of its crates. Without this step the
+      # newest distributable binary in the repository would be the only
+      # one exempt from RustSec advisory scanning. Same ignore list, for
+      # the same reason recorded in the workspace `audit.toml`.
+      - name: cargo audit (desktop host)
+        run: cargo audit --file scrybe-desktop/src-tauri/Cargo.lock --ignore RUSTSEC-2024-0421
 
   deny:
     name: deny (advisories, licenses, bans, sources)
@@ -201,6 +209,17 @@ jobs:
         with:
           command: check advisories licenses bans sources
           arguments: --all-features
+      # The same policy file applied to the desktop host's own
+      # workspace. `manifest-path` selects the graph; `--config` keeps
+      # the licence allow-list, the advisory ignore list, and the source
+      # allow-list a single file rather than a second copy that can
+      # drift. The action defaults `manifest-path` to `./Cargo.toml`, so
+      # the step above covers the root graph and nothing else.
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: ./scrybe-desktop/src-tauri/Cargo.toml
+          command: check advisories licenses bans sources
+          arguments: --all-features --config ./deny.toml
 
   vet:
     name: vet (cargo-vet supply-chain — advisory)
@@ -239,6 +258,26 @@ jobs:
           set -e
           if [ "$rc" -ne 0 ]; then
             echo "::warning title=cargo-vet advisory::cargo vet check exited $rc; see supply-chain/audits.toml for the v0.9.x audit-pass plan"
+          fi
+          exit 0
+      # The desktop host's graph, through the same store. `--store-path`
+      # points the run at the repository's one `supply-chain/`
+      # directory, so an audit written once counts for both graphs and
+      # there is no second audit set to keep in step. Advisory on the
+      # same terms as the step above, and for the same reason: the
+      # audit pass is incremental. Without this step the desktop graph
+      # would not appear in the lane's output at all, so its unaudited
+      # crates would be invisible rather than merely unaudited.
+      - name: cargo vet check --locked (desktop host, advisory)
+        run: |
+          set +e
+          cargo vet check --locked \
+            --manifest-path scrybe-desktop/src-tauri/Cargo.toml \
+            --store-path supply-chain
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            echo "::warning title=cargo-vet advisory (desktop)::cargo vet check exited $rc for the desktop host graph; see supply-chain/audits.toml for the v0.9.x audit-pass plan"
           fi
           exit 0
 
@@ -336,7 +375,7 @@ jobs:
         run: cargo test --manifest-path scrybe-desktop/src-tauri/Cargo.toml --all-targets --locked
       # The debug-only lifecycle channel compiles to a different
       # expansion in a release build, so checking only the debug profile
-      # would leave half of it unbuilt.
+      # would leave half of it unbuilt — and the half that ships.
       - name: cargo check (desktop host, release profile)
         run: cargo check --manifest-path scrybe-desktop/src-tauri/Cargo.toml --release --bin scrybe-desktop --locked
       # Regenerates the TypeScript contract from the Rust one and fails

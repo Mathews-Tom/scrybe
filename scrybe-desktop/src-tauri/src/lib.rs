@@ -29,7 +29,7 @@ use std::sync::Arc;
 use tauri::{Emitter, Manager};
 
 use crate::contract::{RecordingTransition, TRANSITION_EVENT};
-use crate::lifecycle::{tray, window};
+use crate::lifecycle::{menu, tray, window};
 use crate::state::Desktop;
 
 /// Starts the desktop application and blocks until it exits.
@@ -52,14 +52,29 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             window::show(app);
         }))
         .manage(desktop)
+        // Replaces the platform default, whose predefined quit item
+        // terminates the process natively without reaching the
+        // exit-request path. The item this installs carries the tray's
+        // own identity, so the handler below runs one quit decision for
+        // the menu, the tray, and the debug control channel alike.
+        .menu(menu::build)
+        .on_menu_event(|app, event| menu::activate(app, event.id.as_ref()))
         .setup(|app| {
             let handle = app.handle();
             crate::note!(handle, "launched");
             forward_recording_transitions(handle);
             tray::build(handle)?;
             #[cfg(debug_assertions)]
+            menu::note_quit_identity(handle);
+            #[cfg(debug_assertions)]
             lifecycle::control::serve(handle);
-            crate::note!(handle, "window-shown");
+            // Through the same path the tray's `Open Scrybe` uses, so
+            // the `window-shown` observation is recorded where a window
+            // has actually been shown rather than asserted here. The
+            // window is configured visible, so this shows an already
+            // visible window; what it adds is that the record reflects
+            // an outcome instead of an intention.
+            window::show(handle);
             Ok(())
         })
         .on_window_event(window::hide_on_close)

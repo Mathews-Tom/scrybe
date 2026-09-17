@@ -3144,6 +3144,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-single-instance",
  "tempfile",
+ "toml 0.8.23",
  "ts-rs",
 ]
 

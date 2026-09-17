@@ -22,6 +22,7 @@
 pub mod channel;
 #[cfg(debug_assertions)]
 pub mod control;
+pub mod menu;
 pub mod tray;
 pub mod window;
 
@@ -51,7 +52,10 @@ macro_rules! note {
 /// an unused binding, and discards everything else: the event name and
 /// detail are never named in the expansion, so no release build carries
 /// their string literals. Expanding to a block rather than to nothing
-/// keeps a call in expression position valid.
+/// is what keeps a call in expression position valid — one of these is
+/// the `RunEvent::Exit` match arm, and an empty expansion is a legal
+/// statement but not a legal expression, so a release build of this
+/// tree would not compile at all.
 #[cfg(not(debug_assertions))]
 #[macro_export]
 macro_rules! note {
@@ -76,11 +80,7 @@ pub fn keep_running_without_a_window(app: &tauri::AppHandle, event: tauri::RunEv
             api.prevent_exit();
             crate::note!(app, "implicit-exit-prevented");
         }
-        tauri::RunEvent::Exit => {
-            #[cfg(debug_assertions)]
-            control::remove_socket(app);
-            crate::note!(app, "exited");
-        }
+        tauri::RunEvent::Exit => crate::note!(app, "exited"),
         _ => {}
     }
 }
