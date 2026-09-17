@@ -31,7 +31,7 @@ default = [
 hook-git = ["scrybe-core/hook-git"]
 whisper-local = ["scrybe-core/whisper-local"]
 stt-sherpa = ["scrybe-core/stt-sherpa"]
-# `scrybe mcp`: read-only local-agent access over `~/scrybe/` (M9).
+# `scrybe mcp`: read-only local-agent access over `~/scrybe/`.
 # Off by default; forwards to `scrybe-core`'s feature of the same
 # name, which itself carries no write/delete/mutate capability
 # regardless of this flag — the feature only gates whether the stdio

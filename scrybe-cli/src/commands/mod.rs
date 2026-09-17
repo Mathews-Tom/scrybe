@@ -59,7 +59,7 @@ pub enum Command {
     InstallMacosBundle(install_macos_bundle::Args),
     /// Verify a completed macOS qualification session and write a redacted receipt.
     Qualify(qualify::Args),
-    /// Read-only local-agent access server over stdio (M9). Refuses
+    /// Read-only local-agent access server over stdio. Refuses
     /// to start unless `[agent_access].enabled = true` in config.
     #[cfg(feature = "agent-access")]
     Mcp(mcp::Args),

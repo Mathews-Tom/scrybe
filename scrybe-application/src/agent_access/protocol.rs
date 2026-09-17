@@ -21,8 +21,8 @@
 //!
 //! Every result this module produces — `initialize`, `tools/list`,
 //! `ping`, and each `tools/call` payload — carries a top-level
-//! `schema_version` field, per the M9 contract that every response
-//! from this surface is versioned.
+//! `schema_version` field, so a client can detect a shape change it
+//! cannot tolerate rather than silently misreading a response.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -684,14 +684,13 @@ mod tests {
         assert!(response.is_none());
     }
 
-    /// The structural mutation-guard test required by M9 acceptance
-    /// (b): proves no write, delete, or mutate call path exists in
-    /// the served module — not by inspecting source text, but by
-    /// exercising every JSON-RPC method and all five tools against a
-    /// real fixture tree through the production `RealReadOnlyFs` and
-    /// asserting the tree is byte-for-byte identical afterward. Any
-    /// mutation anywhere in the call graph, however indirect, would
-    /// change the snapshot and fail this test.
+    /// The structural mutation-guard test: proves no write, delete, or
+    /// mutate call path exists in the served module — not by inspecting
+    /// source text, but by exercising every JSON-RPC method and all
+    /// five tools against a real fixture tree through the production
+    /// `SessionRepository` and asserting the tree is byte-for-byte
+    /// identical afterward. Any mutation anywhere in the call graph,
+    /// however indirect, would change the snapshot and fail this test.
     #[test]
     fn test_dispatch_never_mutates_fixture_tree_across_every_method_and_tool() {
         let dir = tempfile::tempdir().unwrap();

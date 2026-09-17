@@ -4,8 +4,7 @@
 // You may obtain a copy of the License at
 //     https://www.apache.org/licenses/LICENSE-2.0
 
-//! Recorded stdio transcript against `scrybe mcp` (M9 verification,
-//! `.docs/DEVELOPMENT_PLAN.md` §6 M9, `.docs/EXECUTION_PROMPTS.md` M9).
+//! Recorded stdio transcript against `scrybe mcp`.
 //!
 //! Spawns the real `scrybe` binary with `mcp --root <fixture>`,
 //! writes a fixed sequence of newline-delimited JSON-RPC requests

@@ -4,8 +4,7 @@
 // You may obtain a copy of the License at
 //     https://www.apache.org/licenses/LICENSE-2.0
 
-//! `SIGKILL`-then-repair integration test (M2 PR-5 verification,
-//! `.docs/EXECUTION_PROMPTS.md` M2 PR-5).
+//! `SIGKILL`-then-repair integration test.
 //!
 //! Spawns the real `scrybe` binary recording a `--source synthetic`
 //! session, `SIGKILL`s it mid-stream (no chance to run any shutdown
