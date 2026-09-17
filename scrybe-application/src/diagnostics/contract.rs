@@ -8,7 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::identity::SessionRef;
+use crate::identity::{PartialFileRef, SessionRef};
 
 /// How much a finding matters.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Hash, Serialize, Deserialize)]
@@ -87,7 +87,7 @@ pub enum RecoveryAction {
     /// Delete a `pid.lock` whose owning process is gone.
     RemoveStaleSessionLock { id: SessionRef },
     /// Delete a leftover `.partial` file directly under the root.
-    RemoveOrphanedPartial { name: String },
+    RemoveOrphanedPartial { name: PartialFileRef },
     /// Edit the configuration; not something the service can do for the
     /// user, because only they know the intended value.
     ReviewConfiguration,
