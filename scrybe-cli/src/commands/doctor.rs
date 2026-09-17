@@ -18,11 +18,10 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::Args as ClapArgs;
 use scrybe_application::diagnostics::{DiagnosticCode, DiagnosticReport, Severity};
-use scrybe_application::{ConfigService, DiagnosticsService, StorageRoot};
 use scrybe_core::config::{Config, RECORD_SOURCE_MIC_SYSTEM, RECORD_SYSTEM_BACKEND_TAP};
 use scrybe_core::record_defaults;
 
-use crate::runtime::{load_or_default_config, session_repository};
+use crate::runtime::{application, load_or_default_config};
 
 #[derive(ClapArgs, Debug)]
 pub struct Args {
@@ -60,24 +59,24 @@ pub struct Args {
 pub async fn run(args: Args) -> Result<()> {
     let mut report = Report::default();
 
-    let config_path = Config::discover_path().context("resolving config path")?;
+    let app = application(args.root.as_deref())?;
     report.lines.push(format!(
         "config: {} (exists={})",
-        config_path.display(),
-        config_path.exists()
+        app.config().path().display(),
+        app.config().path().exists()
     ));
 
     let cfg = load_or_default_config()?;
-    let sessions = session_repository(args.root.as_deref())?;
-    let root = sessions.root().path().to_path_buf();
+    let root = app.root().path();
     report.lines.push(format!(
         "storage root: {} (exists={})",
         root.display(),
         root.exists()
     ));
 
-    let diagnosis = DiagnosticsService::new(StorageRoot::new(root))
-        .diagnose(&ConfigService::new(config_path), &sessions)
+    let diagnosis = app
+        .diagnostics()
+        .diagnose(app.config(), app.sessions())
         .map_err(anyhow::Error::from)?;
     absorb(&diagnosis, &mut report);
 
@@ -643,12 +642,12 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     fn diagnose(dir: &std::path::Path) -> DiagnosticReport {
-        let root = StorageRoot::new(dir.to_path_buf());
-        DiagnosticsService::new(root.clone())
-            .diagnose(
-                &ConfigService::new(dir.join("absent-config.toml")),
-                &scrybe_application::SessionRepository::new(root),
-            )
+        let app = scrybe_application::ScrybeApplication::new(
+            scrybe_application::StorageRoot::new(dir.to_path_buf()),
+            dir.join("absent-config.toml"),
+        );
+        app.diagnostics()
+            .diagnose(app.config(), app.sessions())
             .unwrap()
     }
 

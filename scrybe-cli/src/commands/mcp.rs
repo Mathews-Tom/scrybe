@@ -20,10 +20,10 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::Args as ClapArgs;
-use scrybe_core::agent_access::{handle_message, RealReadOnlyFs};
+use scrybe_application::agent_access::handle_message;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-use crate::runtime::{expand_root, load_or_default_config};
+use crate::runtime::{application, load_or_default_config};
 
 #[derive(ClapArgs, Debug)]
 pub struct Args {
@@ -47,12 +47,7 @@ pub async fn run(args: Args) -> Result<()> {
              Privacy and Network Posture section)"
         );
     }
-    let root = args
-        .root
-        .as_deref()
-        .map_or_else(|| expand_root(&cfg.storage.root), expand_root);
-
-    let fs = RealReadOnlyFs;
+    let app = application(args.root.as_deref())?;
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
     let mut stdout = tokio::io::stdout();
 
@@ -61,7 +56,7 @@ pub async fn run(args: Args) -> Result<()> {
         if trimmed.is_empty() {
             continue;
         }
-        if let Some(response) = handle_message(&fs, &root, trimmed) {
+        if let Some(response) = handle_message(app.session_reader(), trimmed) {
             stdout
                 .write_all(response.as_bytes())
                 .await

@@ -39,7 +39,7 @@ stt-sherpa = ["scrybe-core/stt-sherpa"]
 # existing `tokio` dependency's async stdin/stdout wrapper, enabled
 # only for this feature (mirrors `system-capture-mac`'s conditional
 # `tokio/process` below). No new dependency.
-agent-access = ["scrybe-core/agent-access", "tokio/io-std"]
+agent-access = ["scrybe-application/agent-access", "tokio/io-std"]
 # Enables the live cpal binding in `scrybe-capture-mic` so
 # `scrybe record --mic` opens the default input device. Included in
 # the published macOS application's default feature set; hermetic

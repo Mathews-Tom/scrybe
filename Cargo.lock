@@ -3403,6 +3403,7 @@ dependencies = [
 name = "scrybe-meeting-application"
 version = "1.6.0"
 dependencies = [
+ "async-trait",
  "chrono",
  "libc",
  "pretty_assertions",
@@ -3411,6 +3412,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 1.0.69",
+ "tokio",
  "toml",
  "toml_edit 0.20.2",
  "url",

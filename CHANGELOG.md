@@ -4,6 +4,23 @@ All notable changes to scrybe are documented here. The format follows [Keep a Ch
 
 ## [Unreleased]
 
+### Added
+
+- A shared `scrybe-application` layer, published as `scrybe-meeting-application`, owns the session, configuration, diagnostics, and recording workflows the CLI and the read-only agent surface both need. Sessions are addressed by an opaque identity that refuses absolute paths, separators, `.`/`..` traversal, and drive- or home-relative forms; listing and search are paged; search is cancellable; and an external write under the storage root invalidates cached results without a watcher.
+- `scrybe list` now distinguishes four session states where it previously reported two. A session with merged audio but no `meta.toml` was invisible to the old scan and is now reported as recoverable, a journal that repair cannot merge is no longer told to run `scrybe repair`, and corrupt durable state is reported as failed rather than treated as recoverable.
+- `scrybe doctor` reports each session's recoverability alongside the storage, lock, partial-download, and egress findings it already printed. Its warning count and exit status are unchanged.
+
+### Changed
+
+- `scrybe show`, `scrybe repair`, and `scrybe notes` no longer accept a filesystem path. A session is named by its folder name or an unambiguous session-ID prefix and always resolves beneath the configured storage root; `--root` remains the way to point a command at a different root. The previous behavior returned any existing absolute directory before consulting the configured root, which let a command read outside it.
+- `scrybe repair` on a directory that is not a session now reports that no session matches, rather than reporting nothing to repair.
+- Tray, floating-pill, global-hotkey, `Ctrl-C`, and `SIGTERM` stop requests, and the non-shell `scrybe rec` signal path, now converge on one process-wide recording state model with a single monotonic clock origin. Capture failures and finalization failures are distinguished by where they happened rather than by a caller's label.
+- The read-only agent surface is served by the shared session services instead of its own filesystem walk, so an agent and the CLI classify, confine, and page sessions identically.
+
+### Removed
+
+- `scrybe-meeting-core` no longer provides the `agent-access` feature or the `agent_access` module; both moved to `scrybe-meeting-application`, which now gates the read-only stdio JSON-RPC/MCP surface behind a feature of the same name. The `scrybe` CLI's own `agent-access` feature is unchanged for users.
+
 ## [1.6.0] — 2026-09-17
 
 ### Changed

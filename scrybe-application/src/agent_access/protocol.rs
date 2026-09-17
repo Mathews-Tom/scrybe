@@ -24,13 +24,83 @@
 //! `schema_version` field, per the M9 contract that every response
 //! from this surface is versioned.
 
-use std::path::Path;
-
-use serde::Serialize;
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use super::fs::ReadOnlyFs;
-use super::reader::{self, AgentAccessError, DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT};
+use crate::cancellation::CancellationToken;
+use crate::error::ApplicationError;
+use crate::identity::SessionRef;
+use crate::paging::{PageRequest, DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT};
+use crate::sessions::{SearchRequest, SessionReader, SessionState, SessionSummary};
+use crate::Result;
+
+/// Whether a session folder reached the end of a normal recording.
+///
+/// The repository distinguishes four states; this surface has always
+/// reported two, and a client that reads `"unfinished"` must keep
+/// reading it. Anything short of complete is reported as unfinished,
+/// never served as though it were complete.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionStatus {
+    Finished,
+    Unfinished,
+}
+
+impl From<SessionState> for SessionStatus {
+    fn from(state: SessionState) -> Self {
+        if state.is_complete() {
+            Self::Finished
+        } else {
+            Self::Unfinished
+        }
+    }
+}
+
+/// One row of `list_recent_meetings` / `search_meetings`, and the
+/// payload of `get_meeting`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MeetingSummary {
+    pub folder: String,
+    pub status: SessionStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_secs: Option<u64>,
+}
+
+impl From<SessionSummary> for MeetingSummary {
+    fn from(summary: SessionSummary) -> Self {
+        Self {
+            folder: summary.id.to_string(),
+            status: summary.state.into(),
+            session_id: summary.session_id,
+            title: summary.title,
+            started_at: summary.started_at,
+            ended_at: summary.ended_at,
+            duration_secs: summary.duration_secs,
+        }
+    }
+}
+
+/// Payload of `get_meeting_notes` / `get_meeting_transcript`.
+///
+/// `content` is `None` both when the meeting never finished and,
+/// defensively, when a complete session is missing the requested file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MeetingContent {
+    pub folder: String,
+    pub status: SessionStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+}
 
 /// Schema version stamped onto every response this module produces.
 ///
@@ -98,7 +168,7 @@ fn encode(response: &RpcResponse) -> String {
 /// method. A malformed line still receives the appropriate `-32700` or
 /// `-32600` response with `id: null`.
 #[must_use]
-pub fn handle_message(fs: &dyn ReadOnlyFs, root: &Path, line: &str) -> Option<String> {
+pub fn handle_message(sessions: &dyn SessionReader, line: &str) -> Option<String> {
     let value: Value = match serde_json::from_str(line) {
         Ok(v) => v,
         Err(e) => {
@@ -109,10 +179,10 @@ pub fn handle_message(fs: &dyn ReadOnlyFs, root: &Path, line: &str) -> Option<St
             )));
         }
     };
-    dispatch(fs, root, &value).map(|response| encode(&response))
+    dispatch(sessions, &value).map(|response| encode(&response))
 }
 
-fn dispatch(fs: &dyn ReadOnlyFs, root: &Path, value: &Value) -> Option<RpcResponse> {
+fn dispatch(sessions: &dyn SessionReader, value: &Value) -> Option<RpcResponse> {
     let Some(method) = value.get("method").and_then(Value::as_str) else {
         return Some(err_response(
             Value::Null,
@@ -134,7 +204,7 @@ fn dispatch(fs: &dyn ReadOnlyFs, root: &Path, value: &Value) -> Option<RpcRespon
         "initialize" => Ok(initialize_result()),
         "ping" => Ok(ping_result()),
         "tools/list" => Ok(tools_list_result()),
-        "tools/call" => tools_call_result(fs, root, &params),
+        "tools/call" => tools_call_result(sessions, &params),
         other => Err((METHOD_NOT_FOUND, format!("method not found: {other}"))),
     };
 
@@ -171,7 +241,7 @@ fn id_schema() -> Value {
 }
 
 fn limit_property() -> Value {
-    json!({ "type": "integer", "minimum": 1, "maximum": MAX_LIST_LIMIT, "default": DEFAULT_LIST_LIMIT })
+    json!({ "type": "integer", "minimum": 1, "maximum": MAX_PAGE_LIMIT, "default": DEFAULT_PAGE_LIMIT })
 }
 
 fn tool_definitions() -> Value {
@@ -217,10 +287,9 @@ fn tool_definitions() -> Value {
 }
 
 fn tools_call_result(
-    fs: &dyn ReadOnlyFs,
-    root: &Path,
+    sessions: &dyn SessionReader,
     params: &Value,
-) -> Result<Value, (i64, String)> {
+) -> std::result::Result<Value, (i64, String)> {
     let Some(name) = params.get("name").and_then(Value::as_str) else {
         return Err((INVALID_PARAMS, "missing required params.name".to_string()));
     };
@@ -228,38 +297,91 @@ fn tools_call_result(
     let arguments = params.get("arguments").unwrap_or(&empty);
 
     let result = match name {
-        "list_recent_meetings" => to_tool_result(reader::list_recent_meetings(
-            fs,
-            root,
-            read_limit(arguments),
-        )),
+        "list_recent_meetings" => to_tool_result(
+            sessions
+                .list_sessions(read_page(arguments))
+                .map(|page| rows(page.items)),
+        ),
         "search_meetings" => {
             let query = required_str(arguments, "query")?;
-            to_tool_result(reader::search_sessions(
-                fs,
-                root,
-                query,
-                read_limit(arguments),
-            ))
+            let request = SearchRequest::new(query).at(read_page(arguments));
+            to_tool_result(
+                sessions
+                    .search_sessions(&request, &CancellationToken::new())
+                    .map(|page| rows(page.items)),
+            )
         }
         "get_meeting" => {
-            let id = required_str(arguments, "id")?;
-            to_tool_result(reader::get_meeting(fs, root, id))
+            required_str(arguments, "id")?;
+            to_tool_result(
+                identity(arguments)
+                    .and_then(|id| sessions.get_session(&id))
+                    .map(|detail| MeetingSummary {
+                        folder: detail.id.to_string(),
+                        status: detail.state.into(),
+                        session_id: detail.session_id,
+                        title: detail.title,
+                        started_at: detail.started_at,
+                        ended_at: detail.ended_at,
+                        duration_secs: detail.duration_secs,
+                    }),
+            )
         }
         "get_meeting_notes" => {
-            let id = required_str(arguments, "id")?;
-            to_tool_result(reader::get_meeting_notes(fs, root, id))
+            required_str(arguments, "id")?;
+            to_tool_result(identity(arguments).and_then(|id| {
+                sessions.read_notes(&id).map(|notes| MeetingContent {
+                    folder: notes.id.to_string(),
+                    status: notes.state.into(),
+                    content: served(notes.state, notes.markdown),
+                })
+            }))
         }
         "get_meeting_transcript" => {
-            let id = required_str(arguments, "id")?;
-            to_tool_result(reader::get_meeting_transcript(fs, root, id))
+            required_str(arguments, "id")?;
+            to_tool_result(identity(arguments).and_then(|id| {
+                sessions
+                    .read_transcript(&id)
+                    .map(|transcript| MeetingContent {
+                        folder: transcript.id.to_string(),
+                        status: transcript.state.into(),
+                        content: served(transcript.state, transcript.markdown),
+                    })
+            }))
         }
         other => tool_error_envelope(&format!("unknown tool: {other}")),
     };
     Ok(result)
 }
 
-fn required_str<'a>(arguments: &'a Value, key: &str) -> Result<&'a str, (i64, String)> {
+/// A caller-supplied identity, validated against the confinement rules
+/// before it can address anything.
+fn identity(arguments: &Value) -> Result<SessionRef> {
+    let id = arguments
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    SessionRef::parse(id).map_err(ApplicationError::from)
+}
+
+fn rows(summaries: Vec<SessionSummary>) -> Vec<MeetingSummary> {
+    summaries.into_iter().map(MeetingSummary::from).collect()
+}
+
+/// Content of a session that never completed is never served, even when
+/// a stray artifact exists on disk.
+fn served(state: SessionState, markdown: Option<String>) -> Option<String> {
+    if state.is_complete() {
+        markdown
+    } else {
+        None
+    }
+}
+
+fn required_str<'a>(
+    arguments: &'a Value,
+    key: &str,
+) -> std::result::Result<&'a str, (i64, String)> {
     arguments.get(key).and_then(Value::as_str).ok_or_else(|| {
         (
             INVALID_PARAMS,
@@ -268,22 +390,22 @@ fn required_str<'a>(arguments: &'a Value, key: &str) -> Result<&'a str, (i64, St
     })
 }
 
-fn read_limit(arguments: &Value) -> usize {
+fn read_page(arguments: &Value) -> PageRequest {
     let requested = arguments
         .get("limit")
         .and_then(Value::as_u64)
         .and_then(|v| usize::try_from(v).ok())
-        .unwrap_or(DEFAULT_LIST_LIMIT);
-    requested.clamp(1, MAX_LIST_LIMIT)
+        .unwrap_or(DEFAULT_PAGE_LIMIT);
+    PageRequest::new(0, requested)
 }
 
-fn to_tool_result<T: Serialize>(outcome: Result<T, AgentAccessError>) -> Value {
+fn to_tool_result<T: Serialize>(outcome: Result<T>) -> Value {
     match outcome {
         Ok(payload) => match serde_json::to_value(payload) {
             Ok(value) => tool_ok_envelope(&value),
             Err(e) => tool_error_envelope(&format!("serializing tool result: {e}")),
         },
-        Err(e) => tool_error_envelope(&e.to_string()),
+        Err(e) => tool_error_envelope(e.message()),
     }
 }
 
@@ -307,18 +429,87 @@ fn tool_error_envelope(message: &str) -> Value {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::agent_access::fs::RealReadOnlyFs;
-    use crate::agent_access::test_support::{
-        snapshot_tree, write_finished_session, write_unfinished_session,
-    };
+    use crate::identity::StorageRoot;
+    use crate::sessions::SessionRepository;
+    use std::collections::BTreeMap;
+    use std::path::{Path, PathBuf};
 
-    fn fs() -> RealReadOnlyFs {
-        RealReadOnlyFs
+    fn sessions(root: &Path) -> SessionRepository {
+        SessionRepository::new(StorageRoot::new(root.to_path_buf()))
     }
 
-    fn call(fs: &dyn ReadOnlyFs, root: &Path, line: &str) -> Value {
-        let response = handle_message(fs, root, line).expect("expected a response line");
+    fn call(root: &Path, line: &str) -> Value {
+        let response = handle_message(&sessions(root), line).expect("expected a response line");
         serde_json::from_str(&response).unwrap()
+    }
+
+    /// Minimal stand-in for the v1 `meta.toml` schema, encoded through
+    /// the real `toml` crate so the on-disk datetime format always
+    /// matches whatever that crate version emits.
+    #[derive(Serialize)]
+    struct FixtureMeta {
+        session_id: String,
+        title: Option<String>,
+        started_at: DateTime<Utc>,
+        ended_at: DateTime<Utc>,
+        duration_secs: u64,
+    }
+
+    fn write_finished_session(
+        root: &Path,
+        folder: &str,
+        title: &str,
+        duration_secs: u64,
+        notes: &str,
+        transcript: &str,
+    ) {
+        let dir = root.join(folder);
+        std::fs::create_dir_all(&dir).expect("create session dir");
+        let started_at = DateTime::parse_from_rfc3339("2026-01-01T09:00:00Z")
+            .expect("parse fixture start")
+            .with_timezone(&Utc);
+        let meta = FixtureMeta {
+            session_id: folder.rsplit('-').next().unwrap_or(folder).to_string(),
+            title: Some(title.to_string()),
+            started_at,
+            ended_at: started_at
+                + chrono::Duration::seconds(i64::try_from(duration_secs).unwrap_or(i64::MAX)),
+            duration_secs,
+        };
+        let body = toml::to_string(&meta).expect("encode fixture meta.toml");
+        std::fs::write(dir.join("meta.toml"), body).expect("write meta.toml");
+        std::fs::write(dir.join("notes.md"), notes).expect("write notes.md");
+        std::fs::write(dir.join("transcript.md"), transcript).expect("write transcript.md");
+    }
+
+    fn write_unfinished_session(root: &Path, folder: &str) {
+        let journal = root.join(folder).join("journal");
+        std::fs::create_dir_all(&journal).expect("create journal dir");
+        std::fs::write(journal.join("mic.f32"), [0_u8; 8]).expect("write journal segment");
+    }
+
+    /// Every regular file under `root` mapped to its exact bytes. Two
+    /// snapshots are equal only if no write, delete, create, or rename
+    /// happened anywhere beneath it.
+    fn snapshot_tree(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+        let mut out = BTreeMap::new();
+        walk(root, root, &mut out);
+        out
+    }
+
+    fn walk(root: &Path, dir: &Path, out: &mut BTreeMap<PathBuf, Vec<u8>>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(root, &path, out);
+            } else if let Ok(bytes) = std::fs::read(&path) {
+                let rel = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
+                out.insert(rel, bytes);
+            }
+        }
     }
 
     #[test]
@@ -326,7 +517,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
 
         let response = call(
-            &fs(),
             dir.path(),
             r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
         );
@@ -340,11 +530,7 @@ mod tests {
     fn test_ping_returns_schema_version() {
         let dir = tempfile::tempdir().unwrap();
 
-        let response = call(
-            &fs(),
-            dir.path(),
-            r#"{"jsonrpc":"2.0","id":2,"method":"ping"}"#,
-        );
+        let response = call(dir.path(), r#"{"jsonrpc":"2.0","id":2,"method":"ping"}"#);
 
         assert_eq!(response["result"]["schema_version"], SCHEMA_VERSION);
     }
@@ -354,7 +540,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
 
         let response = call(
-            &fs(),
             dir.path(),
             r#"{"jsonrpc":"2.0","id":3,"method":"tools/list"}"#,
         );
@@ -387,7 +572,6 @@ mod tests {
         );
 
         let response = call(
-            &fs(),
             dir.path(),
             r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"list_recent_meetings","arguments":{}}}"#,
         );
@@ -406,7 +590,6 @@ mod tests {
         write_unfinished_session(dir.path(), "2026-01-01-0900-crashed-01AAA");
 
         let response = call(
-            &fs(),
             dir.path(),
             r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"get_meeting","arguments":{"id":"2026-01-01-0900-crashed-01AAA"}}}"#,
         );
@@ -422,7 +605,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
 
         let response = call(
-            &fs(),
             dir.path(),
             r#"{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"get_meeting","arguments":{"id":"missing"}}}"#,
         );
@@ -436,7 +618,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
 
         let response = call(
-            &fs(),
             dir.path(),
             r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"delete_meeting","arguments":{}}}"#,
         );
@@ -450,7 +631,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
 
         let response = call(
-            &fs(),
             dir.path(),
             r#"{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{}}"#,
         );
@@ -463,7 +643,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
 
         let response = call(
-            &fs(),
             dir.path(),
             r#"{"jsonrpc":"2.0","id":9,"method":"shutdown"}"#,
         );
@@ -475,7 +654,7 @@ mod tests {
     fn test_malformed_json_returns_parse_error() {
         let dir = tempfile::tempdir().unwrap();
 
-        let response = call(&fs(), dir.path(), "{not valid json");
+        let response = call(dir.path(), "{not valid json");
 
         assert_eq!(response["error"]["code"], PARSE_ERROR);
         assert!(response["id"].is_null());
@@ -486,8 +665,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
 
         let response = handle_message(
-            &fs(),
-            dir.path(),
+            &sessions(dir.path()),
             r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
         );
 
@@ -498,7 +676,10 @@ mod tests {
     fn test_request_with_no_id_produces_no_response() {
         let dir = tempfile::tempdir().unwrap();
 
-        let response = handle_message(&fs(), dir.path(), r#"{"jsonrpc":"2.0","method":"ping"}"#);
+        let response = handle_message(
+            &sessions(dir.path()),
+            r#"{"jsonrpc":"2.0","method":"ping"}"#,
+        );
 
         assert!(response.is_none());
     }
@@ -543,7 +724,7 @@ mod tests {
             "not even json",
         ];
         for request in requests {
-            let _ = handle_message(&fs(), dir.path(), request);
+            let _ = handle_message(&sessions(dir.path()), request);
         }
 
         let after = snapshot_tree(dir.path());

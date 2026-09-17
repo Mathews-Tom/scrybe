@@ -12,14 +12,16 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::Args as ClapArgs;
-use scrybe_core::{repair_session, RepairOutcome};
+use scrybe_application::sessions::RepairOutcomeKind;
+use scrybe_application::SessionRef;
 
-use crate::runtime::{expand_root, load_or_default_config, resolve_session_folder};
+use crate::runtime::application;
 
 #[derive(ClapArgs, Debug)]
 pub struct Args {
-    /// Either a session-folder name relative to the storage root, an
-    /// absolute path, or the session's ULID/short prefix.
+    /// Either a session-folder name relative to the storage root or
+    /// the session's ULID/short prefix. Paths are not accepted: every
+    /// session resolves beneath the configured storage root.
     pub id_or_folder: String,
 
     /// Override the storage root from config.
@@ -29,44 +31,47 @@ pub struct Args {
 
 #[allow(clippy::unused_async)]
 pub async fn run(args: Args) -> Result<()> {
-    let root = if let Some(p) = args.root.as_deref() {
-        expand_root(p)
-    } else {
-        let cfg = load_or_default_config()?;
-        expand_root(&cfg.storage.root)
-    };
-    let folder = resolve_session_folder(&root, &args.id_or_folder)
+    let app = application(args.root.as_deref())?;
+    let repository = app.sessions();
+    let id = SessionRef::parse(&args.id_or_folder)
+        .map_err(scrybe_application::ApplicationError::from)
         .with_context(|| format!("resolving session {}", args.id_or_folder))?;
+    let detail = repository
+        .get_session(&id)
+        .with_context(|| format!("resolving session {}", args.id_or_folder))?;
+    let folder = repository.root().resolve(&detail.id);
     clear_stale_session_lock(&folder)?;
 
-    match repair_session(&folder)
-        .with_context(|| format!("repairing session at {}", folder.display()))?
-    {
-        RepairOutcome::Repaired(report) => {
+    let result = repository
+        .repair_session(&detail.id)
+        .with_context(|| format!("repairing session at {}", folder.display()))?;
+    match result.outcome {
+        RepairOutcomeKind::Recovered => {
             println!(
                 "scrybe repair: recovered {:.1}s of {}-channel audio to {}",
-                report.encoded_secs,
-                report.channels,
-                report.audio_path.display()
+                result.recovered_secs.unwrap_or_default(),
+                result.channels.unwrap_or_default(),
+                folder.join("audio.opus").display()
             );
-            if report.wrote_meta {
+            if result.wrote_metadata {
                 println!(
                     "scrybe repair: wrote a reconstructed meta.toml (title, STT/LLM/diarizer \
                      names, and consent details were never durably recorded before the crash)"
                 );
             }
         }
-        RepairOutcome::MetadataReconstructed(report) => {
+        RepairOutcomeKind::MetadataReconstructed => {
             println!(
                 "scrybe repair: audio was already complete ({:.1}s, {} channels); wrote reconstructed meta.toml",
-                report.encoded_secs, report.channels
+                result.recovered_secs.unwrap_or_default(),
+                result.channels.unwrap_or_default()
             );
             println!(
                 "scrybe repair: run `scrybe notes {}` to regenerate notes.md",
-                folder.display()
+                result.id
             );
         }
-        RepairOutcome::NothingToRepair => {
+        RepairOutcomeKind::NothingToRepair => {
             println!(
                 "scrybe repair: nothing to repair in {} (no journal/, or already merged)",
                 folder.display()
@@ -75,6 +80,7 @@ pub async fn run(args: Args) -> Result<()> {
     }
     Ok(())
 }
+
 fn clear_stale_session_lock(folder: &std::path::Path) -> Result<()> {
     let lock_path = folder.join(scrybe_core::storage::PID_LOCK_NAME);
     if !lock_path.exists() {
@@ -102,10 +108,16 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn test_run_reports_nothing_to_repair_when_no_journal_present() {
+    async fn test_run_reports_nothing_to_repair_for_a_complete_session() {
         let dir = tempfile::tempdir().unwrap();
         let folder = dir.path().join("2026-04-29-1430-clean-01HXYZ");
         std::fs::create_dir(&folder).unwrap();
+        std::fs::write(
+            folder.join("meta.toml"),
+            "session_id = \"01HXYZ\"\nstarted_at = \"2026-04-29T14:30:00Z\"\n",
+        )
+        .unwrap();
+        std::fs::write(folder.join("audio.opus"), b"").unwrap();
 
         run(Args {
             id_or_folder: "2026-04-29-1430-clean-01HXYZ".into(),
@@ -113,6 +125,21 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_run_reports_a_folder_that_is_not_a_session_as_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("2026-04-29-1430-empty-01HXYZ")).unwrap();
+
+        let error = run(Args {
+            id_or_folder: "2026-04-29-1430-empty-01HXYZ".into(),
+            root: Some(dir.path().to_path_buf()),
+        })
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("resolving session"));
     }
     #[cfg(unix)]
     #[test]

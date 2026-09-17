@@ -17,7 +17,7 @@ use anyhow::{Context, Result};
 use clap::Args as ClapArgs;
 use scrybe_application::{PageRequest, SessionRef, MAX_PAGE_LIMIT};
 
-use crate::runtime::session_repository;
+use crate::runtime::application;
 
 #[derive(ClapArgs, Debug)]
 pub struct Args {
@@ -37,7 +37,8 @@ pub struct Args {
 
 #[allow(clippy::unused_async)]
 pub async fn run(args: Args) -> Result<()> {
-    let repository = session_repository(args.root.as_deref())?;
+    let app = application(args.root.as_deref())?;
+    let repository = app.sessions();
     let id = SessionRef::parse(&args.id_or_folder)
         .map_err(scrybe_application::ApplicationError::from)
         .with_context(|| format!("resolving session {}", args.id_or_folder))?;

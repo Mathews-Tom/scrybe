@@ -27,7 +27,7 @@ The supported user path today is macOS:
 - `--whisper-model <PATH>` enables local whisper.cpp transcription when built with `whisper-local`.
 - `--llm openai-compat` enables real notes through Ollama, vLLM, OpenAI, Groq, Together, or any compatible `/chat/completions` endpoint when built with `llm-openai-compat`.
 - `scrybe record TITLE --shell` enables the native macOS recording shell: a five-bar 4 Hz waveform cycling between the current macOS appearance foreground and recording red, an optional Scrybe image mark, a compact floating elapsed-time pill, and one shared `Stop & save` path for the tray, pill, and global hotkey.
-- `scrybe list`, `scrybe show <id>`, `scrybe doctor`, `scrybe repair <session>`, `scrybe notes <session>`, and `scrybe bench` are available in the CLI.
+- `scrybe list`, `scrybe show <id>`, `scrybe doctor`, `scrybe repair <session>`, `scrybe notes <session>`, and `scrybe bench` are available in the CLI. A session is addressed by its folder name or an unambiguous session-ID prefix, never by a path: every session resolves beneath the configured storage root, and `--root` is the only way to point a command at a different one.
 - `scrybe bench stt --corpus <MANIFEST> --whisper-model <FILE> --sherpa-model <DIR>` compares both local providers on a checksum-validated English paired corpus when built with `whisper-local,stt-sherpa` and an explicitly provisioned native runtime. [Manual acquisition and measurement scope](INSTALL.md#optional-streaming-zipformer-and-english-paired-stt-benchmark). Whisper remains the default; the historical multilingual corpus is Whisper-only.
 
 Linux, Windows, and Android crates are present in the workspace as adapter surfaces and scaffolds. They are not the polished end-user install path yet. The project keeps those adapters in-tree so the trait contracts, config, tests, and packaging work stay cross-platform from the start.
@@ -157,7 +157,7 @@ The Tier-1 stability contract is documented in [`docs/system-design.md`](docs/sy
 - API keys are read from named environment variables.
 - There is no account system, sync service, telemetry, hosted backend, or bot that joins calls.
 - Courtesy notification is part of the recording flow and is recorded in `meta.toml`.
-- `scrybe mcp` (feature `agent-access`, off by default) is a read-only local-agent surface over `~/scrybe/`: it exposes `list_recent_meetings`, `search_meetings`, `get_meeting`, `get_meeting_notes`, and `get_meeting_transcript` as MCP tools over stdio JSON-RPC. There is no write, delete, or mutate capability anywhere in the module, and no network listener — stdio only, reachable only by spawning it as a child process. The server refuses to start unless `[agent_access].enabled = true` is set explicitly in `config.toml`.
+- `scrybe mcp` (feature `agent-access`, off by default) is a read-only local-agent surface over `~/scrybe/`: it exposes `list_recent_meetings`, `search_meetings`, `get_meeting`, `get_meeting_notes`, and `get_meeting_transcript` as MCP tools over stdio JSON-RPC. It is handed a read-only view of the shared session services whose trait surface has no method that repairs, regenerates, writes, or deletes anything, so there is no mutation a tool handler could reach. There is no network listener either — stdio only, reachable only by spawning it as a child process. The server refuses to start unless `[agent_access].enabled = true` is set explicitly in `config.toml`.
 
 Run the egress audit locally:
 

@@ -195,6 +195,20 @@ pub struct NotesDocument {
     pub markdown: Option<String>,
 }
 
+/// A session's complete `transcript.md`.
+///
+/// For a consumer that genuinely needs the whole document — handing it
+/// to a language model, for instance. A view that renders it should
+/// page instead, through [`TranscriptPage`].
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TranscriptDocument {
+    pub id: SessionRef,
+    pub state: SessionState,
+    /// `None` when the session has no durable transcript.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub markdown: Option<String>,
+}
+
 /// Position within a session's transcript, counted in lines so a page
 /// boundary can never split a UTF-8 sequence.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]

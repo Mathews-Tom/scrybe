@@ -2,6 +2,11 @@
 // Licensed under the Apache License, Version 2.0
 
 //! Regenerate `notes.md` from a session's durable transcript.
+//!
+//! Session resolution, eligibility, the durable replacement, and cache
+//! invalidation belong to the shared application service. What stays
+//! here is the configured provider: which model produces the text, and
+//! how the transcript is segmented and capped for it.
 
 use std::path::PathBuf;
 
@@ -12,6 +17,12 @@ use anyhow::Result;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use clap::Args as ClapArgs;
 #[cfg(feature = "llm-openai-compat")]
+use scrybe_application::sessions::{NotesGenerationRequest, NotesGenerator};
+#[cfg(feature = "llm-openai-compat")]
+use scrybe_application::SessionRef;
+#[cfg(feature = "llm-openai-compat")]
+use scrybe_core::config::Config;
+#[cfg(feature = "llm-openai-compat")]
 use scrybe_core::context::MeetingContext;
 #[cfg(feature = "llm-openai-compat")]
 use scrybe_core::notes;
@@ -21,20 +32,77 @@ use scrybe_core::notes_map_reduce::{map_reduce, NotesRuntime};
 use scrybe_core::notes_segments::{pack_segments, parse_canonical_transcript};
 #[cfg(feature = "llm-openai-compat")]
 use scrybe_core::providers::openai_compat_llm::OpenAiCompatLlmProvider;
-#[cfg(feature = "llm-openai-compat")]
-use scrybe_core::storage::atomic_replace;
 
 #[cfg(feature = "llm-openai-compat")]
-use crate::runtime::{expand_root, load_or_default_config, resolve_session_folder};
+use crate::runtime::{application, load_or_default_config};
 
 #[derive(ClapArgs, Debug)]
 pub struct Args {
-    /// Session folder, folder name, or unambiguous session-ID prefix.
+    /// Session folder name, or an unambiguous session-ID prefix. Paths
+    /// are not accepted: every session resolves beneath the configured
+    /// storage root.
     pub id_or_folder: String,
 
     /// Override the storage root from config.
     #[arg(long)]
     pub root: Option<PathBuf>,
+}
+
+/// The configured notes provider, as the repository sees it.
+///
+/// Segmentation, request capping, and map-reduce orchestration are
+/// presentation-adjacent policy the CLI already owned and continues to
+/// own; the repository only asks for markdown.
+#[cfg(feature = "llm-openai-compat")]
+struct ConfiguredNotes {
+    config: Config,
+}
+
+#[cfg(feature = "llm-openai-compat")]
+#[async_trait::async_trait]
+impl NotesGenerator for ConfiguredNotes {
+    async fn generate(
+        &self,
+        request: &NotesGenerationRequest<'_>,
+    ) -> std::result::Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        let title = transcript_title(request.transcript);
+        let started_at = request
+            .started_at
+            .or_else(|| transcript_started_at(request.transcript))
+            .unwrap_or_else(Utc::now);
+        let context = MeetingContext {
+            title: title.clone(),
+            ..MeetingContext::default()
+        };
+        let runtime = NotesRuntime::load(&self.config.notes)?;
+        let segments = parse_canonical_transcript(request.transcript)?;
+        let token_counts: Vec<u32> = segments
+            .iter()
+            .map(|segment| runtime.count_tokens(&segment.text))
+            .collect::<std::result::Result<_, _>>()?;
+        let chunks = pack_segments(
+            &segments,
+            runtime.target_tokens(),
+            runtime.overlap_segments(),
+            |segment| token_counts[segment.ordinal - 1],
+        );
+        let provider = OpenAiCompatLlmProvider::from_config(&self.config.llm)?;
+        eprintln!(
+            "scrybe: regenerating notes from {} request group{}",
+            chunks.len(),
+            if chunks.len() == 1 { "" } else { "s" }
+        );
+        let output = map_reduce(&provider, &chunks, &context, |prompt| {
+            runtime.prompt_fits(prompt)
+        })
+        .await?;
+        Ok(notes::render_notes_body_with_gaps(
+            title.as_deref(),
+            started_at,
+            &output.reduced_notes,
+            &output.gaps,
+        ))
+    }
 }
 
 /// Regenerate notes from the canonical durable transcript.
@@ -46,58 +114,20 @@ pub struct Args {
 pub async fn run(args: Args) -> Result<()> {
     #[cfg(feature = "llm-openai-compat")]
     {
-        let cfg = load_or_default_config()?;
-        let root = args
-            .root
-            .as_deref()
-            .map_or_else(|| expand_root(&cfg.storage.root), expand_root);
-        let folder = resolve_session_folder(&root, &args.id_or_folder)
+        let app = application(args.root.as_deref())?;
+        let repository = app.sessions();
+        let id = SessionRef::parse(&args.id_or_folder)
+            .map_err(scrybe_application::ApplicationError::from)
             .with_context(|| format!("resolving session {}", args.id_or_folder))?;
-        let transcript_path = folder.join("transcript.md");
-        let transcript = std::fs::read_to_string(&transcript_path)
-            .with_context(|| format!("reading {}", transcript_path.display()))?;
-        let title = transcript_title(&transcript);
-        let started_at = transcript_started_at(&transcript).unwrap_or_else(Utc::now);
-        let context = MeetingContext {
-            title: title.clone(),
-            ..MeetingContext::default()
+        let generator = ConfiguredNotes {
+            config: load_or_default_config()?,
         };
-        let runtime = NotesRuntime::load(&cfg.notes).context("loading notes tokenizer")?;
-        let segments =
-            parse_canonical_transcript(&transcript).context("parsing canonical transcript")?;
-        let token_counts: Vec<u32> = segments
-            .iter()
-            .map(|segment| runtime.count_tokens(&segment.text))
-            .collect::<Result<_, _>>()
-            .context("counting transcript tokens")?;
-        let chunks = pack_segments(
-            &segments,
-            runtime.target_tokens(),
-            runtime.overlap_segments(),
-            |segment| token_counts[segment.ordinal - 1],
-        );
-        let provider = OpenAiCompatLlmProvider::from_config(&cfg.llm)
-            .context("initializing configured notes provider")?;
-        eprintln!(
-            "scrybe: regenerating notes from {} request group{}",
-            chunks.len(),
-            if chunks.len() == 1 { "" } else { "s" }
-        );
-        let output = map_reduce(&provider, &chunks, &context, |prompt| {
-            runtime.prompt_fits(prompt)
-        })
-        .await
-        .context("generating notes")?;
-        let body = notes::render_notes_body_with_gaps(
-            title.as_deref(),
-            started_at,
-            &output.reduced_notes,
-            &output.gaps,
-        );
-        let notes_path = folder.join("notes.md");
-        atomic_replace(&notes_path, body.as_bytes())
-            .with_context(|| format!("writing {}", notes_path.display()))?;
-        println!("scrybe notes: wrote {}", notes_path.display());
+        let result = repository
+            .regenerate_notes(&id, &generator)
+            .await
+            .with_context(|| format!("regenerating notes for session {}", args.id_or_folder))?;
+        let path = repository.root().resolve(&result.id).join("notes.md");
+        println!("scrybe notes: wrote {}", path.display());
         Ok(())
     }
 
