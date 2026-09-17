@@ -33,7 +33,12 @@ use crate::lifecycle::window;
 // generated `allow-…` permission names and the scheme's own path
 // segment, and the compiled-out check would fail against a binary that
 // is in fact clean.
-/// Ask the main webview to load one session's playback audio.
+/// Ask the main webview to load a path on the playback scheme.
+///
+/// The argument is everything after the scheme's host, so
+/// `probe-playback /<session-id>/playback` drives exactly the URL the
+/// player builds, and any other path drives what the handler does with
+/// one the player would never build.
 pub const PLAY: &str = "probe-playback";
 
 /// Whether `verb` is this module's, and runs it if so.
@@ -41,20 +46,20 @@ pub const PLAY: &str = "probe-playback";
 pub fn run(app: &tauri::AppHandle, verb: &str) -> bool {
     let mut words = verb.split_whitespace();
     match (words.next(), words.next()) {
-        (Some(PLAY), Some(id)) => {
-            play(app, id);
+        (Some(PLAY), Some(path)) => {
+            play(app, path);
             true
         }
         _ => false,
     }
 }
 
-fn play(app: &tauri::AppHandle, id: &str) {
+fn play(app: &tauri::AppHandle, path: &str) {
     let Some(main) = app.get_webview_window(window::MAIN) else {
         eprintln!("scrybe-desktop: no main window to play through");
         return;
     };
-    let url = format!("{}://localhost/{id}/playback", crate::playback::SCHEME);
+    let url = format!("{}://localhost{path}", crate::playback::SCHEME);
     crate::note!(app, "playback-requested", &url);
     // `new Audio(url)` and the panel's `<audio src>` are the same load
     // as far as the policy is concerned: both are a media fetch, and

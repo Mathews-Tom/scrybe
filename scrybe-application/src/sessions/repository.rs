@@ -703,6 +703,8 @@ fn summarize(session: &ScannedSession) -> SessionSummary {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
+    use std::fmt::Write as _;
+
     use super::*;
     use pretty_assertions::assert_eq;
 
@@ -1173,6 +1175,35 @@ mod tests {
         assert_eq!(first.lines, vec!["# t", "hello world"]);
         assert_eq!(second.lines, vec!["second line"]);
         assert!(second.next.is_none());
+    }
+
+    /// The measured storage root's largest transcript is 95 lines. This
+    /// is two orders of magnitude past it, and what a window costs is
+    /// the window: a reader that pages through a transcript pays for
+    /// what it is showing rather than for what the file holds.
+    #[test]
+    fn test_a_window_onto_a_large_transcript_carries_only_the_window() {
+        let tree = Tree::new();
+        tree.complete("2026-04-29-1430-acme-01HXYZ", "Acme");
+        let path = tree
+            .dir
+            .path()
+            .join("2026-04-29-1430-acme-01HXYZ")
+            .join("transcript.md");
+        let body: String = (0..20_000).fold(String::new(), |mut body, line| {
+            let _ = writeln!(body, "line {line}");
+            body
+        });
+        std::fs::write(&path, &body).unwrap();
+
+        let page = tree
+            .repository()
+            .read_transcript_page(&id("01HXYZ"), PageRequest::new(0, 50))
+            .unwrap();
+
+        assert_eq!(page.lines.len(), 50);
+        assert_eq!(page.total_lines, 20_000);
+        assert_eq!(page.next, Some(TranscriptCursor::at(50)));
     }
 
     #[test]

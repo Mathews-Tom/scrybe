@@ -381,6 +381,74 @@ describe("SessionDetail", () => {
     );
   });
 
+  it("test_the_detail_surface_is_walked_in_the_order_it_is_read", async () => {
+    // Every control is a tab stop, once, in the order it appears on
+    // screen: leave, then the actions, then the two documents. Nothing
+    // is reachable only with a pointer and nothing is skipped.
+    const user = userEvent.setup();
+    await renderWith(
+      <SessionDetail id={ID} onBack={noop} />,
+      servicesReturning({
+        getSession: () =>
+          Promise.resolve(detail({ actions: { repair: true, regenerate_notes: true } })),
+      }),
+    );
+    const reached: string[] = [];
+
+    for (let stop = 0; stop < 8; stop += 1) {
+      await user.tab();
+      reached.push(document.activeElement?.textContent ?? "");
+    }
+
+    expect(reached).toEqual([
+      "Back to sessions",
+      "Regenerate notes",
+      "Repair recording",
+      "Reveal in Finder",
+      "Copy notes",
+      "Copy transcript",
+      "Notes",
+      "Transcript",
+    ]);
+  });
+
+  it("test_the_headings_descend_without_a_gap", async () => {
+    // One level-one heading naming the session, and the level-two
+    // heading the transcript's own region carries. A jump from one to
+    // three is a rung a screen reader's heading list has no name for.
+    await renderWith(<SessionDetail id={ID} onBack={noop} />);
+
+    expect(screen.getAllByRole("heading", { level: 1 })).toHaveLength(1);
+    expect(screen.queryAllByRole("heading", { level: 3 })).toHaveLength(0);
+  });
+
+  it("test_a_large_transcript_puts_no_more_in_the_document_than_a_small_one", async () => {
+    // The measured storage root's largest transcript is 95 lines. This
+    // is a transcript two orders of magnitude past it, and what it costs
+    // the document is the same window: the read is bounded by the window
+    // rather than by the file, so a transcript that grows does not.
+    const user = userEvent.setup();
+    const asked: number[] = [];
+    await renderWith(
+      <SessionDetail id={ID} onBack={noop} />,
+      servicesReturning({
+        readTranscriptPage: (_id, offset, limit) => {
+          asked.push(limit);
+          return Promise.resolve(transcriptWindow(offset, limit, 10_000));
+        },
+      }),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Transcript" }));
+    await settle();
+
+    expect(
+      within(screen.getByRole("list", { name: "Transcript" })).getAllByRole("listitem"),
+    ).toHaveLength(50);
+    expect(screen.getByText("Lines 1–50 of 10000.")).toBeDefined();
+    expect(asked).toEqual([50]);
+  });
+
   it("test_playback_being_stopped_before_it_started_is_told_apart_from_an_actual_failure", async () => {
     await renderWith(<SessionDetail id={ID} onBack={noop} />);
     const player = screen.getByLabelText("Playback").querySelector("audio");
@@ -457,7 +525,6 @@ describe("SessionDetail", () => {
     expect(message).toBe("This session's audio could not be loaded.");
     expect(message).not.toMatch(/no audio/i);
   });
-
   it("test_a_session_that_is_gone_is_reported_rather_than_rendered_empty", async () => {
     await renderWith(
       <SessionDetail id={ID} onBack={noop} />,

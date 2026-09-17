@@ -69,7 +69,7 @@ What this cannot establish, stated plainly:
   artifact written somewhere else under `~/Library` would not be seen
   by it.
 
-Two scenarios, one build. Both compile the shape the application
+Three scenarios, one build. All of them compile the shape the application
 ships — default features, which include the model transport — and
 there is no per-scenario feature selection at all. There used to be:
 `setup` named `model-download` explicitly while the host's default set
@@ -101,6 +101,7 @@ Run locally:
 
     python3 scripts/qualify-desktop-app.py --hermetic --scenario lifecycle
     python3 scripts/qualify-desktop-app.py --hermetic --scenario setup
+    python3 scripts/qualify-desktop-app.py --hermetic --scenario library
 
 Exit status 0 means every check held. Exit status 1 means at least one
 did not; each failing check prints what was expected and what was
@@ -135,16 +136,38 @@ BUNDLE_IDENTIFIER = "dev.scrybe.desktop"
 BUNDLE_NAME = "Scrybe.app"
 EXECUTABLE = "scrybe-desktop"
 
+# The bundle this checkout's own build produces. `build_candidate` and
+# `PROCESS_PATTERN` both need this exact path, and they must agree: a
+# process match built from anything looser than the candidate this run
+# itself built is a match against every other checkout's candidate too.
+CANDIDATE_BUNDLE = HOST / "target" / "debug" / "bundle" / "macos" / BUNDLE_NAME
+
 # What `pgrep -f` is given, rather than the path itself.
 #
 # `pgrep -f` matches against whole command lines, and a `pgrep`
 # invocation's own command line contains the pattern it was given. It
 # excludes itself, but not another `pgrep` running the same query
 # concurrently — which the socket sampler does, from its own thread, for
-# the whole run. Bracketing the first character makes the pattern a
-# regular expression that matches the application's command line and not
-# the command line of any process carrying the pattern literally.
-PROCESS_PATTERN = f"[{BUNDLE_NAME[0]}]{BUNDLE_NAME[1:]}/Contents/MacOS/{EXECUTABLE}"
+# the whole run. Bracketing the bundle name's first character makes
+# that part of the pattern a regular expression that matches the
+# application's command line and not the command line of the pgrep
+# invocation itself, which carries the brackets literally.
+#
+# The rest of the pattern is anchored to this checkout's own absolute
+# build path, not just the bundle's relative shape. A pattern built
+# from the bare "Scrybe.app/Contents/MacOS/scrybe-desktop" suffix
+# matches the candidate built by every worktree of this repository, and
+# `terminate` sends `kill -9` to everything `pgrep` finds — so two
+# concurrent checkouts each running their own qualification would
+# `kill -9` each other's candidate mid-scenario. `re.escape` covers
+# whatever this checkout happens to be named or nested under; it runs
+# on the parent directory only, so the bracket trick above still has an
+# unescaped character to work with.
+PROCESS_PATTERN = (
+    f"{re.escape(str(CANDIDATE_BUNDLE.parent))}/"
+    f"[{BUNDLE_NAME[0]}]{re.escape(BUNDLE_NAME[1:])}"
+    f"/Contents/MacOS/{re.escape(EXECUTABLE)}"
+)
 
 LIFECYCLE_RECORD = ".desktop-lifecycle.jsonl"
 CONTROL_SOCKET = ".desktop-control.sock"
@@ -374,7 +397,7 @@ def build_candidate() -> Path:
         cwd=REPO_ROOT,
         check=True,
     )
-    bundle = HOST / "target" / "debug" / "bundle" / "macos" / BUNDLE_NAME
+    bundle = CANDIDATE_BUNDLE
     if not bundle.is_dir():
         raise RuntimeError(f"the candidate bundle was not produced at {bundle}")
     return bundle
@@ -1526,12 +1549,287 @@ def is_loopback_host(host: str) -> bool:
         return False
 
 
+# -- the library scenario ------------------------------------------
+
+# The sessions a library run seeds, and what each one is for.
+#
+# Fixture audio, not a decodable Opus stream. Nothing in the path under
+# test decodes anything: what is asserted is which bytes the protocol
+# handler served, and a known repeating pattern makes an off-by-one in
+# the range arithmetic visible where a real recording would not.
+PLAYABLE = "2026-04-29-1430-acme-01HXYZ"
+NO_PLAYBACK = "2026-04-28-0900-onevoice-01AAAAA"
+# `audio.opus` present, no `meta.toml`: `classify()` (in
+# scrybe-application/src/sessions/scan.rs) reads this as Repairable,
+# not Unfinished, before it ever reaches the Unfinished branches —
+# proven against this exact fixture shape by
+# `test_audio_without_metadata_is_repairable_because_metadata_can_be_reconstructed`.
+REPAIRABLE = "2026-04-27-1100-abandoned-01BBBBB"
+# No `audio.opus` and no `journal/`: `classify()` reaches Unfinished
+# here only because a surviving `transcript.md` is evidence something
+# was recorded — proven against this exact fixture shape by
+# `test_a_surviving_transcript_without_audio_or_journal_is_unfinished`.
+UNFINISHED = "2026-04-26-0800-orphaned-01CCCCC"
+PLAYBACK_BYTES = bytes(range(256)) * 16
+
+# Paths on the scheme that the player never builds, and that a run must
+# see refused against a tree where the thing each one aims at is really
+# there. A refusal against a missing file would prove nothing.
+FORBIDDEN_PATHS = [
+    f"/{PLAYABLE}/transcript.md",
+    f"/{PLAYABLE}/notes.md",
+    f"/{PLAYABLE}/audio.opus",
+    f"/{PLAYABLE}/meta.toml",
+    "/../../etc/passwd/playback",
+    "/~/playback",
+]
+
+# What a successful media response looks like. WebKit asks for metadata
+# first and the representation after, so a run sees several.
+SERVED_STATUSES = (200, 206)
+
+
+def session_meta(title: str, session_id: str) -> str:
+    return (
+        f'session_id = "{session_id}"\n'
+        f'title = "{title}"\n'
+        'started_at = "2026-04-29T14:30:00Z"\n'
+        'ended_at = "2026-04-29T15:00:00Z"\n'
+        "duration_secs = 1800\n"
+    )
+
+
+def seed_library(candidate: Candidate) -> None:
+    """Writes the sessions a library run reads.
+
+    Five of them, because the interesting answers are the ones that
+    differ: one complete session with playback audio, one complete
+    session with audio and no playback artifact — which is what a mono
+    capture actually leaves behind — one that is repairable because its
+    audio survived but its metadata never got written, one that never
+    finished recording at all — no audio, no journal, only a durable
+    transcript — and a transcript long enough that a view reading it
+    whole would be visible.
+    """
+    playable = candidate.root / PLAYABLE
+    playable.mkdir(parents=True)
+    (playable / "meta.toml").write_text(session_meta("Acme sync", "01HXYZ"))
+    (playable / "audio.opus").write_bytes(b"")
+    (playable / "playback.opus").write_bytes(PLAYBACK_BYTES)
+    (playable / "notes.md").write_text("## TL;DR\n- covered widgets\n")
+    (playable / "transcript.md").write_text(
+        "# Acme sync\n*2026-04-29 14:30*\n\n"
+        + "".join(f"[00:00:{line % 60:02}] Speaker: line {line}\n" for line in range(4000))
+    )
+
+    mono = candidate.root / NO_PLAYBACK
+    mono.mkdir(parents=True)
+    (mono / "meta.toml").write_text(session_meta("One voice", "01AAAAA"))
+    (mono / "audio.opus").write_bytes(b"")
+    (mono / "transcript.md").write_text("# One voice\nhello\n")
+
+    repairable = candidate.root / REPAIRABLE
+    repairable.mkdir(parents=True)
+    (repairable / "audio.opus").write_bytes(b"")
+    # No `meta.toml`: `classify()` never reaches the Unfinished
+    # branches for this one. The artifact is there and the session is
+    # not complete either way — refusing it is a decision about the
+    # session, not about the file.
+    (repairable / "playback.opus").write_bytes(PLAYBACK_BYTES)
+
+    orphaned = candidate.root / UNFINISHED
+    orphaned.mkdir(parents=True)
+    # No `audio.opus`, no `journal/`: `classify()` lands on Unfinished
+    # only because the transcript below is durable evidence something
+    # was recorded. `playback.opus` is present anyway, for the same
+    # reason as the repairable fixture above: refusing this one is a
+    # decision about the session, not about the file.
+    (orphaned / "transcript.md").write_text("# orphaned\nnever got to notes\n")
+    (orphaned / "playback.opus").write_bytes(PLAYBACK_BYTES)
+
+
+def served(candidate: Candidate) -> list[tuple[str, int, int]]:
+    """Every response the protocol handler recorded, as `(path, status, bytes)`."""
+    found = []
+    for record in candidate.records():
+        if record["event"] != "playback-served":
+            continue
+        detail = record.get("detail", "")
+        path, status, size = detail.rsplit(" ", 2)
+        found.append((path, int(status), int(size)))
+    return found
+
+
+def drive(candidate: Candidate, run: Run, path: str) -> list[tuple[str, int, int]]:
+    """Asks the webview for `path`, and returns what the handler served.
+
+    A run that sees nothing here cannot distinguish a handler that
+    refused from a policy that never let the request out of the webview,
+    so the empty case is reported as its own failure rather than folded
+    into the status assertion below.
+    """
+    before = len(served(candidate))
+    candidate.control(f"{playback_probe_verb()} {path}")
+    candidate.wait_for_event("playback-served", count=before + 1, timeout=15.0)
+    # One media load is several responses: the player asks for metadata
+    # first and the representation after. Waiting for the first and
+    # moving on would leave the rest of them counted against whatever
+    # the next probe asked for.
+    time.sleep(SETTLE_SECONDS)
+    responses = served(candidate)[before:]
+    run.assert_that(
+        f"playback: the webview reached the scheme for {path}",
+        bool(responses),
+        "the policy admitted no media load at all",
+    )
+    return responses
+
+
+def playback_probe_verb() -> str:
+    return PLAYBACK_PROBE_STRINGS[0]
+
+
+def library(candidate: Candidate, run: Run) -> None:
+    """Reading, playing, and refusing, driven on the real application.
+
+    What this establishes that the unit tests cannot. The content
+    security policy decides whether a media element may load a
+    `scrybe-audio://` URL at all, and a policy naming the scheme under
+    the wrong directive blocks the load before the handler is asked.
+    Nothing in Rust can see that, and neither can the policy comparison
+    a few lines below — it reads a constant this file also declares, so
+    it passes for whatever string is written in both places. Only
+    driving the real webview at a real URL and reading back what the
+    handler served tells the two apart.
+
+    Every refusal below aims at something that is really in the fixture
+    tree: a transcript, notes, merged audio, metadata, and a second
+    session's folder. A refusal earned by a missing file would say
+    nothing about confinement.
+    """
+    untouched = [
+        ("the real configuration file", REAL_CONFIG, snapshot(REAL_CONFIG)),
+        ("the default storage root", REAL_STORAGE_ROOT, snapshot(REAL_STORAGE_ROOT)),
+    ]
+    seed_library(candidate)
+    _library_checks(candidate, run)
+    hermeticity(candidate, run, untouched)
+    webview_state(run)
+
+    # The probe is a debug affordance, not a shipped one.
+    release_strings = strings_in(build_release_binary())
+    run.record(
+        "release: the playback probe is compiled out of a release build",
+        [],
+        sorted(name for name in PLAYBACK_PROBE_STRINGS if name in release_strings),
+    )
+
+    # The policy the bundle ships, read back out of it. The behavioural
+    # checks above are what give this one meaning.
+    policies = shipped_policies(candidate.bundle / "Contents" / "MacOS" / EXECUTABLE)
+    run.record("policy: the bundle carries exactly one content security policy", 1, len(policies))
+    run.record(
+        "policy: the policy the bundle carries is the expected one, directive for directive",
+        EXPECTED_CSP,
+        policies[0] if len(policies) == 1 else policies,
+    )
+
+
+def _library_checks(candidate: Candidate, run: Run) -> None:
+    """Everything that needs the application running."""
+    candidate.launch()
+    sockets = SocketSampler(candidate)
+    sockets.start()
+    opened = candidate.wait_for_control_socket()
+    run.assert_that(
+        "launch: the control channel opens",
+        opened,
+        f"no control socket appeared at {candidate.root / CONTROL_SOCKET}",
+    )
+    if not opened:
+        run.record("no network: every destination the application reached", [], sockets.stop())
+        return
+
+    # (a) The one URL the player builds, for the one session that has
+    # something to play.
+    responses = drive(candidate, run, f"/{PLAYABLE}/playback")
+    run.record(
+        "playback: every response to the player was a success",
+        [],
+        sorted({status for _, status, _ in responses} - set(SERVED_STATUSES)),
+    )
+    run.record(
+        "playback: at least as many bytes were served as the artifact holds",
+        True,
+        sum(size for _, _, size in responses) >= len(PLAYBACK_BYTES),
+    )
+
+    # (b) A completed session whose capture was mono. The artifact is
+    # genuinely absent, which is the case that used to be reported as
+    # playable because availability was read off `audio.opus`.
+    refusal = drive(candidate, run, f"/{NO_PLAYBACK}/playback")
+    run.record(
+        "playback: a session with no playback artifact is refused as absent",
+        [404],
+        sorted({status for _, status, _ in refusal}),
+    )
+
+    # (c) A session whose audio survived but whose metadata never got
+    # written. `classify()` reads this as Repairable, not Unfinished,
+    # and `playable()` refuses it the same way it refuses Unfinished:
+    # neither state is Complete.
+    refusal = drive(candidate, run, f"/{REPAIRABLE}/playback")
+    run.record(
+        "playback: a repairable session (audio without metadata) is refused as not finished",
+        [409],
+        sorted({status for _, status, _ in refusal}),
+    )
+
+    # (d) A session that never finished recording at all: no audio, no
+    # journal, only a surviving transcript. This is the state (c) only
+    # sounded like it was covering.
+    refusal = drive(candidate, run, f"/{UNFINISHED}/playback")
+    run.record(
+        "playback: a session with no audio and no journal is refused as not finished",
+        [409],
+        sorted({status for _, status, _ in refusal}),
+    )
+
+    # (e) Every path the player never builds, each aimed at something
+    # that really exists.
+    for path in FORBIDDEN_PATHS:
+        refusal = drive(candidate, run, path)
+        run.record(
+            f"confinement: {path} is refused",
+            [404],
+            sorted({status for _, status, _ in refusal}),
+        )
+        run.record(
+            f"confinement: {path} served no document",
+            [],
+            sorted({size for _, _, size in refusal if size >= 256}),
+        )
+
+    # (f) Nothing on this path reaches the network. Reading a session
+    # and playing it are filesystem work; a socket opened during either
+    # would be a capability this surface has no mandate for.
+    run.record("no network: every destination the application reached", [], sockets.stop())
+
+    candidate.control(TRAY_QUIT)
+    run.assert_that(
+        "quit: the process exits",
+        candidate.wait_for_exit(),
+        "the application was still running after quit",
+    )
+
+
 # Scenarios are registered here rather than enumerated at each call
 # site, so later work adds `recording` or `library` by adding one entry
 # and its function.
 SCENARIOS: dict[str, Callable[[Candidate, Run], None]] = {
     "lifecycle": lifecycle,
     "setup": setup,
+    "library": library,
 }
 
 
@@ -1549,6 +1847,14 @@ SCENARIO_COVERAGE: dict[str, str] = {
         "free-space rejection, digest failure, cancellation, atomic promotion, "
         "existing-model preservation, disposable model and configuration roots, "
         "the shipped content security policy, and every socket the process opened"
+    ),
+    "library": (
+        "the webview reaching the playback scheme at all, the bytes served for a "
+        "session that has playback audio, the refusals for one that has none, for "
+        "one that is repairable, and for one that never finished recording at "
+        "all, every path the player never builds aimed at a file that is really "
+        "there, a disposable storage root, the shipped content security policy, "
+        "and every socket the process opened"
     ),
 }
 
