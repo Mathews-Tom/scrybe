@@ -286,24 +286,43 @@ LOC_CEILINGS: dict[str, int] = {
     # commands and one tray item already measured here, which together
     # account for roughly that many lines.
     #
-    # Raised to 1,700 for guided setup. The measured figure is 1,111 and
-    # the headroom is spent on a shape this table has already seen
-    # priced once: the setup surface adds seven commands over the
-    # existing four — the configuration form and its update, the
-    # diagnostic report and its explicit repair, the readiness
-    # snapshot, the model plan, and the confirmed install with its
-    # cancellation — each forwarding to a service method, each with a
-    # narrowed transport projection beside it in `contract/`, and each
-    # with a capability entry. The four commands and three contract
-    # modules already here measure 396 lines between them, so roughly
-    # ninety lines per command-and-projection pair; seven pairs plus the
-    # tilde-expanding storage-root resolution and its cases is the
-    # 589 lines this adds.
+    # Raised to 2,300 for guided setup, settings, and the qualification
+    # way-in. The measured figure is 2,115.
+    #
+    # An earlier raise to 1,700 priced seven commands, from a 1,111-line
+    # measurement, at roughly ninety lines per command-and-projection
+    # pair. Both inputs were wrong, and restating them is the point of
+    # this paragraph: the next person proposing a raise reads the
+    # comment, not the commit log.
+    #
+    # Ten commands landed, not seven — the settings form and its update,
+    # the diagnostic report and its explicit repair, the readiness
+    # snapshot, the model offer, the confirmed install and its
+    # cancellation, and the two platform-surface opens — over the four
+    # already here, each forwarding to a service method and each with a
+    # capability entry. And the per-pair figure was low because
+    # `contract/setup.rs` is not a projection of the shape the earlier
+    # ones were: it carries a two-way exhaustive field mirror between
+    # the service layer's settings enumeration and the wire form, so
+    # that a field added to one and not the other fails to compile
+    # rather than silently disappearing. That module alone measures 478
+    # of the 906 lines under `contract/`.
+    #
+    # The remaining 185 lines of headroom are sized rather than chosen
+    # round: recording control is the next thing to land here, and it
+    # adds two commands and their contract types and turns the tray's
+    # `Record now` from a disabled item into a live one with a
+    # confirmation on the quit path — the same shape this table priced
+    # at roughly 140 lines before guided setup displaced it.
+    #
+    # `lifecycle/model_probe.rs` is 140 of the measured figure and is
+    # `#[cfg(debug_assertions)]` in full. It is counted anyway: this
+    # gate measures source a maintainer reads, not bytes a user ships.
     #
     # The frontend is deliberately out of scope: this script measures
     # Rust only, and the TypeScript surface is governed by review rather
     # than by this gate.
-    "scrybe-desktop/src-tauri": 2100,
+    "scrybe-desktop/src-tauri": 2300,
 }
 
 
