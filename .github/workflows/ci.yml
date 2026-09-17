@@ -331,6 +331,10 @@ jobs:
         run: pnpm --dir scrybe-desktop test
       - name: pnpm build
         run: pnpm --dir scrybe-desktop build
+      # Pure JSON and manifest inspection, so it needs no WebView
+      # toolchain and belongs on the cheap leg.
+      - name: capability audit
+        run: pnpm --dir scrybe-desktop run check:capabilities
 
   # macOS is the only target this application ships to, and the Tauri
   # host is the only part of the tree that needs a WebView toolchain.
@@ -348,6 +352,19 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: scrybe-desktop/src-tauri
+      # `check:bindings` is a pnpm script so the documented gate command
+      # is the one continuous integration runs, rather than a hand-copied
+      # cargo invocation that can drift from it.
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: scrybe-desktop/pnpm-lock.yaml
+      - name: pnpm install --frozen-lockfile
+        run: pnpm --dir scrybe-desktop install --frozen-lockfile
       - name: cargo fmt --check (desktop host)
         run: cargo fmt --manifest-path scrybe-desktop/src-tauri/Cargo.toml --check
       - name: cargo check (desktop host)
@@ -356,6 +373,11 @@ jobs:
         run: cargo clippy --manifest-path scrybe-desktop/src-tauri/Cargo.toml --all-targets --locked -- -D warnings
       - name: cargo test (desktop host)
         run: cargo test --manifest-path scrybe-desktop/src-tauri/Cargo.toml --all-targets --locked
+      # Regenerates the TypeScript contract from the Rust one and fails
+      # when the checked-in file differs, so it needs the Rust host and
+      # therefore runs here rather than on the frontend leg.
+      - name: generated contract freshness
+        run: pnpm --dir scrybe-desktop run check:bindings
 
   bench-compile:
     name: bench-compile (criterion harness builds clean)

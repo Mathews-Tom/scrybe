@@ -29,9 +29,11 @@ path = "src/main.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+scrybe-application = { package = "scrybe-meeting-application", path = "../../scrybe-application" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2", features = ["tray-icon"] }
+ts-rs = "12"
 
 [lints.rust]
 unsafe_code = "forbid"
@@ -43,3 +45,18 @@ nursery = { level = "warn", priority = -1 }
 unwrap_used = "warn"
 expect_used = "warn"
 panic = "warn"
+
+# `toml` 0.8 is already resolved in this graph by `scrybe-application`
+# and the `scrybe-meeting-core` beneath it, both of which depend on the
+# workspace `toml`, so naming it here unifies onto `toml 0.8.23` and
+# adds no crate to the audited surface. It is not `tauri-build` that
+# supplies it: `tauri-utils` resolves `toml 1.1.6`, a different major
+# that would not satisfy this requirement. The distinction is worth
+# stating because this lockfile is now read by `cargo audit`, `cargo
+# deny`, and `cargo vet`, which makes a claim about what a dependency
+# costs a claim those gates are relied on to keep true.
+#
+# It is what lets `tests/capability_audit.rs` read a TOML capability
+# file rather than skip one, which `tauri-utils` loads unconditionally.
+[dev-dependencies]
+toml = "0.8"

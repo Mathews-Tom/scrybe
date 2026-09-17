@@ -19,14 +19,62 @@
 
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
+pub mod commands;
+pub mod contract;
+pub mod state;
+
+use std::sync::Arc;
+
+use tauri::{Emitter, Manager};
+
+use crate::contract::{RecordingTransition, TRANSITION_EVENT};
+use crate::state::Desktop;
+
 /// Starts the desktop application and blocks until it exits.
 ///
 /// # Errors
 ///
-/// Returns the Tauri build or run failure verbatim. The caller reports
-/// it and exits non-zero: a host that cannot create its window has
-/// nothing to fall back to, so failing loudly is the only honest
-/// outcome.
-pub fn run() -> tauri::Result<()> {
-    tauri::Builder::default().run(tauri::generate_context!())
+/// A configuration that cannot be resolved, or a Tauri build or run
+/// failure. A host that cannot resolve its own storage root or create
+/// its window has nothing to fall back to, so the caller reports the
+/// failure and exits non-zero.
+pub fn run() -> Result<(), Box<dyn std::error::Error>> {
+    let desktop = Desktop::discover()?;
+
+    tauri::Builder::default()
+        .manage(desktop)
+        .setup(|app| {
+            forward_recording_transitions(app.handle());
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            commands::list_sessions,
+            commands::search_sessions,
+            commands::settings_summary,
+            commands::recording_status,
+        ])
+        .run(tauri::generate_context!())?;
+
+    Ok(())
+}
+
+/// Republishes the service layer's recording transitions as a window
+/// event.
+///
+/// The observer runs on whichever thread drove the transition, so it
+/// does the least possible work: narrow the event and hand it to
+/// Tauri's emitter. A failed emit is reported rather than swallowed —
+/// an observer cannot propagate, and a status display silently frozen
+/// on a stale state is worse than a line on stderr.
+fn forward_recording_transitions(app: &tauri::AppHandle) {
+    let handle = app.clone();
+    app.state::<Desktop>()
+        .application()
+        .recording()
+        .subscribe(Arc::new(move |event| {
+            let transition = RecordingTransition::from(event);
+            if let Err(error) = handle.emit(TRANSITION_EVENT, transition) {
+                eprintln!("scrybe-desktop: could not emit a recording transition: {error}");
+            }
+        }));
 }
