@@ -1,5 +1,6 @@
 import type { ReactElement } from "react";
 
+import { SetupView } from "./views/SetupView";
 import { SearchView } from "./views/SearchView";
 import { SessionsView } from "./views/SessionsView";
 import { SettingsView } from "./views/SettingsView";
@@ -24,7 +25,17 @@ export const ROUTES: readonly Route[] = [
   { id: "sessions", label: "Sessions", render: () => <SessionsView /> },
   { id: "search", label: "Search", render: () => <SearchView /> },
   { id: "settings", label: "Settings", render: () => <SettingsView /> },
+  { id: "setup", label: "Setup", render: () => <SetupView /> },
 ];
+
+/**
+ * The route guided setup lives at.
+ *
+ * Named rather than looked up by string at each call site, so the shell
+ * can open on it and the wizard can leave it without either of them
+ * repeating a literal the registry owns.
+ */
+export const SETUP_ROUTE_ID = "setup";
 
 /**
  * The route the window opens on.

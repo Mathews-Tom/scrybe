@@ -262,3 +262,250 @@ body {
   margin: 0;
   overflow-wrap: anywhere;
 }
+
+/* Guided setup.
+ *
+ * Every state below is carried by text as well as by colour: the
+ * `data-state` attributes tint a word that already says the same thing,
+ * so a reader who cannot distinguish the palette loses nothing. The
+ * progress bar's fill is the only place a value is expressed by size
+ * alone, and it is accompanied by an `aria-valuetext` reading the same
+ * figure. */
+
+.setup__progress {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin: 0 0 1.5rem;
+  padding: 0;
+  list-style: none;
+  color: var(--text-muted);
+}
+
+.setup__progress-step[aria-current="step"] {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.setup__progress-index {
+  display: inline-block;
+  min-width: 1.5rem;
+  margin-right: 0.375rem;
+  padding: 0 0.375rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  text-align: center;
+}
+
+.setup__body {
+  max-width: 44rem;
+}
+
+.setup__path {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  overflow-wrap: anywhere;
+}
+
+.setup__field {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.75rem 0;
+}
+
+.setup__field input {
+  flex: 1 1 14rem;
+  padding: 0.375rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  background: var(--surface);
+  color: inherit;
+  font: inherit;
+}
+
+.setup__capabilities {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.setup__capabilities li {
+  padding: 0.75rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.setup__capabilities h4 {
+  margin: 0 0 0.25rem;
+}
+
+.setup__note,
+.setup__position {
+  color: var(--text-muted);
+}
+
+.setup__saved {
+  color: var(--status);
+}
+
+.setup__failure,
+.setup__warning {
+  color: var(--danger);
+}
+
+.setup__facet[data-state="ready"] {
+  color: var(--status);
+}
+
+.setup__facet[data-state="blocked"] {
+  color: var(--danger);
+}
+
+.setup__verdict {
+  font-weight: 600;
+}
+
+.setup__actions,
+.setup__nav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 1.5rem;
+}
+
+.setup__nav {
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.setup__exit {
+  margin-left: auto;
+}
+
+.setup button,
+.model button {
+  padding: 0.375rem 0.875rem;
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  background: var(--surface-raised);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.setup button:disabled,
+.model button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.setup__primary,
+.model__confirm {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+
+.readiness {
+  margin: 0 0 1.5rem;
+}
+
+.readiness__row {
+  display: grid;
+  grid-template-columns: minmax(6rem, 9rem) minmax(8rem, 10rem) 1fr;
+  gap: 0.5rem;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.readiness__term {
+  font-weight: 600;
+}
+
+.readiness__state,
+.readiness__detail {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.readiness__state[data-state="ready"] {
+  color: var(--status);
+}
+
+.readiness__state[data-state="blocked"] {
+  color: var(--danger);
+}
+
+.readiness__state[data-state="not_configured"],
+.readiness__state[data-state="unverified"] {
+  color: var(--text-muted);
+}
+
+.model {
+  margin: 1rem 0;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  background: var(--surface-raised);
+}
+
+.model h3 {
+  margin-top: 0;
+}
+
+.model__facts {
+  margin: 1rem 0;
+}
+
+.model__row {
+  display: grid;
+  grid-template-columns: minmax(7rem, 10rem) 1fr;
+  gap: 0.5rem;
+  padding: 0.25rem 0;
+}
+
+.model__row dt {
+  font-weight: 600;
+}
+
+.model__row dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.model__url,
+.model__digest {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  overflow-wrap: anywhere;
+}
+
+.model__installed {
+  color: var(--status);
+}
+
+.model__warning {
+  color: var(--danger);
+}
+
+.model__progress {
+  height: 0.5rem;
+  margin: 0.75rem 0 0.25rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.model__progress-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 200ms linear;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .model__progress-fill {
+    transition: none;
+  }
+}

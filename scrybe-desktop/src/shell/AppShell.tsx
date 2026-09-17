@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
 
 import { useScrybe } from "../ipc/ScrybeProvider";
-import { ROUTES, defaultRoute } from "./routes";
+import { NavigationProvider } from "./navigation";
+import { ROUTES, SETUP_ROUTE_ID, defaultRoute } from "./routes";
 import { useQuery, type Query } from "./useQuery";
 import type { SettingsSummary } from "../generated/bindings";
 
@@ -35,12 +36,33 @@ function statusText(settings: Query<SettingsSummary>): string {
  */
 export function AppShell() {
   const scrybe = useScrybe();
-  const [activeId, setActiveId] = useState(FIRST_ROUTE.id);
-  const active = ROUTES.find((route) => route.id === activeId) ?? FIRST_ROUTE;
+  // `null` until the reader picks a destination, which is what lets the
+  // readiness answer below choose the first one without overriding a
+  // choice already made.
+  const [chosenId, setChosenId] = useState<string | null>(null);
   const settings = useQuery(() => scrybe.settingsSummary(), "settings");
+  const readiness = useQuery(() => scrybe.readinessReport(), "readiness");
+
+  // An installation that cannot record opens on setup. Derived from
+  // readiness rather than from a "setup completed" flag: a flag would
+  // have to be written somewhere, would go stale the moment a model was
+  // deleted, and would leave a reader whose installation had broken
+  // looking at a session list that could not record. A revoked capture
+  // permission is not among the things that can take it back: nothing
+  // in this release detects one, and readiness reports capture as not
+  // checked rather than claiming it works. Until readiness settles the
+  // shell opens where it always has, so a healthy launch is not delayed
+  // by a check that will say nothing is wrong.
+  const opensOnSetup = readiness.status === "ready" && !readiness.value.can_record;
+  const activeId = chosenId ?? (opensOnSetup ? SETUP_ROUTE_ID : FIRST_ROUTE.id);
+  const active = ROUTES.find((route) => route.id === activeId) ?? FIRST_ROUTE;
+  const navigate = useCallback((routeId: string) => {
+    setChosenId(routeId);
+  }, []);
 
   return (
-    <div className="app-shell">
+    <NavigationProvider value={navigate}>
+      <div className="app-shell">
       <nav className="app-shell__sidebar" aria-label="Primary">
         <ul className="app-shell__nav">
           {ROUTES.map((route) => (
@@ -50,7 +72,7 @@ export function AppShell() {
                 className="app-shell__nav-item"
                 aria-current={route.id === active.id ? "page" : undefined}
                 onClick={() => {
-                  setActiveId(route.id);
+                  navigate(route.id);
                 }}
               >
                 {route.label}
@@ -63,9 +85,10 @@ export function AppShell() {
           {statusText(settings)}
         </p>
       </nav>
-      <main className="app-shell__main" aria-labelledby="view-heading">
-        {active.render()}
-      </main>
-    </div>
+        <main className="app-shell__main" aria-labelledby="view-heading">
+          {active.render()}
+        </main>
+      </div>
+    </NavigationProvider>
   );
 }
