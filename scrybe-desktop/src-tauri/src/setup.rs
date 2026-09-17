@@ -84,7 +84,13 @@ pub struct ModelAcquisition {
 }
 
 impl ModelAcquisition {
-    fn begin(&self) -> CancellationToken {
+    /// A fresh token, registered as the one a cancel reaches.
+    ///
+    /// `pub` because the debug-only qualification probe drives the same
+    /// manager through the same one-at-a-time discipline; a second
+    /// token registry for the harness would be a second thing that
+    /// could disagree with this one about what is running.
+    pub fn begin(&self) -> CancellationToken {
         let token = CancellationToken::new();
         if let Ok(mut held) = self.token.lock() {
             *held = token.clone();
@@ -93,11 +99,14 @@ impl ModelAcquisition {
         token
     }
 
-    fn finish(&self) {
+    /// Marks the acquisition finished. See [`Self::begin`].
+    pub fn finish(&self) {
         self.running.store(false, Ordering::SeqCst);
     }
 
-    fn cancel(&self) -> bool {
+    /// Cancels whichever acquisition is running, and says whether one
+    /// was. See [`Self::begin`].
+    pub fn cancel(&self) -> bool {
         if let Ok(held) = self.token.lock() {
             held.cancel();
         }

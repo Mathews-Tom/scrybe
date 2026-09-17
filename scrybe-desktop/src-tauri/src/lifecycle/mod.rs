@@ -23,6 +23,8 @@ pub mod channel;
 #[cfg(debug_assertions)]
 pub mod control;
 pub mod menu;
+#[cfg(debug_assertions)]
+pub mod model_probe;
 pub mod navigation;
 pub mod tray;
 pub mod window;
