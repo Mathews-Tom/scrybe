@@ -393,8 +393,8 @@ impl SessionRepository {
         self.scan_until(None)
     }
 
-    /// The current scan, abandoning the classification pass as soon as
-    /// `cancel` fires.
+    /// The current scan, abandoning both passes as soon as `cancel`
+    /// fires.
     ///
     /// A cold cache classifies every folder in the root — a `read_dir`,
     /// a `stat` per folder, up to three `exists` probes, and a
@@ -404,10 +404,19 @@ impl SessionRepository {
     /// an invalidation, which is the common case for a frontend that
     /// just repaired or regenerated a session.
     ///
+    /// Fingerprinting precedes the cache comparison, so it runs on a
+    /// warm hit too and is the pass a type-ahead search actually pays
+    /// for on nearly every keystroke. The token is therefore checked
+    /// before it starts and between its entries as well, not only in
+    /// the classification loop that may never run.
+    ///
     /// A cancelled pass caches nothing: the partial classification is
     /// not the root's state and must not be served to the next caller.
     fn scan_until(&self, cancel: Option<&CancellationToken>) -> Result<Arc<Vec<ScannedSession>>> {
-        let fingerprint = self.fingerprint()?;
+        if cancel.is_some_and(CancellationToken::is_cancelled) {
+            return Err(cancelled());
+        }
+        let fingerprint = self.fingerprint(cancel)?;
         if let Ok(cache) = self.cache.lock() {
             if let Some(cached) = cache.as_ref() {
                 if cached.fingerprint == fingerprint {
@@ -446,7 +455,7 @@ impl SessionRepository {
 
     /// The root's observable state, as folder names paired with their
     /// modification times.
-    fn fingerprint(&self) -> Result<RootFingerprint> {
+    fn fingerprint(&self, cancel: Option<&CancellationToken>) -> Result<RootFingerprint> {
         let root = self.root.path();
         let entries = std::fs::read_dir(root).map_err(|source| {
             let code = if source.kind() == std::io::ErrorKind::NotFound {
@@ -463,6 +472,9 @@ impl SessionRepository {
 
         let mut fingerprint = RootFingerprint::new();
         for entry in entries.flatten() {
+            if cancel.is_some_and(CancellationToken::is_cancelled) {
+                return Err(cancelled());
+            }
             let Ok(file_type) = entry.file_type() else {
                 continue;
             };
@@ -847,6 +859,31 @@ mod tests {
         // pass itself stopped, rather than finishing and then failing
         // the match loop.
         assert!(repository.cache.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn test_a_search_cancelled_before_entry_skips_the_fingerprint_pass() {
+        let tree = Tree::new();
+        tree.complete("2026-04-29-1430-acme-01HXYZ", "Acme");
+        let repository = tree.repository();
+        repository
+            .search_sessions(&SearchRequest::new("acme"), &CancellationToken::new())
+            .unwrap();
+
+        // Removing the root makes the fingerprint's `read_dir` fail, so
+        // `StorageRootMissing` here would prove the pass ran anyway.
+        // A warm cache is the type-ahead common case, and fingerprinting
+        // is a whole `read_dir` plus two `stat`s per folder, so the
+        // token has to be checked before it rather than after.
+        std::fs::remove_dir_all(tree.dir.path()).unwrap();
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        let error = repository
+            .search_sessions(&SearchRequest::new("acme"), &cancel)
+            .unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::Cancelled);
     }
 
     #[test]
