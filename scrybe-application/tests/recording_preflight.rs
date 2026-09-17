@@ -138,18 +138,23 @@ fn test_the_synthetic_source_stays_on_the_stub_with_a_model_configured() {
     assert_eq!(plan.transcription, TranscriptionModel::Stub);
 }
 
+/// The configured model has to be an absolute path for the resolver to
+/// take it verbatim, and what counts as absolute differs by platform: a
+/// leading `/` is absolute on Unix and is not on Windows, where the
+/// resolver would fall through to the platform data directory instead.
+/// A temporary directory is absolute on both.
 #[test]
 fn test_a_real_source_takes_the_configured_whisper_model() {
-    let config = config_with(
-        "[record]\nsource = \"mic\"\n[stt]\nprovider = \"whisper-local\"\nmodel = \"/models/small.bin\"\n",
-    );
+    let directory = tempfile::tempdir().unwrap();
+    let model = directory.path().join("small.bin");
+    let config = config_with(&format!(
+        "[record]\nsource = \"mic\"\n[stt]\nprovider = \"whisper-local\"\nmodel = {}\n",
+        toml::Value::from(model.to_str().unwrap())
+    ));
 
     let plan = RecordingPlan::resolve(&config, None, &RecordingOverrides::default()).unwrap();
 
-    assert_eq!(
-        plan.transcription,
-        TranscriptionModel::Whisper(PathBuf::from("/models/small.bin"))
-    );
+    assert_eq!(plan.transcription, TranscriptionModel::Whisper(model));
 }
 
 #[test]
