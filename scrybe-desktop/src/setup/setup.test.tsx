@@ -327,7 +327,7 @@ describe("the transcription step", () => {
           publish = onProgress;
           return Promise.resolve(() => undefined);
         },
-        // Never settles, so the panel stays in its downloading phase
+        // Never settles, so the panel stays in its downloading stage
         // for the duration of the assertions below.
         installModel: () => new Promise<ModelOutcome>(() => undefined),
       }),
