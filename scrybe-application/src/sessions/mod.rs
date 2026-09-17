@@ -10,7 +10,8 @@
 //! the read-only agent surface, and any future frontend. Sessions are
 //! addressed by opaque identity, never by path; listings and search are
 //! paged; search is cancellable; and the cached scan is invalidated by
-//! any external write under the configured root.
+//! any write under the configured root that changes a directory's
+//! entries.
 
 mod contract;
 mod reader;

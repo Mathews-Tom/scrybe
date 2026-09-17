@@ -2045,8 +2045,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_a_capture_side_failure_is_not_labelled_finalization() {
-        let cfg_dir = tempfile::tempdir().unwrap();
-        std::env::set_var("SCRYBE_CONFIG", cfg_dir.path().join("no-such-config.toml"));
         let dir = tempfile::tempdir().unwrap();
 
         let controller = app_controller(dir.path());

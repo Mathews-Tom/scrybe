@@ -9,7 +9,10 @@
 //! A search over a large storage root reads every session's notes and
 //! transcript. A frontend that navigates away, or a user who keeps
 //! typing, must be able to abandon that work without waiting for it.
-//! The token is checked between sessions and before each content read,
+//! The token is checked before the scan starts, between entries while
+//! the root is fingerprinted, between folders while it is classified,
+//! and between sessions while they are matched. Matching one session
+//! may read both its notes and its transcript behind a single check,
 //! so an abandoned search stops within one session's worth of I/O.
 
 use std::sync::atomic::{AtomicBool, Ordering};

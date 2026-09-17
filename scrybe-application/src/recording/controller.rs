@@ -26,10 +26,12 @@
 //!   it happened in: preflight, capture, or finalization. A caller
 //!   cannot mislabel one, because it does not choose the label.
 //!
-//! The state lock is never held across a callback. Each transition
-//! mutates under the lock, releases it, and only then notifies the
-//! observer, so an observer that reads the controller back cannot
-//! deadlock against the transition that woke it.
+//! No lock is held across a callback. Each transition mutates under
+//! the state lock, releases it, then takes the observer list only long
+//! enough to clone the handles out and releases that too before
+//! calling any of them, so an observer that reads the controller back
+//! — or subscribes another — cannot deadlock against the transition
+//! that woke it.
 
 use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -114,7 +116,7 @@ fn duration_ms(duration: Duration) -> u64 {
 /// The process-wide recording state model.
 pub struct RecordingController {
     clock: Arc<dyn MonotonicClock>,
-    observer: Option<Arc<RecordingEventObserver>>,
+    observers: Mutex<Vec<Arc<RecordingEventObserver>>>,
     state: Mutex<ControllerState>,
 }
 
@@ -122,7 +124,10 @@ impl fmt::Debug for RecordingController {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("RecordingController")
             .field("clock", &self.clock)
-            .field("observing", &self.observer.is_some())
+            .field(
+                "observers",
+                &self.observers.lock().map(|list| list.len()).ok(),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -149,7 +154,7 @@ impl RecordingController {
     pub(crate) fn with_clock(clock: Arc<dyn MonotonicClock>) -> Self {
         Self {
             clock,
-            observer: None,
+            observers: Mutex::new(Vec::new()),
             state: Mutex::new(ControllerState::idle()),
         }
     }
@@ -159,10 +164,32 @@ impl RecordingController {
     /// Consuming `self` rather than taking `&mut self` is what keeps
     /// this from being a second route to an instance: a caller outside
     /// the crate has no way to obtain the `Self` it needs.
+    /// [`Self::subscribe`] is the route once the controller is shared.
     #[must_use]
-    pub fn observing(mut self, observer: Arc<RecordingEventObserver>) -> Self {
-        self.observer = Some(observer);
+    pub fn observing(self, observer: Arc<RecordingEventObserver>) -> Self {
+        self.subscribe(observer);
         self
+    }
+
+    /// Notifies `observer` once per transition, from here on.
+    ///
+    /// Takes `&self`, so a consumer that holds the process-wide
+    /// controller behind an `Arc` can still attach one. Without this
+    /// the event contract — [`RecordingEvent`],
+    /// [`RECORDING_EVENT_SCHEMA_VERSION`], and
+    /// [`RecordingEventObserver`], all public and versioned — would be
+    /// unreachable outside this crate, because `observing` consumes a
+    /// `Self` no external caller can obtain.
+    ///
+    /// Observers are notified in subscription order. A subscription
+    /// made from inside a notification takes effect from the next
+    /// transition, because the list is cloned out before any observer
+    /// runs.
+    pub fn subscribe(&self, observer: Arc<RecordingEventObserver>) {
+        self.observers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(observer);
     }
 
     /// What every surface renders from.
@@ -372,7 +399,15 @@ impl RecordingController {
     }
 
     fn notify(&self, event: &RecordingEvent) {
-        if let Some(observer) = self.observer.as_ref() {
+        // Cloned out and the guard dropped before any observer runs, so
+        // an observer that subscribes another — or that reads the
+        // controller back — cannot deadlock against this notification.
+        let observers: Vec<Arc<RecordingEventObserver>> = self
+            .observers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        for observer in observers {
             observer(event);
         }
     }
@@ -740,6 +775,37 @@ mod tests {
     }
 
     #[test]
+    fn test_an_observer_subscribed_after_construction_sees_later_transitions() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let controller = Arc::new(RecordingController::new());
+
+        let recorded = Arc::clone(&seen);
+        controller.subscribe(Arc::new(move |event: &RecordingEvent| {
+            recorded.lock().unwrap().push(event.sequence);
+        }));
+        controller.begin_preparing().unwrap();
+        controller.mark_recording().unwrap();
+
+        // `observing` consumes `self`, so an owned controller is the
+        // only way to reach it; once the `Arc` exists there was no
+        // route to the event contract at all.
+        assert_eq!(*seen.lock().unwrap(), vec![1, 2]);
+    }
+
+    #[test]
+    fn test_subscribing_from_inside_a_notification_does_not_deadlock() {
+        let controller = Arc::new(RecordingController::new());
+        let inner = Arc::clone(&controller);
+
+        controller.subscribe(Arc::new(move |_: &RecordingEvent| {
+            inner.subscribe(Arc::new(|_: &RecordingEvent| {}));
+        }));
+        controller.begin_preparing().unwrap();
+
+        assert_eq!(controller.snapshot().state, RecordingState::Preparing);
+    }
+
+    #[test]
     fn test_an_observer_may_read_the_controller_back_without_deadlocking() {
         let clock = ManualClock::new();
         let seen: Arc<Mutex<Vec<RecordingState>>> = Arc::new(Mutex::new(Vec::new()));
@@ -829,9 +895,21 @@ mod tests {
             1,
             "the capture-to-saving advance must be emitted exactly once"
         );
-        let settled = controller.snapshot().stop_source;
-        assert!(settled.is_some());
-        assert_eq!(controller.snapshot().stop_source, settled);
+        // The source the controller kept has to be the one the single
+        // accepted request carried. Comparing two reads of the same
+        // unchanged controller would hold for any implementation,
+        // including one that recorded nothing at all; correlating the
+        // stored source with the accepted thread's is what proves the
+        // accepted request and the stored source cannot diverge under
+        // contention.
+        let accepted = outcomes
+            .iter()
+            .position(|outcome| *outcome == StopAcceptance::Accepted)
+            .expect("one concurrent stop must have been accepted");
+        assert_eq!(
+            controller.snapshot().stop_source,
+            Some(SOURCES[accepted % SOURCES.len()])
+        );
     }
 
     /// Walks a fresh controller to `state`.

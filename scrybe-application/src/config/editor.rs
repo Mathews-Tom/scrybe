@@ -35,8 +35,12 @@ use crate::Result;
 /// # Errors
 ///
 /// [`ErrorCode::ConfigUnreadable`] if `text` is not well-formed TOML,
-/// [`ErrorCode::ConfigInvalid`] if a field's value has the wrong kind
-/// or the field's table is occupied by something that is not a table.
+/// [`ErrorCode::ConfigInvalid`] if a field's value has the wrong kind,
+/// the field's table is occupied by something that is not a table, the
+/// table is written with dotted keys, or the field's key currently
+/// holds a sub-table. The last three are refusals rather than edits:
+/// each is a document shape this module cannot touch without losing
+/// something the user wrote.
 pub fn apply(text: &str, update: &ConfigUpdate) -> Result<String> {
     let mut document: Document = text.parse().map_err(|source: toml_edit::TomlError| {
         ApplicationError::new(
@@ -49,7 +53,7 @@ pub fn apply(text: &str, update: &ConfigUpdate) -> Result<String> {
     for (field, value) in update.entries() {
         check_kind(field, value)?;
         let table = table_mut(&mut document, field.table())?;
-        set_preserving_decor(table, field.key(), to_item(value));
+        set_preserving_decor(table, field.key(), to_item(value))?;
     }
 
     Ok(document.to_string())
@@ -81,6 +85,22 @@ fn table_mut<'doc>(document: &'doc mut Document, name: &str) -> Result<&'doc mut
             format!("[{name}] is not a table in the existing configuration file"),
         )
     })?;
+    // A dotted table is not rendered back byte-for-byte: toml_edit
+    // 0.20.2 carries the parent key's decor into every dotted path it
+    // encodes, so a comment above the first dotted key is re-emitted
+    // above each dotted sibling. That happens on an untouched
+    // parse-then-render, so the cause is upstream — but `apply` is what
+    // would write the duplicated text back over the user's file, which
+    // is exactly the contract this module exists to keep.
+    if table.is_dotted() {
+        return Err(ApplicationError::new(
+            ErrorCode::ConfigInvalid,
+            format!(
+                "[{name}] is written with dotted keys, which cannot be edited here without \
+                 reformatting the comments around them"
+            ),
+        ));
+    }
     // A table created here is implicit until something renders it, and
     // an implicit table with keys would be written as dotted keys at
     // the top level rather than as the `[table]` header the schema
@@ -101,16 +121,31 @@ fn table_mut<'doc>(document: &'doc mut Document, name: &str) -> Result<&'doc mut
 /// which is precisely the loss this module exists to prevent. Only the
 /// value's own decor (the spacing around `=` and any trailing comment)
 /// has to be carried across by hand.
-fn set_preserving_decor(table: &mut Table, key: &str, replacement: Item) {
+fn set_preserving_decor(table: &mut Table, key: &str, replacement: Item) -> Result<()> {
     let Some(existing) = table.get_mut(key) else {
         table.insert(key, replacement);
-        return;
+        return Ok(());
     };
-    let decor = existing.as_value().map(|value| value.decor().clone());
+    // An item that is not a value is a sub-table, which has no `Value`
+    // to carry decor. Assigning over it used to skip the decor-restore
+    // branch and replace the whole block, deleting its keys and its
+    // comments outright — the one outcome this module exists to
+    // prevent, and one `ConfigService::apply` cannot catch because it
+    // validates only the candidate document, never the one parsed.
+    let Some(decor) = existing.as_value().map(|value| value.decor().clone()) else {
+        return Err(ApplicationError::new(
+            ErrorCode::ConfigInvalid,
+            format!(
+                "`{key}` holds a sub-table, so assigning a value to it would delete that \
+                 block and the comments inside it"
+            ),
+        ));
+    };
     *existing = replacement;
-    if let (Some(decor), Some(value)) = (decor, existing.as_value_mut()) {
+    if let Some(value) = existing.as_value_mut() {
         *value.decor_mut() = decor;
     }
+    Ok(())
 }
 
 fn to_item(value: &ConfigValue) -> Item {
