@@ -6,9 +6,13 @@
 
 //! Writes the TypeScript transport contract the frontend imports.
 //!
-//! The drift check is a test, not this binary: a developer runs this to
-//! regenerate, and continuous integration runs the test to prove the
-//! checked-in file is what this binary would have written.
+//! The drift check is a test, not this program: a developer runs this
+//! to regenerate, and continuous integration runs the test to prove the
+//! checked-in file is what this program would have written.
+//!
+//! It is an example rather than a binary because Tauri's bundler copies
+//! every binary target it finds into the application bundle, and a
+//! developer tool has no business shipping inside the application.
 
 fn main() -> std::process::ExitCode {
     let path = scrybe_desktop::contract::bindings_path();

@@ -101,6 +101,11 @@ WEBVIEW_STATE = [
 ]
 SESSION_ARTIFACTS = ("meta.toml", "transcript.md", "notes.md", "audio.opus", "journal")
 
+# A bundled runtime would contradict the whole reason for using the
+# platform's own WebView. Matched case-insensitively against every file
+# name in the bundle.
+FOREIGN_RUNTIME_MARKERS = ("node", "chrom", "electron", "ffmpeg", ".asar", "v8_context")
+
 # Event names the candidate records. Their absence from a release binary
 # is what "compiled out, not merely inert" means here.
 DEBUG_ONLY_STRINGS = [
@@ -465,6 +470,31 @@ def lifecycle(candidate: Candidate, run: Run) -> None:
             session_artifacts_under(directory),
         )
 
+    # What the bundle actually ships. A developer tool or a bundled
+    # runtime reaching the application is the kind of thing that only
+    # shows up if something looks.
+    shipped = candidate.bundle / "Contents" / "MacOS"
+    run.record(
+        "bundle: executables shipped in the application",
+        [EXECUTABLE],
+        sorted(entry.name for entry in shipped.iterdir()),
+    )
+    run.record(
+        "bundle: files matching a Node, Chromium, or Electron runtime",
+        [],
+        foreign_runtime_files(candidate.bundle),
+    )
+    run.record(
+        "bundle: frameworks embedded rather than used from the system",
+        [],
+        embedded_frameworks(candidate.bundle),
+    )
+    run.record(
+        "bundle: the WebView is the system WebKit",
+        True,
+        links_system_webkit(shipped / EXECUTABLE),
+    )
+
     # (h) No network, structurally.
     graph = host_dependency_graph()
     run.record(
@@ -504,6 +534,28 @@ def session_artifacts_under(directory: Path) -> list[str]:
         for path in directory.rglob("*")
         if path.name in SESSION_ARTIFACTS
     )
+
+
+def foreign_runtime_files(bundle: Path) -> list[str]:
+    return sorted(
+        str(path.relative_to(bundle))
+        for path in bundle.rglob("*")
+        if any(marker in path.name.lower() for marker in FOREIGN_RUNTIME_MARKERS)
+    )
+
+
+def embedded_frameworks(bundle: Path) -> list[str]:
+    frameworks = bundle / "Contents" / "Frameworks"
+    if not frameworks.is_dir():
+        return []
+    return sorted(entry.name for entry in frameworks.iterdir())
+
+
+def links_system_webkit(binary: Path) -> bool:
+    result = subprocess.run(
+        ["otool", "-L", str(binary)], capture_output=True, text=True, check=True
+    )
+    return "/System/Library/Frameworks/WebKit.framework" in result.stdout
 
 
 def strings_in(binary: Path) -> str:
