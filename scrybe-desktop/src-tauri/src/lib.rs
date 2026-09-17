@@ -64,7 +64,14 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         // own identity, so the handler below runs one quit decision for
         // the menu, the tray, and the debug control channel alike.
         .menu(menu::build)
-        .on_menu_event(|app, event| menu::activate(app, event.id.as_ref()))
+        // The process's only menu-event listener, for both menus. A
+        // handler on `TrayIconBuilder` would not be a second channel:
+        // it lands in the same global vector as this one and the
+        // runtime calls every entry for every menu event, so the two
+        // together ran each item twice. A predefined item never
+        // arrives here — `muda` gives each one a native selector, so
+        // the platform acts on it without raising a menu event.
+        .on_menu_event(|app, event| tray::activate(app, event.id.as_ref()))
         .setup(|app| {
             let handle = app.handle();
             crate::note!(handle, "launched");

@@ -16,17 +16,27 @@
 //! in flight rather than abandoning it — held for the tray item alone.
 //!
 //! The menu below replaces the default so the quit item carries the
-//! tray's own menu identity. The global menu-event handler routes that
-//! identity through [`tray::activate`], which is the same function the
-//! tray's own handler and the debug control channel call, so there is
-//! one quit decision rather than three.
+//! tray's own menu identity. The process's one global menu-event
+//! listener routes that identity through [`tray::activate`], which is
+//! the same function the debug control channel calls, so there is one
+//! quit decision rather than three. That listener is registered once,
+//! on the builder; `tests/menu_event_listener.rs` says why a second
+//! one anywhere would make this claim false again.
 //!
 //! Everything else in the menu is a predefined item, dispatched
-//! natively. They are here because replacing the default menu would
-//! otherwise take the Edit items with it, and a `WebView` with no Edit
-//! menu has no copy, paste, or select-all.
+//! natively. They are here because replacing the default menu takes
+//! the platform's own items with it, and the stated principle — that a
+//! `WebView` with no Edit menu has no copy, paste, or select-all — is
+//! not specific to Edit. It was applied to Edit alone, which left ⌘W,
+//! ⌘M, and Full Screen as dead keys. ⌘W is the one that mattered: the
+//! close button is the documented way to dismiss the window, it hides
+//! rather than destroys, and the tray brings the window back, so a
+//! keyboard equivalent for it is part of that loop and there was none.
+//! The predefined close-window item raises the same close request the
+//! button does, so it routes through the existing hide-on-close
+//! handler and needs no logic of its own.
 
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tauri::menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu};
 
 use crate::lifecycle::tray;
 
@@ -43,12 +53,27 @@ pub fn build<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Menu
     // which is what makes the two paths one decision.
     let quit = MenuItem::with_id(app, tray::QUIT, "Quit Scrybe", true, Some("CmdOrCtrl+Q"))?;
 
+    // Built from the same package and bundle information the default
+    // menu uses. `about(app, None, None)` showed an About panel with
+    // neither version nor copyright, where the default showed both.
+    let package = app.package_info();
+    let bundle = &app.config().bundle;
+    let about = AboutMetadata {
+        name: Some(package.name.clone()),
+        version: Some(package.version.to_string()),
+        copyright: bundle.copyright.clone(),
+        authors: bundle.publisher.clone().map(|publisher| vec![publisher]),
+        ..AboutMetadata::default()
+    };
+
     let application = Submenu::with_items(
         app,
         "Scrybe",
         true,
         &[
-            &PredefinedMenuItem::about(app, None, None)?,
+            &PredefinedMenuItem::about(app, None, Some(about))?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::services(app, None)?,
             &PredefinedMenuItem::separator(app)?,
             &PredefinedMenuItem::hide(app, None)?,
             &PredefinedMenuItem::hide_others(app, None)?,
@@ -73,19 +98,28 @@ pub fn build<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Menu
         ],
     )?;
 
-    Menu::with_items(app, &[&application, &edit])
-}
+    let view = Submenu::with_items(
+        app,
+        "View",
+        true,
+        &[&PredefinedMenuItem::fullscreen(app, None)?],
+    )?;
 
-/// Runs the action behind one application-menu item.
-///
-/// Only the items this application defines are dispatched here.
-/// Everything else in the menu is predefined and carries out its own
-/// action natively, so forwarding it would either duplicate that action
-/// or report it as unhandled.
-pub fn activate(app: &tauri::AppHandle, item: &str) {
-    if owned(item) {
-        tray::activate(app, item);
-    }
+    // Minimize, Zoom, and Close Window, in the default's own order.
+    // Close Window is what restores ⌘W.
+    let window = Submenu::with_items(
+        app,
+        "Window",
+        true,
+        &[
+            &PredefinedMenuItem::minimize(app, None)?,
+            &PredefinedMenuItem::maximize(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::close_window(app, None)?,
+        ],
+    )?;
+
+    Menu::with_items(app, &[&application, &edit, &view, &window])
 }
 
 /// Whether the application menu defines this item itself.
@@ -156,9 +190,10 @@ mod tests {
 
     #[test]
     fn test_the_menu_leaves_the_trays_other_items_and_predefined_ones_alone() {
-        // `Open Scrybe` belongs to the tray and is not in this menu;
-        // forwarding it from here would act on an item the user cannot
-        // see. A predefined item carries out its own action natively.
+        // `Open Scrybe` and `Record now` belong to the tray menu, and a
+        // predefined item carries out its own action natively. This
+        // menu defines none of them, so the quit identity it does
+        // define is the only one it can be read as claiming.
         assert!(!owned(tray::OPEN));
         assert!(!owned(tray::RECORD));
         assert!(!owned("__core__predefined__copy"));

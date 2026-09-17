@@ -60,7 +60,6 @@ pub fn build(app: &tauri::AppHandle) -> tauri::Result<()> {
         .tooltip("Scrybe")
         .menu(&menu)
         .show_menu_on_left_click(true)
-        .on_menu_event(|app, event| activate(app, event.id.as_ref()))
         .build(app)?;
 
     crate::note!(
@@ -75,11 +74,24 @@ pub fn build(app: &tauri::AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
-/// Runs the action behind one menu item.
+/// Runs the action behind one menu item, wherever it came from.
 ///
-/// Separate from the menu wiring so the debug control channel reaches
-/// the same dispatch. The only step a qualification run cannot drive is
-/// the platform delivering the click itself.
+/// The tray menu, the application menu, and the debug control channel
+/// all arrive here, so there is one decision behind each verb rather
+/// than one per entry point. The only step a qualification run cannot
+/// drive is the platform delivering the click itself.
+///
+/// No handler is registered on [`TrayIconBuilder`], deliberately.
+/// `TrayIcon::register` pushes such a handler into the same
+/// `manager.menu.global_event_listeners` vector the builder's own
+/// listeners are moved into, and the runtime calls every entry in that
+/// vector for every menu event — Tauri documents this for the tray
+/// builder, whose handler "is called for any menu event, whether it is
+/// coming from this window, another window or from the tray icon
+/// menu". A registration here as well as on the builder therefore did
+/// not split the two menus apart; it ran this function twice for every
+/// item either menu raised. `tests/menu_event_listener.rs` keeps the
+/// count at one.
 pub fn activate(app: &tauri::AppHandle, item: &str) {
     match item {
         OPEN => window::show(app),
