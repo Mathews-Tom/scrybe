@@ -81,4 +81,90 @@ config_exists: boolean, storage_root: string, capture_source: string, transcript
  */
 hosted_credential_required: boolean, warnings: Array<SettingsWarning>, };
 
+export type SettingsField = "storage_root" | "storage_audio_bitrate_kbps" | "capture_mic_device" | "capture_hotkey" | "record_source" | "record_system_backend" | "record_llm" | "stt_provider" | "stt_model" | "stt_language" | "llm_provider" | "llm_base_url" | "llm_model" | "consent_default_mode" | "shell_indicators" | "agent_access_enabled";
+
+export type SettingsFieldKind = "text" | "integer" | "boolean" | "text_list";
+
+export type SettingsFieldSpec = { field: SettingsField, kind: SettingsFieldKind, };
+
+export type SettingsValue = boolean | bigint | string | Array<string>;
+
+export type SettingsChange = { field: SettingsField, value: SettingsValue, };
+
+export type SettingsForm = { config_path: string, config_exists: boolean, schema_version: number, storage_root: string, storage_audio_bitrate_kbps: number, capture_mic_device: string, capture_hotkey: string | null, record_source: string, record_system_backend: string, record_llm: string, stt_provider: string, stt_model: string, stt_language: string, llm_provider: string, llm_base_url: string, llm_model: string, consent_default_mode: string, shell_indicators: Array<string>, agent_access_enabled: boolean, hosted_credential_required: boolean, 
+/**
+ * Every field this form may write, in the service layer's stable
+ * order, with the control kind each one takes.
+ */
+editable: Array<SettingsFieldSpec>, warnings: Array<SettingsWarning>, };
+
+export type ReadinessState = "ready" | "blocked" | "not_configured";
+
+export type ReadinessFacet = { state: ReadinessState, summary: string, };
+
+export type ReadinessReport = { capture: ReadinessFacet, transcription: ReadinessFacet, notes: ReadinessFacet, storage: ReadinessFacet, egress: ReadinessFacet, can_record: boolean, };
+
+export type RecoveryActionView = { 
+/**
+ * The action's tagged discriminant.
+ */
+action: string, 
+/**
+ * The session the action names, when it names one.
+ */
+id?: string | null, 
+/**
+ * The file the action names, when it names one.
+ */
+name?: string | null, 
+/**
+ * The capability the action names, when it names one.
+ */
+capability?: string | null, 
+/**
+ * What the platform calls that capability, and where it is
+ * granted. Present only for a permission recovery.
+ */
+capability_label?: string | null, settings_url?: string | null, };
+
+export type DiagnosticRow = { code: string, severity: WarningSeverity, component: string, summary: string, 
+/**
+ * `None` when nothing can be done about it.
+ */
+recovery_action: RecoveryActionView | null, 
+/**
+ * Whether acting on it changes the system. Derived in the service
+ * layer from the action's own shape.
+ */
+mutation_required: boolean, };
+
+export type DiagnosticRows = { rows: Array<DiagnosticRow>, warning_count: number, };
+
+export type RepairOutcome = { 
+/**
+ * `true` when the system was changed, `false` when the condition
+ * had already been resolved.
+ */
+applied: boolean, summary: string, };
+
+export type ModelOffer = { id: string, source_url: string, source_revision: string, license: string, size_bytes: string, sha256: string, runtime: string, destination: string, destination_path: string, required_bytes: string, 
+/**
+ * `None` when the platform will not report free space, which is
+ * shown as unknown rather than as plenty or as none.
+ */
+available_bytes: string | null, sufficient_space: boolean, state: string, 
+/**
+ * Present when the state is a failure, describing which one.
+ */
+failure: string | null, };
+
+export type ModelProgress = { id: string, received_bytes: string, total_bytes: string, };
+
+export type ModelOutcome = { id: string, state: string, failure: string | null, 
+/**
+ * Whether this call put a verified artifact at the destination.
+ */
+promoted: boolean, };
+
 export const RECORDING_TRANSITION_EVENT = "recording-transition";
+export const MODEL_PROGRESS_EVENT = "scrybe://model-progress";

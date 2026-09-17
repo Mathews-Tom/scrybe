@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
+import { SETUP_COMMANDS } from "./setup";
 import {
   RECORDING_TRANSITION_EVENT,
   type RecordingStatus,
@@ -22,6 +23,7 @@ export const COMMANDS = [
   "search_sessions",
   "settings_summary",
   "recording_status",
+  ...SETUP_COMMANDS,
 ] as const;
 
 /** One page of the sessions under the configured storage root. */

@@ -6,6 +6,14 @@ import type {
   SettingsSummary,
 } from "../generated/bindings";
 import type { Scrybe } from "../ipc/ScrybeProvider";
+import {
+  diagnostics,
+  modelOfferFixture,
+  modelOutcome,
+  readiness,
+  repairOutcome,
+  settingsFormFixture,
+} from "./setup";
 
 /**
  * A stand-in for the Rust services.
@@ -21,6 +29,16 @@ export function servicesReturning(overrides: Partial<Scrybe> = {}): Scrybe {
     searchSessions: () => Promise.resolve(page([])),
     settingsSummary: () => Promise.resolve(settings()),
     recordingStatus: () => Promise.resolve(idle()),
+    settingsForm: () => Promise.resolve(settingsFormFixture()),
+    applySettings: () => Promise.resolve(settingsFormFixture()),
+    diagnosticsReport: () => Promise.resolve(diagnostics()),
+    applyRecovery: () => Promise.resolve(repairOutcome()),
+    readinessReport: () => Promise.resolve(readiness()),
+    modelOffer: () => Promise.resolve(modelOfferFixture()),
+    installModel: () => Promise.resolve(modelOutcome()),
+    cancelModelInstall: () => Promise.resolve(false),
+    openSystemSettings: () => Promise.resolve(),
+    openAdvancedConfiguration: () => Promise.resolve(),
     ...overrides,
   };
 }
