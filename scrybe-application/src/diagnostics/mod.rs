@@ -14,11 +14,14 @@
 
 mod contract;
 mod process;
+mod providers;
+mod readiness;
 mod service;
 
 pub use contract::{
-    DiagnosticCode, DiagnosticComponent, DiagnosticFinding, DiagnosticReport, RecoveryAction,
-    RepairApplication, RepairStatus, Severity,
+    Capability, DiagnosticCode, DiagnosticComponent, DiagnosticFinding, DiagnosticReport,
+    RecoveryAction, RepairApplication, RepairStatus, Severity,
 };
 pub use process::lock_owner_alive;
+pub use readiness::{has_errors, Facet, FacetState, Readiness};
 pub use service::DiagnosticsService;

@@ -23,6 +23,7 @@ pub mod error;
 pub mod recording;
 pub mod session;
 pub mod settings;
+pub mod setup;
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -33,6 +34,12 @@ pub use error::{CommandFailure, FailureCode};
 pub use recording::{RecordingState, RecordingStatus, RecordingTransition, TRANSITION_EVENT};
 pub use session::{SessionProgress, SessionRow, SessionRows};
 pub use settings::{SettingsSummary, SettingsWarning, WarningSeverity};
+pub use setup::{
+    DiagnosticRow, DiagnosticRows, ModelOffer, ModelOutcome, ModelProgress, ReadinessFacet,
+    ReadinessReport, ReadinessState, RecoveryActionView, RepairOutcome, SettingsChange,
+    SettingsField, SettingsFieldKind, SettingsFieldSpec, SettingsForm, SettingsValue,
+    MODEL_PROGRESS_EVENT,
+};
 
 const HEADER: &str = "\
 // Generated from `src-tauri/src/contract` — do not edit by hand.
@@ -72,6 +79,22 @@ contract![
     WarningSeverity,
     SettingsWarning,
     SettingsSummary,
+    SettingsField,
+    SettingsFieldKind,
+    SettingsFieldSpec,
+    SettingsValue,
+    SettingsChange,
+    SettingsForm,
+    ReadinessState,
+    ReadinessFacet,
+    ReadinessReport,
+    RecoveryActionView,
+    DiagnosticRow,
+    DiagnosticRows,
+    RepairOutcome,
+    ModelOffer,
+    ModelProgress,
+    ModelOutcome,
 ];
 
 /// The complete `bindings.ts` file content.
@@ -89,6 +112,10 @@ pub fn render() -> String {
     let _ = writeln!(
         out,
         "\nexport const RECORDING_TRANSITION_EVENT = \"{TRANSITION_EVENT}\";"
+    );
+    let _ = writeln!(
+        out,
+        "export const MODEL_PROGRESS_EVENT = \"{MODEL_PROGRESS_EVENT}\";"
     );
     out
 }
@@ -162,6 +189,22 @@ mod tests {
                 "WarningSeverity",
                 "SettingsWarning",
                 "SettingsSummary",
+                "SettingsField",
+                "SettingsFieldKind",
+                "SettingsFieldSpec",
+                "SettingsValue",
+                "SettingsChange",
+                "SettingsForm",
+                "ReadinessState",
+                "ReadinessFacet",
+                "ReadinessReport",
+                "RecoveryActionView",
+                "DiagnosticRow",
+                "DiagnosticRows",
+                "RepairOutcome",
+                "ModelOffer",
+                "ModelProgress",
+                "ModelOutcome",
             ],
         );
     }

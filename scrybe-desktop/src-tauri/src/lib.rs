@@ -22,6 +22,7 @@
 pub mod commands;
 pub mod contract;
 pub mod lifecycle;
+pub mod setup;
 pub mod state;
 
 use std::sync::Arc;
@@ -58,6 +59,10 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         // any of this crate's code runs.
         .plugin(navigation::guard())
         .manage(desktop)
+        // One acquisition at a time, so a cancel command can reach
+        // whichever install is running without the frontend having to
+        // carry a handle for it.
+        .manage(std::sync::Arc::new(setup::ModelAcquisition::default()))
         // Replaces the platform default, whose predefined quit item
         // terminates the process natively without reaching the
         // exit-request path. The item this installs carries the tray's
@@ -96,6 +101,16 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             commands::search_sessions,
             commands::settings_summary,
             commands::recording_status,
+            setup::settings_form,
+            setup::apply_settings,
+            setup::diagnostics_report,
+            setup::apply_recovery,
+            setup::readiness_report,
+            setup::model_offer,
+            setup::install_model,
+            setup::cancel_model_install,
+            setup::open_system_settings,
+            setup::open_advanced_configuration,
         ])
         .build(tauri::generate_context!())?
         .run(lifecycle::keep_running_without_a_window);

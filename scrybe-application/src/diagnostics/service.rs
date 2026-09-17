@@ -28,6 +28,7 @@ use crate::diagnostics::contract::{
 };
 use crate::error::{ApplicationError, ErrorCode};
 use crate::identity::{PartialFileRef, SessionRef, StorageRoot};
+use crate::models::ModelManager;
 use crate::paging::{PageRequest, MAX_PAGE_LIMIT};
 use crate::sessions::{SessionState, SessionSummary};
 use crate::{Result, SessionRepository};
@@ -58,6 +59,7 @@ impl DiagnosticsService {
         &self,
         config: &ConfigService,
         sessions: &SessionRepository,
+        models: &ModelManager,
     ) -> Result<DiagnosticReport> {
         let mut findings = Vec::new();
 
@@ -94,6 +96,7 @@ impl DiagnosticsService {
         };
 
         self.diagnose_storage(sessions, &mut findings)?;
+        crate::diagnostics::providers::diagnose(&loaded, models, &mut findings);
         diagnose_egress(&loaded, &mut findings);
         diagnose_agent_access(&loaded, &mut findings);
 
@@ -111,6 +114,7 @@ impl DiagnosticsService {
         &self,
         action: &RecoveryAction,
         sessions: &SessionRepository,
+        models: &ModelManager,
     ) -> Result<RepairApplication> {
         match action {
             RecoveryAction::CreateStorageRoot => self.create_root(action),
@@ -126,11 +130,77 @@ impl DiagnosticsService {
             RecoveryAction::RemoveOrphanedPartial { name } => {
                 self.remove_orphaned_partial(action, name)
             }
+            RecoveryAction::RemoveModelPartial { name } => {
+                Self::remove_model_partial(action, models, name)
+            }
             RecoveryAction::ReviewConfiguration => Err(ApplicationError::new(
                 ErrorCode::NotApplicable,
                 "reviewing configuration is a decision only the user can make",
             )),
+            // Reaching the network is not something a repair call may
+            // do on its own: an install must carry the confirmation of
+            // the artifact the user was shown, and this call has no
+            // way to hold one. It is offered as a finding's action so a
+            // surface can route to the confirmation flow; it is never
+            // taken here.
+            RecoveryAction::InstallTranscriptionModel { id } => Err(ApplicationError::new(
+                ErrorCode::ModelConfirmationRequired,
+                format!(
+                    "installing model {id} goes through the confirmed download flow,                      not through a repair"
+                ),
+            )),
+            // Opening something is the host's job. This layer links no
+            // platform surface and launches no process.
+            RecoveryAction::OpenSystemSettings { .. }
+            | RecoveryAction::OpenAdvancedConfiguration => Err(ApplicationError::new(
+                ErrorCode::NotApplicable,
+                "opening a platform surface belongs to the host, not to the service layer",
+            )),
         }
+    }
+
+    /// Confinement is decided before any filesystem call. `name`
+    /// arrives as a plain `&str` rather than a [`PartialFileRef`] (the
+    /// [`RecoveryAction::RemoveModelPartial`] contract predates that
+    /// type), so this method is the one place that must parse it
+    /// before joining it onto `models_dir`: a join performed first and
+    /// tested with `.exists()` is an oracle over paths outside the
+    /// models directory, and on Windows a `..` component resolves
+    /// lexically rather than through the filesystem, so an escaping
+    /// name can test as existing even with nothing there. A name that
+    /// cannot be parsed into a [`PartialFileRef`] cannot address
+    /// anything inside the models directory, so it is reported the
+    /// same way an absent file is: there is nothing here for this
+    /// repair to do.
+    fn remove_model_partial(
+        action: &RecoveryAction,
+        models: &ModelManager,
+        name: &str,
+    ) -> Result<RepairApplication> {
+        let Ok(confined) = PartialFileRef::parse(name) else {
+            return Ok(RepairApplication {
+                action: action.clone(),
+                status: RepairStatus::AlreadyResolved,
+                summary: format!(
+                    "{name:?} does not name a partial download in the models directory"
+                ),
+            });
+        };
+        if !models.models_dir().join(confined.as_str()).exists() {
+            return Ok(RepairApplication {
+                action: action.clone(),
+                status: RepairStatus::AlreadyResolved,
+                summary: format!("partial download {confined} is already gone"),
+            });
+        }
+        models.remove_partial(confined.as_str()).map_err(|error| {
+            ApplicationError::new(ErrorCode::RepairFailed, error.message().to_string())
+        })?;
+        Ok(RepairApplication {
+            action: action.clone(),
+            status: RepairStatus::Applied,
+            summary: format!("removed partial download {confined}"),
+        })
     }
 
     fn create_root(&self, action: &RecoveryAction) -> Result<RepairApplication> {
@@ -424,11 +494,13 @@ const fn mutates(action: Option<&RecoveryAction>) -> bool {
                 | RecoveryAction::RepairSession { .. }
                 | RecoveryAction::RemoveStaleSessionLock { .. }
                 | RecoveryAction::RemoveOrphanedPartial { .. }
+                | RecoveryAction::InstallTranscriptionModel { .. }
+                | RecoveryAction::RemoveModelPartial { .. }
         )
     )
 }
 
-const fn finding(
+pub const fn finding(
     code: DiagnosticCode,
     severity: Severity,
     component: DiagnosticComponent,

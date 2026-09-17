@@ -21,10 +21,18 @@ use scrybe_application::diagnostics::{
     DiagnosticCode, DiagnosticReport, RecoveryAction, RepairStatus,
 };
 use scrybe_application::{
-    ConfigService, DiagnosticsService, ErrorCode, PageRequest, SessionRef, SessionRepository,
-    StorageRoot,
+    ConfigService, DiagnosticsService, ErrorCode, ModelManager, PageRequest, SessionRef,
+    SessionRepository, StorageRoot,
 };
 use scrybe_core::storage::PID_LOCK_NAME;
+
+/// Neither probe fires against this: transcription does not name the
+/// locally managed provider, and the notes endpoint is remote, which is
+/// reported from its URL and never dialled.
+const UNPROBED: &str = "schema_version = 1\n\n\
+                        [stt]\nprovider = \"openai-compat\"\n\
+                        base_url = \"https://stt.example/v1\"\n\n\
+                        [llm]\nbase_url = \"https://notes.example/v1\"\n";
 
 struct Install {
     dir: tempfile::TempDir,
@@ -32,9 +40,14 @@ struct Install {
 
 impl Install {
     fn new() -> Self {
-        Self {
+        let install = Self {
             dir: tempfile::tempdir().unwrap(),
-        }
+        };
+        // Written at construction rather than per diagnosis, so the
+        // no-mutation fingerprint below is taken with the fixture
+        // already in place and sees only what diagnosis did.
+        install.config(UNPROBED);
+        install
     }
 
     fn root(&self) -> StorageRoot {
@@ -60,8 +73,31 @@ impl Install {
         ConfigService::new(path)
     }
 
+    /// A configuration naming a remote notes endpoint and no local
+    /// transcription model.
+    ///
+    /// The built-in defaults point notes at a loopback address and
+    /// transcription at a locally managed model, and both are probed.
+    /// Whether something answers that address is a property of the
+    /// machine the test runs on, so every test that is not about the
+    /// probes uses this instead, and the probes get their own tests
+    /// with a listener they own.
+    fn unprobed_config(&self) -> ConfigService {
+        ConfigService::new(self.dir.path().join("config.toml"))
+    }
+
     fn absent_config(&self) -> ConfigService {
         ConfigService::new(self.dir.path().join("absent.toml"))
+    }
+
+    /// A manager over a disposable models directory.
+    ///
+    /// Distinct from the storage root on purpose: the orphaned-partial
+    /// finding scans the root and the model-partial finding scans this,
+    /// and a fixture that conflated them would let either test pass on
+    /// the other's evidence.
+    fn models(&self) -> ModelManager {
+        ModelManager::new(self.dir.path().join("models"))
     }
 
     fn journal_session(&self, folder: &str) -> &Self {
@@ -106,7 +142,7 @@ impl Install {
 
     fn report(&self) -> DiagnosticReport {
         self.service()
-            .diagnose(&self.absent_config(), &self.sessions())
+            .diagnose(&self.unprobed_config(), &self.sessions(), &self.models())
             .unwrap()
     }
 }
@@ -194,6 +230,8 @@ fn test_every_finding_that_requires_a_mutation_names_the_action_it_needs() {
                         | RecoveryAction::RepairSession { .. }
                         | RecoveryAction::RemoveStaleSessionLock { .. }
                         | RecoveryAction::RemoveOrphanedPartial { .. }
+                        | RecoveryAction::InstallTranscriptionModel { .. }
+                        | RecoveryAction::RemoveModelPartial { .. }
                 )
             ),
             "{:?} disagrees with its recovery action",
@@ -253,6 +291,7 @@ fn test_repairing_a_stale_lock_removes_it_only_when_explicitly_asked() {
         .apply_repair(
             &RecoveryAction::RemoveStaleSessionLock { id },
             &install.sessions(),
+            &install.models(),
         )
         .unwrap();
 
@@ -274,6 +313,7 @@ fn test_a_live_recordings_lock_is_refused_rather_than_removed() {
         .apply_repair(
             &RecoveryAction::RemoveStaleSessionLock { id },
             &install.sessions(),
+            &install.models(),
         )
         .unwrap_err();
 
@@ -294,6 +334,7 @@ fn test_a_lock_that_cannot_be_interpreted_is_refused_rather_than_removed() {
         .apply_repair(
             &RecoveryAction::RemoveStaleSessionLock { id },
             &install.sessions(),
+            &install.models(),
         )
         .unwrap_err();
 
@@ -351,7 +392,11 @@ fn test_repairing_an_already_resolved_condition_reports_no_change() {
 
     let applied = install
         .service()
-        .apply_repair(&RecoveryAction::CreateStorageRoot, &install.sessions())
+        .apply_repair(
+            &RecoveryAction::CreateStorageRoot,
+            &install.sessions(),
+            &install.models(),
+        )
         .unwrap();
 
     assert_eq!(applied.status, RepairStatus::AlreadyResolved);
@@ -386,7 +431,11 @@ fn test_reviewing_configuration_is_not_a_repair_this_layer_performs() {
 
     let error = install
         .service()
-        .apply_repair(&RecoveryAction::ReviewConfiguration, &install.sessions())
+        .apply_repair(
+            &RecoveryAction::ReviewConfiguration,
+            &install.sessions(),
+            &install.models(),
+        )
         .unwrap_err();
 
     assert_eq!(error.code(), ErrorCode::NotApplicable);
@@ -400,7 +449,7 @@ fn test_a_default_install_reports_both_providers_as_local() {
 
     let report = install
         .service()
-        .diagnose(&config, &install.sessions())
+        .diagnose(&config, &install.sessions(), &install.models())
         .unwrap();
 
     assert!(codes(&report).contains(&DiagnosticCode::SttEgressLocal));
@@ -416,10 +465,26 @@ fn test_a_hosted_notes_provider_is_reported_as_egress() {
 
     let report = install
         .service()
-        .diagnose(&config, &install.sessions())
+        .diagnose(&config, &install.sessions(), &install.models())
         .unwrap();
 
     assert!(codes(&report).contains(&DiagnosticCode::LlmEgressRemote));
+}
+
+#[test]
+fn test_an_absent_configuration_is_reported_rather_than_treated_as_a_failure() {
+    let install = Install::new();
+
+    let report = install
+        .service()
+        .diagnose(
+            &install.absent_config(),
+            &install.sessions(),
+            &install.models(),
+        )
+        .unwrap();
+
+    assert!(codes(&report).contains(&DiagnosticCode::ConfigFileAbsent));
 }
 
 #[test]
@@ -430,9 +495,16 @@ fn test_an_unreadable_configuration_is_a_finding_rather_than_a_failed_diagnosis(
 
     let report = install
         .service()
-        .diagnose(&config, &install.sessions())
+        .diagnose(&config, &install.sessions(), &install.models())
         .unwrap();
 
     assert!(codes(&report).contains(&DiagnosticCode::ConfigFileUnreadable));
-    assert_eq!(report.warning_count(), 1);
+    assert_eq!(
+        report
+            .findings
+            .iter()
+            .filter(|finding| finding.code == DiagnosticCode::ConfigFileUnreadable)
+            .count(),
+        1
+    );
 }

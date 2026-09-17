@@ -37,6 +37,21 @@ pub const COMMANDS: &[&str] = &[
     "recording_status",
 ];
 
+/// Every command the host registers, reads and setup together.
+///
+/// The setup surface keeps its own list beside its own commands, so
+/// adding one is an edit in one file rather than two; this is where the
+/// two meet, and it is what `build.rs` and `tests/capability_audit.rs`
+/// both measure the capability files against.
+#[must_use]
+pub fn all() -> Vec<&'static str> {
+    COMMANDS
+        .iter()
+        .chain(crate::setup::COMMANDS.iter())
+        .copied()
+        .collect()
+}
+
 /// One page of the sessions under the configured root.
 ///
 /// # Errors

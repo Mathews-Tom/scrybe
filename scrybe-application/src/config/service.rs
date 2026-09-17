@@ -366,6 +366,46 @@ timeout_ms = 3000
         assert!(service.load().unwrap().agent_access.enabled);
     }
 
+    /// The settings form offers the hotkey as "leave empty for none".
+    /// An empty string is not none: the strict schema takes it as
+    /// `Some("")`, so the default accelerator is never substituted, and
+    /// the recording shell then refuses to start because it cannot
+    /// register an empty accelerator.
+    #[test]
+    fn test_clearing_the_hotkey_unsets_it_rather_than_writing_an_empty_one() {
+        let fixture = Fixture::new(
+            "schema_version = 1\n\n\
+             [capture]\n\
+             # the one I can reach without looking\n\
+             hotkey = \"CmdOrCtrl+Shift+R\"\n\
+             mic_device = \"default\"\n",
+        );
+        let service = fixture.service();
+        assert_eq!(
+            service.load().unwrap().capture.hotkey.as_deref(),
+            Some("CmdOrCtrl+Shift+R")
+        );
+
+        service
+            .apply(
+                &ConfigUpdate::new()
+                    .set(ConfigField::CaptureHotkey, ConfigValue::Text(String::new())),
+            )
+            .unwrap();
+
+        assert_eq!(service.load().unwrap().capture.hotkey, None);
+        assert!(
+            !fixture.body().contains("hotkey"),
+            "an empty hotkey was written instead of being unset: {}",
+            fixture.body()
+        );
+        assert!(
+            fixture.body().contains("mic_device = \"default\""),
+            "unsetting the hotkey disturbed the rest of the block: {}",
+            fixture.body()
+        );
+    }
+
     #[test]
     fn test_no_update_can_write_a_credential() {
         let fixture = Fixture::new(HAND_WRITTEN);
@@ -375,6 +415,9 @@ timeout_ms = 3000
                 crate::config::ConfigValueKind::Text => update.set(field, "synthetic"),
                 crate::config::ConfigValueKind::Integer => update.set(field, 64_u32),
                 crate::config::ConfigValueKind::Boolean => update.set(field, true),
+                crate::config::ConfigValueKind::TextList => {
+                    update.set(field, vec!["menu-bar-label".to_string()])
+                }
             };
         }
 

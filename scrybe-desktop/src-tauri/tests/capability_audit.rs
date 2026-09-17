@@ -25,7 +25,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use scrybe_desktop::commands::COMMANDS;
+use scrybe_desktop::commands;
 
 /// The capability formats this test reads.
 ///
@@ -239,12 +239,15 @@ fn granted_commands() -> BTreeSet<String> {
 
 #[test]
 fn test_every_registered_command_is_granted_to_exactly_one_window() {
-    let registered: BTreeSet<String> = COMMANDS.iter().map(|name| (*name).to_owned()).collect();
+    let registered: BTreeSet<String> = commands::all()
+        .iter()
+        .map(|name| (*name).to_owned())
+        .collect();
 
     assert_eq!(
         granted_commands(),
         registered,
-        "\nthe capability files and `commands::COMMANDS` disagree. A command \
+        "\nthe capability files and `commands::all()` disagree. A command \
          the files do not grant is rejected at the IPC boundary; a grant with \
          no command behind it widens the trust boundary for nothing.\n",
     );
@@ -254,7 +257,7 @@ fn test_every_registered_command_is_granted_to_exactly_one_window() {
 fn test_the_access_control_manifest_declares_the_same_commands_the_host_registers() {
     // `build.rs` names the commands Tauri generates `allow-`/`deny-`
     // permissions from. A build script runs before the crate it builds,
-    // so it cannot import `commands::COMMANDS`; the two lists are
+    // so it cannot import `commands::all()`; the two lists are
     // compared here instead. A command missing from `build.rs` has no
     // permission, so no capability can grant it and every invoke of it
     // is rejected.
@@ -271,7 +274,10 @@ fn test_the_access_control_manifest_declares_the_same_commands_the_host_register
         .step_by(2)
         .map(str::to_owned)
         .collect();
-    let registered: BTreeSet<String> = COMMANDS.iter().map(|name| (*name).to_owned()).collect();
+    let registered: BTreeSet<String> = commands::all()
+        .iter()
+        .map(|name| (*name).to_owned())
+        .collect();
 
     assert_eq!(declared, registered);
 }

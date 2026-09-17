@@ -245,6 +245,39 @@ impl ModelManager {
         Ok(partials)
     }
 
+    /// Deletes one `.partial` from the models directory.
+    ///
+    /// The one mutating method here, and it is never called by a
+    /// diagnosis: reporting a partial and removing it are separate
+    /// acts, and only the second is the user's to request. `name` must
+    /// be a plain filename ending in the partial suffix, so nothing
+    /// outside the models directory is addressable through it.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::ModelStorageUnavailable`] when `name` is not a
+    /// confined partial name, names nothing, or cannot be removed.
+    pub fn remove_partial(&self, name: &str) -> Result<()> {
+        let confined = name.ends_with(PARTIAL_SUFFIX)
+            && !name.contains('/')
+            && !name.contains('\\')
+            && !name.contains('\0')
+            && Path::new(name).components().count() == 1;
+        if !confined {
+            return Err(ApplicationError::new(
+                ErrorCode::ModelStorageUnavailable,
+                format!("{name:?} does not name a partial download in the models directory"),
+            ));
+        }
+        std::fs::remove_file(self.models_dir.join(name)).map_err(|source| {
+            ApplicationError::new(
+                ErrorCode::ModelStorageUnavailable,
+                format!("the partial download {name} could not be removed"),
+            )
+            .with_source(source)
+        })
+    }
+
     /// Acquires `id`, having been told the user agreed to it.
     ///
     /// `progress` is called as bytes arrive, at a coarse stride.

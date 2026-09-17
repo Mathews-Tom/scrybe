@@ -12,13 +12,29 @@
 //! that no capability grants is rejected at the IPC boundary instead of
 //! being callable by default.
 
-/// Kept in step with `src/commands.rs`; `tests/capability_audit.rs`
-/// proves the two agree.
+/// Kept in step with `src/commands.rs` and `src/setup.rs`;
+/// `tests/capability_audit.rs` proves the three agree.
+///
+/// A build script cannot import the crate it builds, so this list is
+/// restated rather than borrowed. What keeps it honest is the audit:
+/// a command registered without an entry here has no generated
+/// permission, and a capability file granting one that is not here
+/// fails the audit.
 const COMMANDS: &[&str] = &[
     "list_sessions",
     "search_sessions",
     "settings_summary",
     "recording_status",
+    "settings_form",
+    "apply_settings",
+    "diagnostics_report",
+    "apply_recovery",
+    "readiness_report",
+    "model_offer",
+    "install_model",
+    "cancel_model_install",
+    "open_system_settings",
+    "open_advanced_configuration",
 ];
 
 fn main() {
