@@ -53,9 +53,14 @@ const ALLOWED_CORE_PERMISSIONS = [
   "core:event:allow-unlisten",
 ];
 
-// Tauri plugins this application is allowed to depend on. Empty: every
-// capability it needs is a command it defines itself.
-const ALLOWED_PLUGINS = [];
+// Tauri plugins this application is allowed to depend on.
+//
+// `single-instance` registers no command, so it widens nothing the
+// frontend can reach; it exists so a second launch activates this
+// process instead of creating a second owner of the same storage root.
+// Every other capability the application needs is a command it defines
+// itself.
+const ALLOWED_PLUGINS = ["tauri-plugin-single-instance"];
 
 /**
  * @typedef {{ where: string, expected: string, observed: string }} Finding
@@ -114,10 +119,14 @@ function auditCapability(name, capability) {
     if (forbidden !== undefined) {
       fail(`${where} permissions`, `no \`${forbidden}\` capability`, permission);
     }
-    if (permission.startsWith("core:") && !ALLOWED_CORE_PERMISSIONS.includes(permission)) {
+    // Anything that is neither a named core permission nor a grant for
+    // one of this application's own commands is a plugin surface
+    // reaching the WebView, whether or not its namespace is on the list
+    // above.
+    if (!ALLOWED_CORE_PERMISSIONS.includes(permission) && !permission.startsWith("allow-")) {
       fail(
         `${where} permissions`,
-        `a core permission from [${ALLOWED_CORE_PERMISSIONS.join(", ")}]`,
+        `an application command grant, or a core permission from [${ALLOWED_CORE_PERMISSIONS.join(", ")}]`,
         permission,
       );
     }

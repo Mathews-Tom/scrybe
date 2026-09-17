@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "navigation",
+  "description": "What the persistent shell itself needs: the recording status it renders, and the ability to subscribe to transitions of it. Scoped to the Sessions window by label. A feature area added later brings its own capability file rather than widening this one, so two areas are never coupled through a shared list.",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "allow-recording-status"
+  ]
+}

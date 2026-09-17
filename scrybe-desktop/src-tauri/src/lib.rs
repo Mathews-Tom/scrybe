@@ -21,6 +21,7 @@
 
 pub mod commands;
 pub mod contract;
+pub mod lifecycle;
 pub mod state;
 
 use std::sync::Arc;
@@ -28,6 +29,7 @@ use std::sync::Arc;
 use tauri::{Emitter, Manager};
 
 use crate::contract::{RecordingTransition, TRANSITION_EVENT};
+use crate::lifecycle::{tray, window};
 use crate::state::Desktop;
 
 /// Starts the desktop application and blocks until it exits.
@@ -42,18 +44,33 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let desktop = Desktop::discover()?;
 
     tauri::Builder::default()
+        // Registered first, as the plugin requires: a second launch
+        // must be turned away before it can build a window, a tray, or
+        // a second view of the storage root.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            crate::note!(app, "second-launch-activated");
+            window::show(app);
+        }))
         .manage(desktop)
         .setup(|app| {
-            forward_recording_transitions(app.handle());
+            let handle = app.handle();
+            crate::note!(handle, "launched");
+            forward_recording_transitions(handle);
+            tray::build(handle)?;
+            #[cfg(debug_assertions)]
+            lifecycle::control::serve(handle);
+            crate::note!(handle, "window-shown");
             Ok(())
         })
+        .on_window_event(window::hide_on_close)
         .invoke_handler(tauri::generate_handler![
             commands::list_sessions,
             commands::search_sessions,
             commands::settings_summary,
             commands::recording_status,
         ])
-        .run(tauri::generate_context!())?;
+        .build(tauri::generate_context!())?
+        .run(lifecycle::keep_running_without_a_window);
 
     Ok(())
 }
