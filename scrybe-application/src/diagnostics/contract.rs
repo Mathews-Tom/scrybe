@@ -8,7 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::identity::SessionRef;
+use crate::identity::{PartialFileRef, SessionRef};
 
 /// How much a finding matters.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Hash, Serialize, Deserialize)]
@@ -53,6 +53,9 @@ pub enum DiagnosticCode {
     SessionInProgress,
     /// A `pid.lock` survives with no live process behind it.
     SessionLockStale,
+    /// A `pid.lock` survives but carries no readable process identifier,
+    /// so whether a recorder still owns the session cannot be decided.
+    SessionLockUnreadable,
     /// A `.partial` file was left under the storage root.
     OrphanedPartialFile,
     /// A session has durable state that `repair_session` can recover.
@@ -87,7 +90,7 @@ pub enum RecoveryAction {
     /// Delete a `pid.lock` whose owning process is gone.
     RemoveStaleSessionLock { id: SessionRef },
     /// Delete a leftover `.partial` file directly under the root.
-    RemoveOrphanedPartial { name: String },
+    RemoveOrphanedPartial { name: PartialFileRef },
     /// Edit the configuration; not something the service can do for the
     /// user, because only they know the intended value.
     ReviewConfiguration,

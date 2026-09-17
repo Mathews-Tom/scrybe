@@ -27,12 +27,10 @@ use crate::diagnostics::contract::{
     RepairApplication, RepairStatus, Severity,
 };
 use crate::error::{ApplicationError, ErrorCode};
-use crate::identity::{SessionRef, StorageRoot};
+use crate::identity::{PartialFileRef, SessionRef, StorageRoot};
 use crate::paging::{PageRequest, MAX_PAGE_LIMIT};
 use crate::sessions::{SessionState, SessionSummary};
 use crate::{Result, SessionRepository};
-
-const PARTIAL_SUFFIX: &str = ".partial";
 
 /// Diagnosis of one install, and the repairs it can be asked to run.
 pub struct DiagnosticsService {
@@ -174,7 +172,19 @@ impl DiagnosticsService {
                 ErrorCode::NotApplicable,
                 format!("session {id} is being recorded right now; its lock is not stale"),
             )),
-            _ => {
+            // The lock exists but carries no readable process id, so
+            // whether a recorder still owns it is unknown. Deleting
+            // state that cannot be interpreted is the wrong default for
+            // a repair: it would clear the way for a second recorder to
+            // write into a session the first may still be holding.
+            None => Err(ApplicationError::new(
+                ErrorCode::NotApplicable,
+                format!(
+                    "session {id} holds a lock that carries no readable process id; \
+                     whether a recorder still owns it cannot be decided here"
+                ),
+            )),
+            Some(false) => {
                 std::fs::remove_file(&lock).map_err(|source| {
                     ApplicationError::new(
                         ErrorCode::RepairFailed,
@@ -194,15 +204,14 @@ impl DiagnosticsService {
     fn remove_orphaned_partial(
         &self,
         action: &RecoveryAction,
-        name: &str,
+        name: &PartialFileRef,
     ) -> Result<RepairApplication> {
-        if !name.ends_with(PARTIAL_SUFFIX) || name.contains('/') || name.contains('\\') {
-            return Err(ApplicationError::new(
-                ErrorCode::NotApplicable,
-                "only a partial file directly under the storage root can be removed",
-            ));
-        }
-        let path = self.root.path().join(name);
+        // No name check here. `PartialFileRef` construction and its
+        // `Deserialize` impl already refuse every name that could
+        // address something other than a direct child of the root, so
+        // the type is the only gate; a second hand-rolled check would
+        // be a place for the two to disagree.
+        let path = self.root.path().join(name.as_str());
         if !path.exists() {
             return Ok(RepairApplication {
                 action: action.clone(),
@@ -262,8 +271,9 @@ impl DiagnosticsService {
             None,
         ));
 
+        self.diagnose_locks(findings);
         for session in &listed {
-            self.diagnose_session(session, findings);
+            Self::diagnose_session(session, findings);
         }
         self.diagnose_partials(findings);
         Ok(())
@@ -284,28 +294,65 @@ impl DiagnosticsService {
         Ok(all)
     }
 
-    fn diagnose_session(&self, session: &SessionSummary, findings: &mut Vec<DiagnosticFinding>) {
-        let id = &session.id;
-        let lock = self.root.resolve(id).join(PID_LOCK_NAME);
-        if lock.exists() {
-            if crate::diagnostics::process::lock_owner_alive(&lock) == Some(true) {
-                findings.push(finding(
+    /// Every `pid.lock` under the root, whether or not the folder
+    /// holding it classifies as a session.
+    ///
+    /// `scrybe-core` acquires the lock immediately after
+    /// `create_dir_all` and before any journal, audio, or `meta.toml`
+    /// exists, so a recorder killed at startup leaves a folder holding
+    /// nothing but a lock — which `classify` reports as `NotASession`.
+    /// Keying lock detection off the session listing would therefore
+    /// hide exactly the lock most likely to be orphaned.
+    fn diagnose_locks(&self, findings: &mut Vec<DiagnosticFinding>) {
+        let Ok(entries) = std::fs::read_dir(self.root.path()) else {
+            return;
+        };
+        let mut folders: Vec<SessionRef> = entries
+            .flatten()
+            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+            .filter_map(|entry| {
+                SessionRef::parse(entry.file_name().to_str().unwrap_or_default()).ok()
+            })
+            .collect();
+        folders.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+
+        for id in folders {
+            let lock = self.root.resolve(&id).join(PID_LOCK_NAME);
+            if !lock.exists() {
+                continue;
+            }
+            findings.push(match crate::diagnostics::process::lock_owner_alive(&lock) {
+                Some(true) => finding(
                     DiagnosticCode::SessionInProgress,
                     Severity::Info,
                     DiagnosticComponent::Session,
                     format!("session {id} is being recorded right now"),
                     None,
-                ));
-            } else {
-                findings.push(finding(
+                ),
+                Some(false) => finding(
                     DiagnosticCode::SessionLockStale,
                     Severity::Warning,
                     DiagnosticComponent::Session,
                     format!("session {id} holds a lock whose process is gone"),
                     Some(RecoveryAction::RemoveStaleSessionLock { id: id.clone() }),
-                ));
-            }
+                ),
+                // Neither stale nor live: the lock carries no process
+                // identifier to decide with. It is reported without a
+                // recovery action because removing state that cannot be
+                // interpreted is a decision only a human can take.
+                None => finding(
+                    DiagnosticCode::SessionLockUnreadable,
+                    Severity::Warning,
+                    DiagnosticComponent::Session,
+                    format!("session {id} holds a lock that carries no readable process id"),
+                    None,
+                ),
+            });
         }
+    }
+
+    fn diagnose_session(session: &SessionSummary, findings: &mut Vec<DiagnosticFinding>) {
+        let id = &session.id;
 
         match session.state {
             SessionState::Complete => {}
@@ -337,13 +384,17 @@ impl DiagnosticsService {
         let Ok(entries) = std::fs::read_dir(self.root.path()) else {
             return;
         };
-        let mut names: Vec<String> = entries
+        // A name that cannot form a confined reference is not
+        // addressable through this layer, so it is omitted rather than
+        // reported with a recovery action no caller could invoke.
+        let mut names: Vec<PartialFileRef> = entries
             .flatten()
             .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
-            .filter_map(|entry| entry.file_name().to_str().map(ToString::to_string))
-            .filter(|name| name.ends_with(PARTIAL_SUFFIX))
+            .filter_map(|entry| {
+                PartialFileRef::parse(entry.file_name().to_str().unwrap_or_default()).ok()
+            })
             .collect();
-        names.sort();
+        names.sort_by(|left, right| left.as_str().cmp(right.as_str()));
         for name in names {
             findings.push(finding(
                 DiagnosticCode::OrphanedPartialFile,
@@ -531,6 +582,14 @@ mod tests {
                 .join("journal");
             std::fs::create_dir_all(&path).unwrap();
             std::fs::write(path.join("manifest.toml"), b"").unwrap();
+            self
+        }
+
+        /// A folder holding nothing at all, as `scrybe-core` leaves it
+        /// between `create_dir_all` and the first journal write.
+        fn bare_folder(&self, folder: &str) -> &Self {
+            self.ensure_root();
+            std::fs::create_dir_all(self.dir.path().join("sessions").join(folder)).unwrap();
             self
         }
 
@@ -722,6 +781,70 @@ mod tests {
     }
 
     #[test]
+    fn test_a_lock_that_cannot_be_interpreted_is_refused_rather_than_removed() {
+        let install = Install::new();
+        install
+            .journal_session("2026-04-29-1430-acme-01HXYZ")
+            .lock("2026-04-29-1430-acme-01HXYZ", "not-a-pid");
+        let id = SessionRef::parse("2026-04-29-1430-acme-01HXYZ").unwrap();
+        let lock = install.root().resolve(&id).join(PID_LOCK_NAME);
+
+        let error = install
+            .service()
+            .apply_repair(
+                &RecoveryAction::RemoveStaleSessionLock { id },
+                &install.sessions(),
+            )
+            .unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::NotApplicable);
+        assert!(lock.exists(), "an uninterpretable lock must survive repair");
+    }
+
+    #[test]
+    fn test_a_lock_that_cannot_be_interpreted_is_reported_without_a_recovery_action() {
+        let install = Install::new();
+        install
+            .journal_session("2026-04-29-1430-acme-01HXYZ")
+            .lock("2026-04-29-1430-acme-01HXYZ", "not-a-pid");
+
+        let report = install.report();
+        let codes = codes(&report);
+
+        assert!(codes.contains(&DiagnosticCode::SessionLockUnreadable));
+        // Reporting it as stale would offer a repair that is refused,
+        // and would claim the owning process is known to be gone.
+        assert!(!codes.contains(&DiagnosticCode::SessionLockStale));
+        assert!(report
+            .findings
+            .iter()
+            .find(|found| found.code == DiagnosticCode::SessionLockUnreadable)
+            .is_some_and(|found| found.recovery_action.is_none()));
+    }
+
+    #[test]
+    fn test_a_lock_in_a_folder_that_is_not_yet_a_session_is_still_reported() {
+        let install = Install::new();
+        // `scrybe-core` acquires the lock immediately after creating the
+        // folder, before any journal, audio, or `meta.toml` exists. A
+        // recorder killed at startup leaves exactly this, and the
+        // repository classifies it as `NotASession`.
+        install
+            .bare_folder("2026-04-29-1430-acme-01HXYZ")
+            .lock("2026-04-29-1430-acme-01HXYZ", "4294967294");
+
+        let report = install.report();
+
+        assert!(install
+            .sessions()
+            .list_sessions(PageRequest::first())
+            .unwrap()
+            .items
+            .is_empty());
+        assert!(codes(&report).contains(&DiagnosticCode::SessionLockStale));
+    }
+
+    #[test]
     fn test_repairing_an_already_resolved_condition_reports_no_change() {
         let install = Install::new();
         install.ensure_root();
@@ -736,20 +859,26 @@ mod tests {
 
     #[test]
     fn test_removing_a_partial_refuses_a_name_that_is_not_directly_under_the_root() {
-        let install = Install::new();
-        install.ensure_root();
+        // The refusal is `PartialFileRef`'s, so the only way a name
+        // that escapes the root can reach `apply_repair` is by being
+        // deserialized into the action. That boundary is what this
+        // asserts; no such `RecoveryAction` value can be constructed in
+        // Rust at all.
+        for escape in [
+            "../outside.partial",
+            "sub/outside.partial",
+            "/tmp/outside.partial",
+            "C:outside.partial",
+            "outside.bin",
+        ] {
+            let encoded =
+                format!("{{\"action\":\"remove_orphaned_partial\",\"name\":\"{escape}\"}}");
 
-        let error = install
-            .service()
-            .apply_repair(
-                &RecoveryAction::RemoveOrphanedPartial {
-                    name: "../outside.partial".into(),
-                },
-                &install.sessions(),
-            )
-            .unwrap_err();
-
-        assert_eq!(error.code(), ErrorCode::NotApplicable);
+            assert!(
+                serde_json::from_str::<RecoveryAction>(&encoded).is_err(),
+                "{escape} must not deserialize into a recovery action"
+            );
+        }
     }
 
     #[test]

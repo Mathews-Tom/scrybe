@@ -32,7 +32,7 @@
 //! deadlock against the transition that woke it.
 
 use std::fmt;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use crate::error::{ApplicationError, ErrorCode};
@@ -155,8 +155,7 @@ impl RecordingController {
     #[must_use]
     pub fn snapshot(&self) -> RecordingSnapshot {
         let now = self.clock.now();
-        self.lock()
-            .map_or_else(poisoned_snapshot, |state| state.snapshot(now))
+        self.lock().snapshot(now)
     }
 
     /// Begins resolving configuration, permissions, devices, providers,
@@ -170,7 +169,7 @@ impl RecordingController {
     /// [`ErrorCode::RecordingStateConflict`] unless the controller is
     /// idle.
     pub fn begin_preparing(&self) -> Result<RecordingSnapshot> {
-        self.transition(|state| {
+        self.transition(self.clock.now(), |state| {
             if !state.state.accepts_start() {
                 return Err(conflict("start", state.state));
             }
@@ -198,7 +197,7 @@ impl RecordingController {
         // the same lock as the transition. Splitting them would let a
         // stop accepted in between be swallowed into `Recording`, with
         // no surface ever seeing the `Saving` transition it asked for.
-        self.transition(move |state| {
+        self.transition(now, move |state| {
             if state.state != RecordingState::Preparing {
                 return Err(conflict("begin recording", state.state));
             }
@@ -221,9 +220,7 @@ impl RecordingController {
     /// pressed stop.
     pub fn request_stop(&self, source: StopSource) -> StopAcceptance {
         let now = self.clock.now();
-        let Some(mut state) = self.lock() else {
-            return StopAcceptance::NotRecording;
-        };
+        let mut state = self.lock();
 
         if state.stop_requested {
             return StopAcceptance::AlreadyStopping;
@@ -263,7 +260,7 @@ impl RecordingController {
     /// recording.
     pub fn begin_saving(&self) -> Result<RecordingSnapshot> {
         let now = self.clock.now();
-        self.transition(move |state| {
+        self.transition(now, move |state| {
             if state.state != RecordingState::Recording {
                 return Err(conflict("begin saving", state.state));
             }
@@ -279,7 +276,7 @@ impl RecordingController {
     /// [`ErrorCode::RecordingStateConflict`] unless the controller is
     /// saving.
     pub fn complete(&self) -> Result<RecordingSnapshot> {
-        self.transition(|state| {
+        self.transition(self.clock.now(), |state| {
             if state.state != RecordingState::Saving {
                 return Err(conflict("complete", state.state));
             }
@@ -299,7 +296,7 @@ impl RecordingController {
     /// flight to fail.
     pub fn fail(&self, summary: impl Into<String>) -> Result<RecordingSnapshot> {
         let summary = summary.into();
-        self.transition(move |state| {
+        self.transition(self.clock.now(), move |state| {
             let kind = match state.state {
                 RecordingState::Preparing => RecordingFailureKind::Preflight,
                 RecordingState::Recording => RecordingFailureKind::Capture,
@@ -319,7 +316,7 @@ impl RecordingController {
     /// [`ErrorCode::RecordingStateConflict`] unless the controller has
     /// completed or failed.
     pub fn acknowledge(&self) -> Result<RecordingSnapshot> {
-        self.transition(|state| {
+        self.transition(self.clock.now(), |state| {
             if !state.state.is_terminal() {
                 return Err(conflict("acknowledge", state.state));
             }
@@ -340,12 +337,18 @@ impl RecordingController {
     /// `mutate` both applies the change and chooses the target state,
     /// so a decision can never be made against state that has moved on
     /// by the time the transition is applied.
+    /// `now` is supplied rather than read here so that one clock read
+    /// serves the mutation, the emitted event, and the returned
+    /// snapshot. Reading the clock a second time made
+    /// `Preparing -> Recording` report a small non-zero `elapsed_ms`
+    /// against an origin set a moment earlier, so the first event of
+    /// every recording claimed time had already been recorded.
     fn transition(
         &self,
+        now: Instant,
         mutate: impl FnOnce(&mut ControllerState) -> Result<RecordingState>,
     ) -> Result<RecordingSnapshot> {
-        let now = self.clock.now();
-        let mut state = self.lock().ok_or_else(poisoned)?;
+        let mut state = self.lock();
         let to = mutate(&mut state)?;
         let event = advance(&mut state, to, now);
         let snapshot = state.snapshot(now);
@@ -360,8 +363,19 @@ impl RecordingController {
         }
     }
 
-    fn lock(&self) -> Option<MutexGuard<'_, ControllerState>> {
-        self.state.lock().ok()
+    /// The controller state, recovered rather than discarded if a
+    /// panic in another thread poisoned the mutex.
+    ///
+    /// Every mutation here runs to completion inside one closure and
+    /// leaves `ControllerState` logically consistent, so a poisoned
+    /// mutex carries no torn state to protect a caller from. Treating
+    /// it as unreadable failed closed in the wrong direction: capture
+    /// kept running while every surface rendered "not recording" and
+    /// every stop request — tray, hotkey, pill, and the signal bridge
+    /// gated on `Accepted` — was silently discarded, leaving a second
+    /// SIGINT as the only way to end the session.
+    fn lock(&self) -> MutexGuard<'_, ControllerState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -392,27 +406,6 @@ fn conflict(attempted: &str, state: RecordingState) -> ApplicationError {
         ErrorCode::RecordingStateConflict,
         format!("cannot {attempted} while {state:?}"),
     )
-}
-
-fn poisoned() -> ApplicationError {
-    ApplicationError::new(
-        ErrorCode::RecordingStateConflict,
-        "the recording state is unreadable after a panic in another thread",
-    )
-}
-
-/// The snapshot reported when the state cannot be read at all. Idle is
-/// the only safe answer: it offers no stop control and no running
-/// timer.
-const fn poisoned_snapshot() -> RecordingSnapshot {
-    RecordingSnapshot {
-        schema_version: RECORDING_EVENT_SCHEMA_VERSION,
-        state: RecordingState::Idle,
-        elapsed_ms: 0,
-        stop_requested: false,
-        stop_source: None,
-        failure: None,
-    }
 }
 
 #[cfg(test)]
@@ -766,6 +759,188 @@ mod tests {
         assert_eq!(
             *seen.lock().unwrap(),
             vec![RecordingState::Preparing, RecordingState::Recording]
+        );
+    }
+    #[test]
+    fn test_only_one_of_many_concurrent_stops_is_accepted() {
+        use std::sync::Barrier;
+
+        const THREADS: usize = 8;
+        const SOURCES: [StopSource; 4] = [
+            StopSource::Tray,
+            StopSource::Hotkey,
+            StopSource::FloatingWindow,
+            StopSource::Signal,
+        ];
+
+        // Every other idempotency test calls `request_stop`
+        // sequentially on one thread, and would pass just as well
+        // against a split-lock implementation where the
+        // `stop_requested` check, the flag set, the elapsed freeze, and
+        // the `Recording -> Saving` advance do not share one critical
+        // section. Gating N threads on a barrier is what exercises the
+        // race those tests cannot reach.
+        let (controller, _clock, recorded) = controller();
+        controller.begin_preparing().unwrap();
+        controller.mark_recording().unwrap();
+        let barrier = Barrier::new(THREADS);
+
+        let outcomes: Vec<StopAcceptance> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..THREADS)
+                .map(|index| {
+                    let controller = &controller;
+                    let barrier = &barrier;
+                    let source = SOURCES[index % SOURCES.len()];
+                    scope.spawn(move || {
+                        barrier.wait();
+                        controller.request_stop(source)
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .collect()
+        });
+
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|outcome| **outcome == StopAcceptance::Accepted)
+                .count(),
+            1,
+            "exactly one concurrent stop may be accepted: {outcomes:?}"
+        );
+        assert_eq!(
+            recorded
+                .transitions()
+                .iter()
+                .filter(|transition| **transition
+                    == (RecordingState::Recording, RecordingState::Saving))
+                .count(),
+            1,
+            "the capture-to-saving advance must be emitted exactly once"
+        );
+        let settled = controller.snapshot().stop_source;
+        assert!(settled.is_some());
+        assert_eq!(controller.snapshot().stop_source, settled);
+    }
+
+    /// Walks a fresh controller to `state`.
+    fn at(state: RecordingState) -> RecordingController {
+        let (controller, _clock, _recorded) = controller();
+        match state {
+            RecordingState::Idle => {}
+            RecordingState::Preparing => {
+                controller.begin_preparing().unwrap();
+            }
+            RecordingState::Recording => {
+                controller.begin_preparing().unwrap();
+                controller.mark_recording().unwrap();
+            }
+            RecordingState::Saving => {
+                controller.begin_preparing().unwrap();
+                controller.mark_recording().unwrap();
+                controller.begin_saving().unwrap();
+            }
+            RecordingState::Completed => {
+                controller.begin_preparing().unwrap();
+                controller.mark_recording().unwrap();
+                controller.begin_saving().unwrap();
+                controller.complete().unwrap();
+            }
+            RecordingState::Failed => {
+                controller.begin_preparing().unwrap();
+                controller.fail("boundary").unwrap();
+            }
+        }
+        assert_eq!(controller.snapshot().state, state);
+        controller
+    }
+
+    #[test]
+    fn test_every_state_accepts_exactly_the_transitions_the_machine_documents() {
+        // Rejection was previously asserted for three edges only. The
+        // most consequential gap was `complete` from `Recording`, which
+        // would make the whole finalization window invisible. Stating
+        // the full table means a future guard relaxation cannot pass
+        // silently.
+        const METHODS: [&str; 6] = [
+            "begin_preparing",
+            "mark_recording",
+            "begin_saving",
+            "complete",
+            "fail",
+            "acknowledge",
+        ];
+        let table: [(RecordingState, &[&str]); 6] = [
+            (RecordingState::Idle, &["begin_preparing"]),
+            (RecordingState::Preparing, &["mark_recording", "fail"]),
+            (RecordingState::Recording, &["begin_saving", "fail"]),
+            (RecordingState::Saving, &["complete", "fail"]),
+            (RecordingState::Completed, &["acknowledge"]),
+            (RecordingState::Failed, &["acknowledge"]),
+        ];
+
+        for (state, legal) in table {
+            for method in METHODS {
+                let controller = at(state);
+                let outcome = match method {
+                    "begin_preparing" => controller.begin_preparing(),
+                    "mark_recording" => controller.mark_recording(),
+                    "begin_saving" => controller.begin_saving(),
+                    "complete" => controller.complete(),
+                    "fail" => controller.fail("boundary"),
+                    _ => controller.acknowledge(),
+                };
+
+                if legal.contains(&method) {
+                    assert!(outcome.is_ok(), "{method} must be accepted while {state:?}");
+                } else {
+                    assert_eq!(
+                        outcome.unwrap_err().code(),
+                        ErrorCode::RecordingStateConflict,
+                        "{method} must be refused while {state:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_a_second_stop_while_preparing_leaves_the_accepted_source_unchanged() {
+        let (controller, _clock, _recorded) = controller();
+        controller.begin_preparing().unwrap();
+
+        assert_eq!(
+            controller.request_stop(StopSource::Hotkey),
+            StopAcceptance::Accepted
+        );
+        assert_eq!(
+            controller.request_stop(StopSource::Tray),
+            StopAcceptance::AlreadyStopping
+        );
+
+        assert_eq!(
+            controller.snapshot().stop_source,
+            Some(StopSource::Hotkey),
+            "the losing source must not overwrite the accepted one"
+        );
+    }
+
+    #[test]
+    fn test_a_stop_after_saving_has_begun_reports_that_a_stop_is_already_under_way() {
+        let (controller, _clock, _recorded) = controller();
+        controller.begin_preparing().unwrap();
+        controller.mark_recording().unwrap();
+        controller.begin_saving().unwrap();
+
+        // Finalization is under way whether or not a stop request
+        // started it, so a late request is neither accepted nor
+        // reported as nothing-recording.
+        assert_eq!(
+            controller.request_stop(StopSource::Tray),
+            StopAcceptance::AlreadyStopping
         );
     }
 }

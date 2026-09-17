@@ -3411,7 +3411,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
- "thiserror 1.0.69",
  "tokio",
  "toml",
  "toml_edit 0.20.2",

@@ -24,7 +24,7 @@ use scrybe_core::config::{ShellConfig, ShellIndicator};
 use tokio::runtime::Runtime;
 use tokio::sync::watch;
 
-use crate::commands::rec::{monitor_signals, run_with_stop, Args};
+use crate::commands::rec::{monitor_signals, run_with_stop, Args, RECORDING_FAILURE_SUMMARY};
 #[cfg(target_os = "macos")]
 use crate::floating_panel::{prepare_application, reduce_motion_enabled, FloatingPanel};
 use crate::hotkey::{HotkeyEvent, HotkeyListener, DEFAULT_STOP_ACCELERATOR};
@@ -264,13 +264,25 @@ pub fn run_record_with_shell(args: Args, runtime: &Runtime) -> Result<()> {
     let signal_handle = runtime.spawn(monitor_signals(move || {
         let _ = signal_tx.send(());
     }));
-    let task = runtime.spawn(run_with_stop(args, stop_rx));
-    controller.mark_recording().map_err(anyhow::Error::from)?;
+    // No `mark_recording` here. The controller stays `Preparing` until
+    // the pipeline publishes `SessionProgress::Recording`, which is the
+    // real capture boundary; `run_with_stop` drives both that and the
+    // entry into `Saving` from the controller it is handed. Marking
+    // recording at this point made every preflight failure inside
+    // `run_with_stop` look like a capture failure.
+    let task = runtime.spawn(run_with_stop(args, stop_rx, Some(Arc::clone(&controller))));
 
     let surface_result = pump_until_finished(&mut surfaces, &hotkey, &signal_rx, &stop, &task);
     let recording_result = runtime.block_on(task);
     signal_handle.abort();
-    let recording_result = recording_result.context("joining recording task")?;
+    // Every error exit from here settles the controller. A bare `?`
+    // would return with the controller stuck wherever it was, so every
+    // later snapshot would report a recording that is no longer running
+    // and the process could never start another.
+    let recording_result = match recording_result.context("joining recording task") {
+        Ok(result) => result,
+        Err(error) => return Err(settle_failure(&controller, error)),
+    };
     if let Err(recording_error) = recording_result {
         if let Err(surface_error) = surface_result {
             tracing::warn!(%surface_error, "shell surface also failed during recording teardown");
@@ -291,7 +303,13 @@ pub fn run_record_with_shell(args: Args, runtime: &Runtime) -> Result<()> {
 /// shell never has to decide whether a failure was preflight, capture,
 /// or finalization.
 fn settle_failure(controller: &RecordingController, error: anyhow::Error) -> anyhow::Error {
-    if let Err(conflict) = controller.fail(error.to_string()) {
+    // A fixed literal rather than `error.to_string()`: the summary is a
+    // `Serialize` field of `RecordingEvent` and `RecordingSnapshot`,
+    // and a surface-construction or hotkey-registration error can carry
+    // a device or accelerator identity. The detailed error is still
+    // returned to the caller and traced.
+    tracing::error!(%error, "recording attempt failed");
+    if let Err(conflict) = controller.fail(RECORDING_FAILURE_SUMMARY) {
         tracing::debug!(%conflict, "recording failure arrived in a state that cannot fail");
     }
     if let Err(conflict) = controller.acknowledge() {

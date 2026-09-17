@@ -14,15 +14,20 @@
 //!   Resolution only ever selects among folder names the repository
 //!   itself read from the configured root, so a resolved session is a
 //!   direct child of that root by construction.
-//! - **Cancellation.** Search reads every complete session's notes and
-//!   transcript. The token is checked between sessions, so an
-//!   abandoned search stops within one session's worth of I/O.
+//! - **Cancellation.** Search classifies every folder in the root on a
+//!   cold cache, then reads every complete session's notes and
+//!   transcript. The token is checked between folders in both passes
+//!   and again before the page is returned, so an abandoned search
+//!   stops within one session's worth of I/O and never hands back a
+//!   page belonging to a query the caller has already dropped.
 //! - **Coalesced invalidation.** One cheap fingerprint pass over the
-//!   root — the set of folder names and their modification times —
-//!   decides whether the whole cached scan is still valid. External
-//!   mutation by any other tool therefore invalidates the cache
-//!   without a watcher, and a burst of reads between two mutations
-//!   shares one scan instead of re-parsing every `meta.toml`.
+//!   root — the set of folder names, their modification times, and the
+//!   modification time of each `journal/` subdirectory that
+//!   classification reads into — decides whether the whole cached scan
+//!   is still valid. External mutation by any other tool therefore
+//!   invalidates the cache without a watcher, and a burst of reads
+//!   between two mutations shares one scan instead of re-parsing every
+//!   `meta.toml`.
 //!
 //! No lock is held across filesystem work. The cache mutex is taken to
 //! read a snapshot and released before any I/O, then taken again to
@@ -47,7 +52,7 @@ use crate::sessions::contract::{
     TranscriptCursor, TranscriptDocument, TranscriptPage,
 };
 use crate::sessions::scan::{
-    classify, Classified, FolderView, ScannedSession, NOTES_FILE, TRANSCRIPT_FILE,
+    classify, Classified, FolderView, ScannedSession, JOURNAL_DIR, NOTES_FILE, TRANSCRIPT_FILE,
 };
 use crate::Result;
 
@@ -90,7 +95,19 @@ pub trait NotesGenerator: Sync {
 /// modification times catch an artifact being created, replaced, or
 /// removed inside one. Both are what any external write to a session
 /// changes, including the atomic replaces the pipeline itself performs.
-type RootFingerprint = Vec<(String, Option<SystemTime>)>;
+///
+/// The journal subdirectory's own modification time is carried
+/// alongside the session folder's because classification reads
+/// `journal/manifest.toml`, one level deeper than the folder itself.
+/// POSIX bumps a directory's mtime only when its own dirent set
+/// changes, so writing the manifest moves `<session>/journal/` and
+/// leaves `<session>/` untouched. Without the second timestamp a scan
+/// taken between `journal/` being created and its manifest being
+/// written would cache the session as `Unfinished` against a
+/// fingerprint that never changes again, so repair would stay
+/// unavailable for a session `repair_session` could recover.
+type FolderFingerprint = (String, Option<SystemTime>, Option<SystemTime>);
+type RootFingerprint = Vec<FolderFingerprint>;
 
 struct CachedScan {
     fingerprint: RootFingerprint,
@@ -151,19 +168,23 @@ impl SessionRepository {
         request: &SearchRequest,
         cancel: &CancellationToken,
     ) -> Result<SearchPage> {
-        let sessions = self.scan()?;
+        let sessions = self.scan_until(Some(cancel))?;
         let needle = request.query.to_lowercase();
         let mut hits = Vec::new();
         for session in sessions.iter() {
             if cancel.is_cancelled() {
-                return Err(ApplicationError::new(
-                    ErrorCode::Cancelled,
-                    "search was cancelled before it completed",
-                ));
+                return Err(cancelled());
             }
             if self.matches(session, &needle) {
                 hits.push(summarize(session));
             }
+        }
+        // The loop's check precedes the last session's match, so a
+        // token cancelled while that session was being read would
+        // otherwise return `Ok` and hand the caller a page belonging to
+        // a query it has already abandoned.
+        if cancel.is_cancelled() {
+            return Err(cancelled());
         }
         Ok(Page::paginate(hits, request.page))
     }
@@ -397,6 +418,23 @@ impl SessionRepository {
     /// The current scan, reusing the cached one when the root is
     /// unchanged.
     fn scan(&self) -> Result<Arc<Vec<ScannedSession>>> {
+        self.scan_until(None)
+    }
+
+    /// The current scan, abandoning the classification pass as soon as
+    /// `cancel` fires.
+    ///
+    /// A cold cache classifies every folder in the root — a `read_dir`,
+    /// a `stat` per folder, up to three `exists` probes, and a
+    /// `meta.toml` read and parse each — which is far more than one
+    /// session's worth of I/O. Checking the token per folder is what
+    /// makes an abandoned search stop promptly on the first scan after
+    /// an invalidation, which is the common case for a frontend that
+    /// just repaired or regenerated a session.
+    ///
+    /// A cancelled pass caches nothing: the partial classification is
+    /// not the root's state and must not be served to the next caller.
+    fn scan_until(&self, cancel: Option<&CancellationToken>) -> Result<Arc<Vec<ScannedSession>>> {
         let fingerprint = self.fingerprint()?;
         if let Ok(cache) = self.cache.lock() {
             if let Some(cached) = cache.as_ref() {
@@ -407,7 +445,10 @@ impl SessionRepository {
         }
 
         let mut sessions = Vec::new();
-        for (name, _) in &fingerprint {
+        for (name, _, _) in &fingerprint {
+            if cancel.is_some_and(CancellationToken::is_cancelled) {
+                return Err(cancelled());
+            }
             // A folder whose name cannot form a confined identity is
             // not addressable through this layer, so it is omitted
             // rather than listed as something no caller could open.
@@ -460,7 +501,10 @@ impl SessionRepository {
                 continue;
             };
             let modified = entry.metadata().and_then(|meta| meta.modified()).ok();
-            fingerprint.push((name, modified));
+            let journal = std::fs::metadata(entry.path().join(JOURNAL_DIR))
+                .and_then(|meta| meta.modified())
+                .ok();
+            fingerprint.push((name, modified, journal));
         }
         fingerprint.sort();
         Ok(fingerprint)
@@ -560,6 +604,13 @@ impl FolderView for DirectoryView {
     fn read(&self, relative: &str) -> Option<String> {
         std::fs::read_to_string(self.folder.join(relative)).ok()
     }
+}
+
+fn cancelled() -> ApplicationError {
+    ApplicationError::new(
+        ErrorCode::Cancelled,
+        "search was cancelled before it completed",
+    )
 }
 
 fn contains(path: &Path, needle: &str) -> bool {
@@ -805,6 +856,45 @@ mod tests {
     }
 
     #[test]
+    fn test_a_cancelled_search_abandons_the_classification_pass_rather_than_completing_it() {
+        let tree = Tree::new();
+        for index in 0..5 {
+            tree.complete(&format!("2026-04-0{index}-0900-standup-01AA{index}"), "S");
+        }
+        let repository = tree.repository();
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        let error = repository
+            .search_sessions(&SearchRequest::new("standup"), &cancel)
+            .unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::Cancelled);
+        // A cold cache would have been populated by a scan that ran to
+        // completion. Nothing cached is what proves the classification
+        // pass itself stopped, rather than finishing and then failing
+        // the match loop.
+        assert!(repository.cache.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn test_a_search_cancelled_after_the_last_session_reports_cancellation() {
+        let tree = Tree::new();
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        // An empty root runs no loop iteration, so only the check that
+        // guards the successful return can fire. Without it the caller
+        // receives an `Ok` page belonging to a query it abandoned.
+        let error = tree
+            .repository()
+            .search_sessions(&SearchRequest::new("anything"), &cancel)
+            .unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::Cancelled);
+    }
+
+    #[test]
     fn test_search_is_paged() {
         let tree = Tree::new();
         for index in 0..5 {
@@ -871,6 +961,38 @@ mod tests {
             repository.get_session(&id("01HXYZ")).unwrap().state,
             SessionState::Complete
         );
+    }
+
+    #[test]
+    fn test_a_manifest_written_inside_the_journal_invalidates_the_cached_classification() {
+        let tree = Tree::new();
+        tree.journal_only("2026-04-29-1430-acme-01HXYZ");
+        let repository = tree.repository();
+        assert_eq!(
+            repository.get_session(&id("01HXYZ")).unwrap().state,
+            SessionState::Unfinished
+        );
+
+        // `scrybe-core` creates `journal/` on start and writes the
+        // manifest only on the first captured frame, so this is the
+        // real window a consumer can scan in. Creating the manifest
+        // moves `journal/`'s mtime and leaves the session folder's
+        // untouched, so a fingerprint over the session folder alone
+        // stays byte-identical and repair would never become available.
+        std::fs::write(
+            tree.dir
+                .path()
+                .join("2026-04-29-1430-acme-01HXYZ")
+                .join("journal")
+                .join("manifest.toml"),
+            b"",
+        )
+        .unwrap();
+
+        let detail = repository.get_session(&id("01HXYZ")).unwrap();
+
+        assert_eq!(detail.state, SessionState::Repairable);
+        assert!(detail.eligibility.repair);
     }
 
     #[test]

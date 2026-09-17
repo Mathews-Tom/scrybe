@@ -78,6 +78,10 @@ fn collect(
 }
 
 fn render(session: &SessionSummary) {
+    println!("{}", render_line(session));
+}
+
+fn render_line(session: &SessionSummary) -> String {
     let folder = session.id.as_str();
     match session.state {
         SessionState::Complete => {
@@ -86,26 +90,25 @@ fn render(session: &SessionSummary) {
                 .map_or_else(|| "?".to_string(), format_duration);
             let title = session.title.clone().unwrap_or_else(|| "(untitled)".into());
             let id = session.session_id.as_deref().unwrap_or("?");
-            println!("{folder:<48} {id:<28} {duration:<9} {title}");
+            format!("{folder:<48} {id:<28} {duration:<9} {title}")
         }
-        SessionState::Repairable => {
-            println!(
-                "{:<48} {:<28} {:<9} UNFINISHED — journal present, no audio.opus; run `scrybe repair {folder}`",
-                folder, "?", "?"
-            );
-        }
-        SessionState::Unfinished => {
-            println!(
-                "{:<48} {:<28} {:<9} UNFINISHED — nothing durable to recover; run `scrybe doctor`",
-                folder, "?", "?"
-            );
-        }
-        SessionState::Failed => {
-            println!(
-                "{:<48} {:<28} {:<9} FAILED — durable state is unreadable; inspect {folder}",
-                folder, "?", "?"
-            );
-        }
+        // A session is repairable by either of two routes — a journal
+        // with its manifest, or already-merged `audio.opus` missing
+        // only its metadata — and a summary does not say which. The
+        // hint names both rather than asserting one, because claiming
+        // "no audio.opus" is precisely wrong for the audio route.
+        SessionState::Repairable => format!(
+            "{:<48} {:<28} {:<9} UNFINISHED — a journal or merged audio survives; run `scrybe repair {folder}`",
+            folder, "?", "?"
+        ),
+        SessionState::Unfinished => format!(
+            "{:<48} {:<28} {:<9} UNFINISHED — nothing durable to recover; run `scrybe doctor`",
+            folder, "?", "?"
+        ),
+        SessionState::Failed => format!(
+            "{:<48} {:<28} {:<9} FAILED — durable state is unreadable; inspect {folder}",
+            folder, "?", "?"
+        ),
     }
 }
 
@@ -173,6 +176,51 @@ mod tests {
                 .map(|session| session.id.as_str())
                 .collect::<Vec<_>>(),
             vec!["2026-04-01-0900-alpha-01AAA", "2026-04-29-1430-beta-01BBB"]
+        );
+    }
+
+    fn only_session(root: &std::path::Path) -> SessionSummary {
+        let repository = session_repository(Some(root)).unwrap();
+        let mut sessions = collect(&repository).unwrap();
+
+        assert_eq!(sessions.len(), 1);
+        sessions.remove(0)
+    }
+
+    #[test]
+    fn test_a_session_repairable_from_its_journal_is_offered_repair() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("2026-04-29-1430-acme-01HXYZ");
+        std::fs::create_dir_all(path.join("journal")).unwrap();
+        std::fs::write(path.join("journal/manifest.toml"), "").unwrap();
+
+        let line = render_line(&only_session(dir.path()));
+
+        assert!(
+            line.contains("a journal or merged audio survives"),
+            "{line}"
+        );
+        assert!(
+            line.contains("scrybe repair 2026-04-29-1430-acme-01HXYZ"),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn test_a_session_repairable_from_its_audio_is_not_told_audio_is_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("2026-04-29-1430-acme-01HXYZ");
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(path.join("audio.opus"), "").unwrap();
+
+        let session = only_session(dir.path());
+        let line = render_line(&session);
+
+        assert_eq!(session.state, SessionState::Repairable);
+        assert!(!line.contains("no audio.opus"), "{line}");
+        assert!(
+            line.contains("a journal or merged audio survives"),
+            "{line}"
         );
     }
 }
