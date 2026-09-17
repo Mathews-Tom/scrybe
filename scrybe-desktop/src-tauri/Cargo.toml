@@ -25,6 +25,30 @@ crate-type = ["lib"]
 name = "scrybe-desktop"
 path = "src/main.rs"
 
+[features]
+# On by default, because the shipped application offers an in-app model
+# download and a build without this cannot perform one. It was default-
+# off once, and that was the bug: nothing turned it on — not
+# `tauri.conf.json`, not a build script, not a release pipeline — so
+# the only artifact ever built with it was a qualification candidate,
+# while a user who pressed `Download and verify this model` got told
+# the build carried no transport and handed a `Try again` button that
+# could never work.
+default = ["model-download"]
+# The managed model transport.
+#
+# Enabling it is the only thing in this tree that turns on
+# `scrybe-application`'s own default-off `model-download`, which that
+# crate leaves off so its own egress baselines stay clean. It stays a
+# named feature rather than an unconditional dependency so that
+# `--no-default-features` still resolves a host with no HTTP client at
+# all, which is what proves the gating is real rather than a label.
+#
+# `scripts/check-app-egress-baseline.py` pins both shapes: the shipped
+# graph must carry exactly the approved transport and nothing more, and
+# the graph with the feature off must carry none of it.
+model-download = ["scrybe-application/model-download"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

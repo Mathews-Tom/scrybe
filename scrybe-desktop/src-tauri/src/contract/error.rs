@@ -35,6 +35,11 @@ pub enum FailureCode {
     NotesGenerationFailed,
     RecordingStateConflict,
     PreflightFailed,
+    ModelManifestInvalid,
+    ModelUnknown,
+    ModelConfirmationRequired,
+    ModelStorageUnavailable,
+    ModelDownloadUnavailable,
 }
 
 impl From<ErrorCode> for FailureCode {
@@ -56,6 +61,11 @@ impl From<ErrorCode> for FailureCode {
             ErrorCode::NotesGenerationFailed => Self::NotesGenerationFailed,
             ErrorCode::RecordingStateConflict => Self::RecordingStateConflict,
             ErrorCode::PreflightFailed => Self::PreflightFailed,
+            ErrorCode::ModelManifestInvalid => Self::ModelManifestInvalid,
+            ErrorCode::ModelUnknown => Self::ModelUnknown,
+            ErrorCode::ModelConfirmationRequired => Self::ModelConfirmationRequired,
+            ErrorCode::ModelStorageUnavailable => Self::ModelStorageUnavailable,
+            ErrorCode::ModelDownloadUnavailable => Self::ModelDownloadUnavailable,
         }
     }
 }

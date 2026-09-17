@@ -229,7 +229,27 @@ LOC_CEILINGS: dict[str, int] = {
     # doctor/shell surfaces, which this layer generalizes rather than
     # copies. The `scrybe-core` and `scrybe-cli` ceilings do not move: the
     # migration deletes the duplicated scans it replaces.
-    "scrybe-application": 5200,
+    #
+    # Raised to 7000 for the managed model catalog and the guided-setup
+    # contracts the same stack builds on it. The catalog and manager
+    # measure 830 lines — the checked-in manifest's parser and its two
+    # validators, the serializable acquisition contracts, the
+    # transport-independent state machine with its free-space
+    # preflight, cancellation, exact size and digest verification and
+    # atomic promotion, the HTTP transport behind `model-download`, and
+    # the per-platform free-space probe — taking the measured figure
+    # from 5,189 to 6,097. The remaining 903 lines of headroom are
+    # sized for the rest of the stack in this layer rather than chosen
+    # round: a list-typed configuration value and the three new
+    # GUI-owned fields, the typed readiness snapshot, the model and
+    # local-notes-provider findings under the already-reserved
+    # `Providers` component, and the loopback reachability probe that
+    # does not exist today. Every behavioural test for all of it lives
+    # in `tests/`, which this script excludes, as the note above
+    # recommends; only the catalog's own whole-file duplicate rule and
+    # the free-space probe's two cases stayed inline, because neither
+    # is reachable through the public surface.
+    "scrybe-application": 7000,
     "scrybe-capture-mac": 2700,
     "scrybe-capture-linux": 2500,
     "scrybe-capture-win": 2500,
@@ -266,10 +286,24 @@ LOC_CEILINGS: dict[str, int] = {
     # commands and one tray item already measured here, which together
     # account for roughly that many lines.
     #
+    # Raised to 1,700 for guided setup. The measured figure is 1,111 and
+    # the headroom is spent on a shape this table has already seen
+    # priced once: the setup surface adds seven commands over the
+    # existing four — the configuration form and its update, the
+    # diagnostic report and its explicit repair, the readiness
+    # snapshot, the model plan, and the confirmed install with its
+    # cancellation — each forwarding to a service method, each with a
+    # narrowed transport projection beside it in `contract/`, and each
+    # with a capability entry. The four commands and three contract
+    # modules already here measure 396 lines between them, so roughly
+    # ninety lines per command-and-projection pair; seven pairs plus the
+    # tilde-expanding storage-root resolution and its cases is the
+    # 589 lines this adds.
+    #
     # The frontend is deliberately out of scope: this script measures
     # Rust only, and the TypeScript surface is governed by review rather
     # than by this gate.
-    "scrybe-desktop/src-tauri": 1200,
+    "scrybe-desktop/src-tauri": 1700,
 }
 
 

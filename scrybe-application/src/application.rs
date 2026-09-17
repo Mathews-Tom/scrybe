@@ -12,12 +12,13 @@
 //! would let two parts of the same frontend look at different roots or
 //! disagree about whether a recording is running.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::config::ConfigService;
 use crate::diagnostics::DiagnosticsService;
 use crate::identity::StorageRoot;
+use crate::models::ModelManager;
 use crate::recording::RecordingController;
 use crate::sessions::{SessionReader, SessionRepository};
 
@@ -28,18 +29,49 @@ pub struct ScrybeApplication {
     recording: Arc<RecordingController>,
     config: ConfigService,
     diagnostics: DiagnosticsService,
+    models: ModelManager,
 }
 
 impl ScrybeApplication {
     /// Assembles the services over `root`, reading configuration from
     /// `config_path`.
+    ///
+    /// The models directory is derived from the configured
+    /// `[stt].model` through `scrybe-core`'s own resolver, which is
+    /// also what the recorder loads a model through — so the directory
+    /// the manager installs into is by construction the directory the
+    /// runtime reads from. An absolute `[stt].model` therefore
+    /// redirects model storage along with everything else in a
+    /// disposable configuration, which is why no environment variable
+    /// of its own is needed.
     #[must_use]
     pub fn new(root: StorageRoot, config_path: impl Into<PathBuf>) -> Self {
+        let config = ConfigService::new(config_path);
+        let models_dir = models_dir_for(&config);
+        Self::assemble(root, config, models_dir)
+    }
+
+    /// The services over an explicit models directory.
+    ///
+    /// The resolution [`Self::new`] performs is a policy, and a test
+    /// that wants a disposable models directory should not have to
+    /// reproduce it.
+    #[must_use]
+    pub fn with_models_dir(
+        root: StorageRoot,
+        config_path: impl Into<PathBuf>,
+        models_dir: impl Into<PathBuf>,
+    ) -> Self {
+        Self::assemble(root, ConfigService::new(config_path), models_dir.into())
+    }
+
+    fn assemble(root: StorageRoot, config: ConfigService, models_dir: PathBuf) -> Self {
         Self {
             sessions: SessionRepository::new(root.clone()),
             recording: Arc::new(RecordingController::new()),
-            config: ConfigService::new(config_path),
+            config,
             diagnostics: DiagnosticsService::new(root),
+            models: ModelManager::new(models_dir),
         }
     }
 
@@ -82,11 +114,32 @@ impl ScrybeApplication {
         &self.diagnostics
     }
 
+    /// The managed model catalog, and acquiring what it describes.
+    #[must_use]
+    pub const fn models(&self) -> &ModelManager {
+        &self.models
+    }
+
     /// The configured storage root every session resolves beneath.
     #[must_use]
     pub const fn root(&self) -> &StorageRoot {
         self.sessions.root()
     }
+}
+
+/// Where managed models live, given the configuration at `config`.
+///
+/// Falls back to the platform default when the configuration cannot be
+/// read, because a frontend still has to be able to say where a model
+/// would go before the user has written a configuration file at all.
+fn models_dir_for(config: &ConfigService) -> PathBuf {
+    config
+        .load()
+        .ok()
+        .and_then(|loaded| scrybe_core::record_defaults::whisper_model_path(&loaded.stt.model))
+        .or_else(scrybe_core::record_defaults::default_whisper_model_path)
+        .and_then(|path| path.parent().map(Path::to_path_buf))
+        .unwrap_or_else(|| PathBuf::from("models"))
 }
 
 #[cfg(test)]

@@ -8,7 +8,7 @@
 // bottom and the drift check compares a stable byte sequence rather
 // than whatever order a hash map happened to produce.
 
-export type FailureCode = "invalid_session_id" | "session_not_found" | "ambiguous_session_id" | "storage_root_missing" | "storage_unavailable" | "metadata_unreadable" | "cancelled" | "not_applicable" | "config_unreadable" | "config_invalid" | "config_write_failed" | "diagnostics_unavailable" | "repair_failed" | "notes_generation_failed" | "recording_state_conflict" | "preflight_failed";
+export type FailureCode = "invalid_session_id" | "session_not_found" | "ambiguous_session_id" | "storage_root_missing" | "storage_unavailable" | "metadata_unreadable" | "cancelled" | "not_applicable" | "config_unreadable" | "config_invalid" | "config_write_failed" | "diagnostics_unavailable" | "repair_failed" | "notes_generation_failed" | "recording_state_conflict" | "preflight_failed" | "model_manifest_invalid" | "model_unknown" | "model_confirmation_required" | "model_storage_unavailable" | "model_download_unavailable";
 
 export type CommandFailure = { code: FailureCode, message: string, };
 

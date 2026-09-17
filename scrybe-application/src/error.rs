@@ -57,6 +57,18 @@ pub enum ErrorCode {
     RecordingStateConflict,
     /// Recording preflight failed; no session was created.
     PreflightFailed,
+    /// The checked-in model catalog does not describe a usable model.
+    ModelManifestInvalid,
+    /// No catalog entry carries the requested identity.
+    ModelUnknown,
+    /// A download was requested without the user's explicit
+    /// confirmation of the artifact they would be fetching.
+    ModelConfirmationRequired,
+    /// The models directory could not be read, created, or measured.
+    ModelStorageUnavailable,
+    /// This build carries no model transport, so nothing can be
+    /// fetched through it.
+    ModelDownloadUnavailable,
 }
 
 impl ErrorCode {
@@ -80,6 +92,11 @@ impl ErrorCode {
             Self::NotesGenerationFailed => "notes_generation_failed",
             Self::RecordingStateConflict => "recording_state_conflict",
             Self::PreflightFailed => "preflight_failed",
+            Self::ModelManifestInvalid => "model_manifest_invalid",
+            Self::ModelUnknown => "model_unknown",
+            Self::ModelConfirmationRequired => "model_confirmation_required",
+            Self::ModelStorageUnavailable => "model_storage_unavailable",
+            Self::ModelDownloadUnavailable => "model_download_unavailable",
         }
     }
 }
