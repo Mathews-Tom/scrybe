@@ -36,6 +36,7 @@
 //! domain between them say it is — so a configuration that looks local
 //! and answers routable is refused rather than dialled.
 
+use std::ffi::{OsStr, OsString};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
@@ -45,7 +46,7 @@ use url::{Host, Url};
 use crate::diagnostics::contract::{
     DiagnosticCode, DiagnosticComponent, DiagnosticFinding, RecoveryAction, Severity,
 };
-use crate::models::{ModelManager, ModelState};
+use crate::models::{ModelManager, ModelPlan, ModelState};
 
 /// How long a loopback connection is given before it is called
 /// unreachable. Generous for a process on the same machine, short
@@ -87,6 +88,13 @@ fn diagnose_transcription_model(
             return;
         }
     };
+    // `[stt].model` is a free-text field, and the catalog holds exactly
+    // one entry. Reporting the managed artifact's state regardless would
+    // answer for a file the runtime is not going to open.
+    if !loads_the_managed_artifact(config, &plan) {
+        diagnose_configured_transcription_model(config, models, &plan, findings);
+        return;
+    }
     match plan.state {
         ModelState::Ready => findings.push(super::service::finding(
             DiagnosticCode::TranscriptionModelPresent,
@@ -124,6 +132,84 @@ fn diagnose_transcription_model(
             Some(RecoveryAction::InstallTranscriptionModel { id: plan.id }),
         )),
     }
+}
+
+/// Whether the file the runtime will open is the catalog's artifact.
+///
+/// Compared by filename rather than by whole path, and that is not a
+/// shortcut: `Application::models_dir_for` resolves the models
+/// directory from `whisper_model_path(&stt.model)` — the same value —
+/// so the directory agrees by construction and cannot be what differs.
+/// What can differ is which artifact the configuration names, and that
+/// is the filename.
+fn loads_the_managed_artifact(config: &Config, plan: &ModelPlan) -> bool {
+    configured_artifact_name(config).as_deref() == Some(OsStr::new(&plan.destination))
+}
+
+/// The filename `[stt].model` resolves to, by the one rule the runtime
+/// uses to resolve it.
+fn configured_artifact_name(config: &Config) -> Option<OsString> {
+    scrybe_core::record_defaults::whisper_model_path(&config.stt.model)?
+        .file_name()
+        .map(OsStr::to_os_string)
+}
+
+/// What to report when `[stt].model` names something other than the
+/// catalog's artifact.
+///
+/// The managed model's state is not reported at all here, because it is
+/// not the file that will load and saying it is installed would be the
+/// defect this branch exists to avoid. Neither is installing it offered
+/// as the recovery: it would not change what loads. What is reported is
+/// whether the configured file is there, named so the reader can see
+/// which one was checked.
+fn diagnose_configured_transcription_model(
+    config: &Config,
+    models: &ModelManager,
+    plan: &ModelPlan,
+    findings: &mut Vec<DiagnosticFinding>,
+) {
+    let Some(name) = configured_artifact_name(config) else {
+        findings.push(super::service::finding(
+            DiagnosticCode::TranscriptionModelUnreadable,
+            Severity::Error,
+            DiagnosticComponent::Providers,
+            format!(
+                "local transcription is configured to load {}, which does not resolve to a file on this Mac",
+                config.stt.model
+            ),
+            Some(RecoveryAction::ReviewConfiguration),
+        ));
+        return;
+    };
+    let path = models.models_dir().join(&name);
+    if path.is_file() {
+        findings.push(super::service::finding(
+            DiagnosticCode::TranscriptionModelPresent,
+            Severity::Info,
+            DiagnosticComponent::Providers,
+            format!(
+                "local transcription will load {}, which is present. It is not the managed model {}, \
+                 so its contents are not checked against the catalog",
+                path.display(),
+                plan.id
+            ),
+            None,
+        ));
+        return;
+    }
+    findings.push(super::service::finding(
+        DiagnosticCode::TranscriptionModelAbsent,
+        Severity::Error,
+        DiagnosticComponent::Providers,
+        format!(
+            "local transcription is configured to load {}, and no file is there. The managed model {} \
+             is a different artifact, so installing it would not change what loads",
+            path.display(),
+            plan.id
+        ),
+        Some(RecoveryAction::ReviewConfiguration),
+    ));
 }
 
 /// Every `.partial` under the models directory.

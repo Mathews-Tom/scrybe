@@ -498,3 +498,66 @@ fn walk(dir: &Path, out: &mut Vec<String>) {
         }
     }
 }
+
+/// `[stt].model` is a free-text field and the catalog holds one entry,
+/// so readiness computed for the catalog's artifact would answer for a
+/// file the runtime is never going to open.
+#[test]
+fn test_a_configured_model_that_is_not_the_managed_one_is_reported_on_its_own_terms() {
+    let install = Install::new();
+    let body = "schema_version = 1\n\n\
+                [stt]\nprovider = \"whisper-local\"\nmodel = \"medium.en\"\n\n\
+                [llm]\nbase_url = \"https://notes.example/v1\"\n";
+    // The managed artifact is installed and valid. It is still not what
+    // this configuration loads, so it must not be reported as if it were.
+    install.seed_model_partial("ggml-small.en.bin");
+
+    let report = install.report(body);
+
+    let found = report
+        .findings
+        .iter()
+        .find(|finding| finding.code == DiagnosticCode::TranscriptionModelAbsent)
+        .expect("no finding about the model that will actually load");
+    assert!(
+        found.summary.contains("ggml-medium.en.bin"),
+        "the finding does not name the model that was checked: {:?}",
+        found.summary
+    );
+    assert!(
+        !codes(&report).contains(&DiagnosticCode::TranscriptionModelPresent),
+        "the managed artifact was reported ready for a configuration that does not load it"
+    );
+    assert_eq!(
+        found.recovery_action,
+        Some(RecoveryAction::ReviewConfiguration),
+        "installing the managed model was offered, which would not change what loads"
+    );
+}
+
+#[test]
+fn test_a_configured_model_that_is_present_is_reported_present_and_unverified() {
+    let install = Install::new();
+    let body = "schema_version = 1\n\n\
+                [stt]\nprovider = \"whisper-local\"\nmodel = \"medium.en\"\n\n\
+                [llm]\nbase_url = \"https://notes.example/v1\"\n";
+    install.seed_model_partial("ggml-medium.en.bin");
+
+    let report = install.report(body);
+
+    let found = report
+        .findings
+        .iter()
+        .find(|finding| finding.code == DiagnosticCode::TranscriptionModelPresent)
+        .expect("a present configured model produced no finding");
+    assert!(
+        found.summary.contains("ggml-medium.en.bin"),
+        "the finding does not name the model that was checked: {:?}",
+        found.summary
+    );
+    assert!(
+        found.summary.contains("not checked against the catalog"),
+        "a model outside the catalog was reported as if it had been verified: {:?}",
+        found.summary
+    );
+}
