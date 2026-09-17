@@ -181,13 +181,51 @@ body {
   list-style: none;
 }
 
+.session-list__day + .session-list__day {
+  margin-top: 1.25rem;
+}
+
+.session-list__date {
+  margin: 0 0 0.5rem;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
 .session-list__row {
   display: flex;
   flex-direction: column;
   gap: 0.125rem;
   padding: 0.625rem 0.75rem;
   border: 1px solid var(--border);
+  border-left-width: 3px;
   border-radius: 0.375rem;
+}
+
+/*
+ * A session that did not finish, and one that can be recovered, are the
+ * two rows a reader is looking for in a list of sessions that mostly
+ * completed, so each is marked twice: by the state its own label spells
+ * out, and by the edge below. The edge is redundant on purpose --
+ * colour alone would carry nothing to a reader who cannot see it, and
+ * the label alone would carry nothing to one scanning the list.
+ */
+.session-list__row[data-progress="repairable"] {
+  border-left-color: var(--accent);
+}
+
+.session-list__row[data-progress="unfinished"],
+.session-list__row[data-progress="failed"] {
+  border-left-color: var(--danger);
+}
+
+.session-list__row[data-progress="repairable"] .session-list__state {
+  color: var(--accent);
+}
+
+.session-list__row[data-progress="unfinished"] .session-list__state,
+.session-list__row[data-progress="failed"] .session-list__state {
+  color: var(--danger);
 }
 
 .session-list__title {

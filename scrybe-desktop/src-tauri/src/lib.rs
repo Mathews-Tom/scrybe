@@ -22,6 +22,7 @@
 pub mod commands;
 pub mod contract;
 pub mod lifecycle;
+pub mod queries;
 pub mod setup;
 pub mod state;
 
@@ -99,6 +100,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         .invoke_handler(tauri::generate_handler![
             commands::list_sessions,
             commands::search_sessions,
+            commands::cancel_query,
             commands::settings_summary,
             commands::recording_status,
             setup::settings_form,

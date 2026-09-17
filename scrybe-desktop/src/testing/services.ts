@@ -27,6 +27,7 @@ export function servicesReturning(overrides: Partial<Scrybe> = {}): Scrybe {
   return {
     listSessions: () => Promise.resolve(page([])),
     searchSessions: () => Promise.resolve(page([])),
+    cancelQuery: () => Promise.resolve(false),
     settingsSummary: () => Promise.resolve(settings()),
     recordingStatus: () => Promise.resolve(idle()),
     settingsForm: () => Promise.resolve(settingsFormFixture()),

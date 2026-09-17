@@ -23,6 +23,7 @@
 const COMMANDS: &[&str] = &[
     "list_sessions",
     "search_sessions",
+    "cancel_query",
     "settings_summary",
     "recording_status",
     "settings_form",

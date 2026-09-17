@@ -15,6 +15,7 @@ import type {
   SettingsSummary,
 } from "../generated/bindings";
 import {
+  cancelQuery,
   listSessions,
   recordingStatus,
   searchSessions,
@@ -44,11 +45,19 @@ import {
  */
 export interface Scrybe {
   listSessions: (offset: number, limit: number) => Promise<SessionRows>;
+  /**
+   * `requestId` names the search, so `cancelQuery` can abandon it. A
+   * view mints one per query and cancels the previous identifier before
+   * firing the next.
+   */
   searchSessions: (
+    requestId: string,
     query: string,
     offset: number,
     limit: number,
   ) => Promise<SessionRows>;
+  /** Whether a query was running under `requestId`. */
+  cancelQuery: (requestId: string) => Promise<boolean>;
   settingsSummary: () => Promise<SettingsSummary>;
   recordingStatus: () => Promise<RecordingStatus>;
   settingsForm: () => Promise<SettingsForm>;
@@ -79,6 +88,7 @@ export interface Scrybe {
 const REAL: Scrybe = {
   listSessions,
   searchSessions,
+  cancelQuery,
   settingsSummary,
   recordingStatus,
   settingsForm,

@@ -21,6 +21,7 @@ import {
 export const COMMANDS = [
   "list_sessions",
   "search_sessions",
+  "cancel_query",
   "settings_summary",
   "recording_status",
   ...SETUP_COMMANDS,
@@ -31,13 +32,33 @@ export function listSessions(offset: number, limit: number): Promise<SessionRows
   return invoke<SessionRows>("list_sessions", { offset, limit });
 }
 
-/** One page of the sessions matching `query`. */
+/**
+ * One page of the sessions matching `query`.
+ *
+ * `requestId` names this search so a later `cancelQuery` can reach it.
+ * A cancellation token does not cross the IPC boundary and `invoke` has
+ * no abort, so naming the call is the only way to abandon it.
+ */
 export function searchSessions(
+  requestId: string,
   query: string,
   offset: number,
   limit: number,
 ): Promise<SessionRows> {
-  return invoke<SessionRows>("search_sessions", { query, offset, limit });
+  return invoke<SessionRows>("search_sessions", {
+    requestId,
+    query,
+    offset,
+    limit,
+  });
+}
+
+/**
+ * Asks the query named `requestId` to stop, and resolves with whether
+ * one was running under that name.
+ */
+export function cancelQuery(requestId: string): Promise<boolean> {
+  return invoke<boolean>("cancel_query", { requestId });
 }
 
 /** The configuration, narrowed to what the settings view renders. */

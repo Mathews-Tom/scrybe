@@ -17,9 +17,12 @@ use std::path::{Path, PathBuf};
 use scrybe_application::config::ConfigService;
 use scrybe_application::{ApplicationError, ScrybeApplication, StorageRoot};
 
+use crate::queries::LiveQueries;
+
 /// Everything Tauri-managed state holds.
 pub struct Desktop {
     application: ScrybeApplication,
+    queries: LiveQueries,
 }
 
 impl Desktop {
@@ -52,6 +55,7 @@ impl Desktop {
     pub fn new(root: StorageRoot, config_path: PathBuf) -> Self {
         Self {
             application: ScrybeApplication::new(root, config_path),
+            queries: LiveQueries::default(),
         }
     }
 
@@ -59,6 +63,17 @@ impl Desktop {
     #[must_use]
     pub const fn application(&self) -> &ScrybeApplication {
         &self.application
+    }
+
+    /// The cancellation tokens of the reads currently in flight.
+    ///
+    /// Held beside the services rather than inside them: which query a
+    /// frontend has abandoned is a fact about this host's IPC boundary,
+    /// and the service layer is shared with a command-line tool that
+    /// has no such boundary.
+    #[must_use]
+    pub const fn queries(&self) -> &LiveQueries {
+        &self.queries
     }
 }
 
