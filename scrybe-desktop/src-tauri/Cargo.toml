@@ -47,5 +47,10 @@ unwrap_used = "warn"
 expect_used = "warn"
 panic = "warn"
 
+# `toml` is already resolved in this graph by `tauri-build`, so naming it
+# here adds no crate to the audited surface. It is what lets
+# `tests/capability_audit.rs` read a TOML capability file rather than
+# skip one, which `tauri-utils` loads unconditionally.
 [dev-dependencies]
 tempfile = "3.27.0"
+toml = "0.8"
