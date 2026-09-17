@@ -1,0 +1,22 @@
+# The managed model catalog.
+#
+# Every field here is evidence, not a default a reader may adjust: the
+# manager refuses to fetch anything whose bytes and digest do not match
+# these values exactly, so a wrong entry installs nothing rather than
+# installing the wrong thing. `source_url` is pinned to an immutable
+# revision on purpose — a `resolve/main` URL names whatever the branch
+# points at today, which no checked-in digest can describe.
+#
+# Validation lives in `src/models/manifest.rs` and runs over this file
+# in a test, so a malformed or unpinned entry fails the build rather
+# than the first download.
+
+[[model]]
+id = "whisper-small-en"
+source_url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-small.en.bin"
+source_revision = "5359861c739e955e79d9a303bcbc70fb988958b1"
+license = "MIT"
+size_bytes = 487614201
+sha256 = "c6138d6d58ecc8322097e0f987c32f1be8bb0a18532a3f88f734d1bbf9c41e5d"
+runtime = "whisper-rs 0.13 (GGML)"
+destination = "ggml-small.en.bin"

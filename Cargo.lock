@@ -3407,15 +3407,18 @@ dependencies = [
  "chrono",
  "libc",
  "pretty_assertions",
+ "reqwest",
  "scrybe-meeting-core",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "tokio",
  "toml",
  "toml_edit 0.20.2",
  "url",
  "windows-sys 0.59.0",
+ "wiremock",
 ]
 
 [[package]]

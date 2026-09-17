@@ -22,13 +22,25 @@ default = []
 # JSON-RPC/MCP surface itself only compiles in when a consumer opts in.
 # Adds no dependency; built on `serde_json`, already a dependency below.
 agent-access = []
+# The HTTP transport managed model acquisition reads artifacts through.
+# Off by default, mirroring `scrybe-core`'s `openai-compat`: every other
+# property of the manager — the confirmation gate, free-space
+# preflight, cancellation, exact size and digest verification, atomic
+# promotion, refusal to replace an installed artifact — is transport
+# independent and is exercised in a build that carries no network crate
+# at all. Only `scrybe-desktop/src-tauri`'s own default-off
+# `model-download` feature turns this on, so both egress baselines and
+# the desktop lifecycle qualification keep reading a clean graph.
+model-download = ["dep:reqwest"]
 
 [dependencies]
 async-trait.workspace = true
 chrono.workspace = true
+reqwest = { workspace = true, optional = true }
 scrybe-core = { package = "scrybe-meeting-core", path = "../scrybe-core", version = "=1.6.0" }
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 toml.workspace = true
 toml_edit.workspace = true
 url.workspace = true
@@ -36,7 +48,14 @@ url.workspace = true
 [dev-dependencies]
 pretty_assertions = "1"
 tempfile.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+# `net` is what the local fixture server binds a listener with, exactly
+# as `scrybe-core`'s provider tests do. A dev edge, invisible to the
+# egress baselines, which resolve normal edges only.
+tokio = { version = "1.42", features = ["macros", "net", "rt-multi-thread"] }
+# The same local fixture server `scrybe-core`'s provider tests use. A
+# dev dependency, so it stays out of the graph the egress baselines
+# read, which resolve normal edges only.
+wiremock.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
