@@ -2048,15 +2048,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_a_capture_side_failure_is_not_labelled_finalization() {
-        let cfg_dir = tempfile::tempdir().unwrap();
-        std::env::set_var("SCRYBE_CONFIG", cfg_dir.path().join("no-such-config.toml"));
-        let dir = tempfile::tempdir().unwrap();
-
         let (controller, events) = observed_controller();
         controller.begin_preparing().unwrap();
         controller.mark_recording().unwrap();
-        let _ = dir;
 
+        // `settle` must call `fail` from `Recording` rather than
+        // advancing through `begin_saving` first: the controller derives
+        // the label from the state it is in, so an extra advance here
+        // would relabel every capture-side failure as finalization. That
+        // ordering is this crate's, not the controller's, which is what
+        // this test adds over the controller's own labelling test.
         settle(&controller, Some(&anyhow::anyhow!("capture stream ended")));
 
         assert_eq!(
