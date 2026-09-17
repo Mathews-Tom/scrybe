@@ -136,16 +136,38 @@ BUNDLE_IDENTIFIER = "dev.scrybe.desktop"
 BUNDLE_NAME = "Scrybe.app"
 EXECUTABLE = "scrybe-desktop"
 
+# The bundle this checkout's own build produces. `build_candidate` and
+# `PROCESS_PATTERN` both need this exact path, and they must agree: a
+# process match built from anything looser than the candidate this run
+# itself built is a match against every other checkout's candidate too.
+CANDIDATE_BUNDLE = HOST / "target" / "debug" / "bundle" / "macos" / BUNDLE_NAME
+
 # What `pgrep -f` is given, rather than the path itself.
 #
 # `pgrep -f` matches against whole command lines, and a `pgrep`
 # invocation's own command line contains the pattern it was given. It
 # excludes itself, but not another `pgrep` running the same query
 # concurrently — which the socket sampler does, from its own thread, for
-# the whole run. Bracketing the first character makes the pattern a
-# regular expression that matches the application's command line and not
-# the command line of any process carrying the pattern literally.
-PROCESS_PATTERN = f"[{BUNDLE_NAME[0]}]{BUNDLE_NAME[1:]}/Contents/MacOS/{EXECUTABLE}"
+# the whole run. Bracketing the bundle name's first character makes
+# that part of the pattern a regular expression that matches the
+# application's command line and not the command line of the pgrep
+# invocation itself, which carries the brackets literally.
+#
+# The rest of the pattern is anchored to this checkout's own absolute
+# build path, not just the bundle's relative shape. A pattern built
+# from the bare "Scrybe.app/Contents/MacOS/scrybe-desktop" suffix
+# matches the candidate built by every worktree of this repository, and
+# `terminate` sends `kill -9` to everything `pgrep` finds — so two
+# concurrent checkouts each running their own qualification would
+# `kill -9` each other's candidate mid-scenario. `re.escape` covers
+# whatever this checkout happens to be named or nested under; it runs
+# on the parent directory only, so the bracket trick above still has an
+# unescaped character to work with.
+PROCESS_PATTERN = (
+    f"{re.escape(str(CANDIDATE_BUNDLE.parent))}/"
+    f"[{BUNDLE_NAME[0]}]{re.escape(BUNDLE_NAME[1:])}"
+    f"/Contents/MacOS/{re.escape(EXECUTABLE)}"
+)
 
 LIFECYCLE_RECORD = ".desktop-lifecycle.jsonl"
 CONTROL_SOCKET = ".desktop-control.sock"
@@ -375,7 +397,7 @@ def build_candidate() -> Path:
         cwd=REPO_ROOT,
         check=True,
     )
-    bundle = HOST / "target" / "debug" / "bundle" / "macos" / BUNDLE_NAME
+    bundle = CANDIDATE_BUNDLE
     if not bundle.is_dir():
         raise RuntimeError(f"the candidate bundle was not produced at {bundle}")
     return bundle
