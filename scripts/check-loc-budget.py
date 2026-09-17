@@ -308,7 +308,7 @@ LOC_CEILINGS: dict[str, int] = {
     # rather than silently disappearing. That module alone measures 478
     # of the 906 lines under `contract/`.
     #
-    # Raised from 2300 to 2950 for the session library. Derived, not
+    # Raised from 2300 to 3000 for the session library. Derived, not
     # rounded, from what the measured figure did and what the rest of
     # this layer still owes:
     #
@@ -320,12 +320,19 @@ LOC_CEILINGS: dict[str, int] = {
     #         projects eleven types rather than the three `session.rs`
     #         carried
     #   =2611 measured
-    #   +339  the audio protocol: the scheme handler, the byte-range
+    #   +370  the audio protocol: the scheme handler, the byte-range
     #         parsing written by hand because Tauri supplies none, the
     #         typed refusals for a missing or unfinished artifact, and
-    #         the confinement tests that drive the registered handler
-    #         rather than the path helper underneath it
-    #   =2950
+    #         the debug-only probe that drives the real webview at a
+    #         real URL on the scheme — the only thing that can tell a
+    #         correctly-admitted scheme from one admitted under the
+    #         wrong policy directive. The confinement and range tests
+    #         live in `tests/`, which this gate excludes.
+    #   =2981 measured
+    #
+    # The ceiling is 3000. The last 19 lines are margin for maintenance
+    # inside this layer, not a reservation for anything named: no
+    # further work in this stack adds Rust here.
     #
     # Recording control, which this table used to reserve 140 lines
     # for, is not in that sum: it has not landed and its ceiling should
@@ -338,7 +345,7 @@ LOC_CEILINGS: dict[str, int] = {
     # The frontend is deliberately out of scope: this script measures
     # Rust only, and the TypeScript surface is governed by review rather
     # than by this gate.
-    "scrybe-desktop/src-tauri": 2950,
+    "scrybe-desktop/src-tauri": 3000,
 }
 
 

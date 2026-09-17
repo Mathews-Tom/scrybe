@@ -3,6 +3,7 @@ import { useState } from "react";
 import { useScrybe } from "../../ipc/ScrybeProvider";
 import { useStorageRootRevision } from "../library";
 import { useQuery } from "../useQuery";
+import { PlaybackPanel } from "./PlaybackPanel";
 import { SessionActions, type Outcome } from "./SessionActions";
 import { SessionFacts } from "./SessionFacts";
 import { TranscriptPanel } from "./TranscriptPanel";
@@ -101,6 +102,14 @@ export function SessionDetail({ id, onBack }: { id: string; onBack: () => void }
         }}
       />
       {said}
+      {/*
+        Offered only for a session whose playback artifact is actually
+        there. A player rendered for a session without one would be the
+        misleading affordance this whole surface exists to avoid: the
+        reader presses play and learns nothing about why nothing
+        happened.
+      */}
+      {detail.artifacts.playback ? <PlaybackPanel id={detail.id} /> : null}
       {/*
         Two buttons rather than a tablist. A tablist owes the reader a
         roving tabindex and arrow-key movement, and buys nothing here:

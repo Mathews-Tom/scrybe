@@ -26,6 +26,8 @@ pub mod menu;
 #[cfg(debug_assertions)]
 pub mod model_probe;
 pub mod navigation;
+#[cfg(debug_assertions)]
+pub mod playback_probe;
 pub mod tray;
 pub mod window;
 

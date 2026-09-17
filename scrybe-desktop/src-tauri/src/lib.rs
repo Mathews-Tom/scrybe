@@ -22,6 +22,7 @@
 pub mod commands;
 pub mod contract;
 pub mod lifecycle;
+pub mod playback;
 pub mod queries;
 pub mod setup;
 pub mod state;
@@ -59,6 +60,12 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         // because the main window is created from configuration before
         // any of this crate's code runs.
         .plugin(navigation::guard())
+        // The one scheme this application registers, and the only way
+        // an `<audio>` element can name a file under the storage root.
+        // Registered as `playback::serve` itself rather than through a
+        // closure, so what the tests drive is what the application
+        // answers with.
+        .register_uri_scheme_protocol(playback::SCHEME, playback::serve)
         .manage(desktop)
         // One acquisition at a time, so a cancel command can reach
         // whichever install is running without the frontend having to
