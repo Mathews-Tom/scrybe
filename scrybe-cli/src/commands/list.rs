@@ -180,8 +180,8 @@ mod tests {
     }
 
     fn only_session(root: &std::path::Path) -> SessionSummary {
-        let repository = session_repository(Some(root)).unwrap();
-        let mut sessions = collect(&repository).unwrap();
+        let app = application(Some(root)).unwrap();
+        let mut sessions = collect(app.sessions()).unwrap();
 
         assert_eq!(sessions.len(), 1);
         sessions.remove(0)
