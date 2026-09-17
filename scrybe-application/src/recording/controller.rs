@@ -170,7 +170,7 @@ impl RecordingController {
     /// [`ErrorCode::RecordingStateConflict`] unless the controller is
     /// idle.
     pub fn begin_preparing(&self) -> Result<RecordingSnapshot> {
-        self.transition(RecordingState::Preparing, |state| {
+        self.transition(|state| {
             if !state.state.accepts_start() {
                 return Err(conflict("start", state.state));
             }
@@ -178,7 +178,7 @@ impl RecordingController {
                 sequence: state.sequence,
                 ..ControllerState::idle()
             };
-            Ok(())
+            Ok(RecordingState::Preparing)
         })
     }
 
@@ -194,23 +194,20 @@ impl RecordingController {
     /// preparing.
     pub fn mark_recording(&self) -> Result<RecordingSnapshot> {
         let now = self.clock.now();
-        let stopped_during_preflight = self
-            .lock()
-            .is_some_and(|state| state.stop_requested && state.state == RecordingState::Preparing);
-        let target = if stopped_during_preflight {
-            RecordingState::Saving
-        } else {
-            RecordingState::Recording
-        };
-        self.transition(target, move |state| {
+        // Reading the pending stop and choosing the target happen under
+        // the same lock as the transition. Splitting them would let a
+        // stop accepted in between be swallowed into `Recording`, with
+        // no surface ever seeing the `Saving` transition it asked for.
+        self.transition(move |state| {
             if state.state != RecordingState::Preparing {
                 return Err(conflict("begin recording", state.state));
             }
             state.started_at = Some(now);
-            if stopped_during_preflight {
+            if state.stop_requested {
                 state.frozen_elapsed = Some(Duration::ZERO);
+                return Ok(RecordingState::Saving);
             }
-            Ok(())
+            Ok(RecordingState::Recording)
         })
     }
 
@@ -266,12 +263,12 @@ impl RecordingController {
     /// recording.
     pub fn begin_saving(&self) -> Result<RecordingSnapshot> {
         let now = self.clock.now();
-        self.transition(RecordingState::Saving, move |state| {
+        self.transition(move |state| {
             if state.state != RecordingState::Recording {
                 return Err(conflict("begin saving", state.state));
             }
             state.frozen_elapsed = Some(state.elapsed(now));
-            Ok(())
+            Ok(RecordingState::Saving)
         })
     }
 
@@ -282,11 +279,11 @@ impl RecordingController {
     /// [`ErrorCode::RecordingStateConflict`] unless the controller is
     /// saving.
     pub fn complete(&self) -> Result<RecordingSnapshot> {
-        self.transition(RecordingState::Completed, |state| {
+        self.transition(|state| {
             if state.state != RecordingState::Saving {
                 return Err(conflict("complete", state.state));
             }
-            Ok(())
+            Ok(RecordingState::Completed)
         })
     }
 
@@ -302,7 +299,7 @@ impl RecordingController {
     /// flight to fail.
     pub fn fail(&self, summary: impl Into<String>) -> Result<RecordingSnapshot> {
         let summary = summary.into();
-        self.transition(RecordingState::Failed, move |state| {
+        self.transition(move |state| {
             let kind = match state.state {
                 RecordingState::Preparing => RecordingFailureKind::Preflight,
                 RecordingState::Recording => RecordingFailureKind::Capture,
@@ -310,7 +307,7 @@ impl RecordingController {
                 other => return Err(conflict("fail", other)),
             };
             state.failure = Some(RecordingFailure::new(kind, summary));
-            Ok(())
+            Ok(RecordingState::Failed)
         })
     }
 
@@ -322,7 +319,7 @@ impl RecordingController {
     /// [`ErrorCode::RecordingStateConflict`] unless the controller has
     /// completed or failed.
     pub fn acknowledge(&self) -> Result<RecordingSnapshot> {
-        self.transition(RecordingState::Idle, |state| {
+        self.transition(|state| {
             if !state.state.is_terminal() {
                 return Err(conflict("acknowledge", state.state));
             }
@@ -334,18 +331,22 @@ impl RecordingController {
             state.stop_requested = false;
             state.stop_source = None;
             state.failure = None;
-            Ok(())
+            Ok(RecordingState::Idle)
         })
     }
 
+    /// Runs one transition end to end under a single lock acquisition.
+    ///
+    /// `mutate` both applies the change and chooses the target state,
+    /// so a decision can never be made against state that has moved on
+    /// by the time the transition is applied.
     fn transition(
         &self,
-        to: RecordingState,
-        mutate: impl FnOnce(&mut ControllerState) -> Result<()>,
+        mutate: impl FnOnce(&mut ControllerState) -> Result<RecordingState>,
     ) -> Result<RecordingSnapshot> {
         let now = self.clock.now();
         let mut state = self.lock().ok_or_else(poisoned)?;
-        mutate(&mut state)?;
+        let to = mutate(&mut state)?;
         let event = advance(&mut state, to, now);
         let snapshot = state.snapshot(now);
         drop(state);
