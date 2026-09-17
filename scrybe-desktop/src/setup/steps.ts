@@ -46,10 +46,13 @@ export function stepBefore(id: Step["id"]): Step | undefined {
  *
  * Derived from readiness rather than from a "setup completed" flag.
  * A flag would have to be written somewhere, would go stale the moment
- * a model was deleted or a permission revoked, and would mean a user
- * whose install broke was shown a session list that could not record.
- * The question the wizard exists to answer is whether this install can
- * record, so that is the question asked.
+ * a model was deleted, and would mean a user whose install broke was
+ * shown a session list that could not record. A revoked capture
+ * permission is not among the things that can take it back: nothing in
+ * this release detects one, and readiness reports capture as not
+ * checked rather than claiming it works. The question the wizard
+ * exists to answer is whether this install can record, so that is the
+ * question asked.
  */
 export function needsSetup(readiness: ReadinessReport): boolean {
   return !readiness.can_record;

@@ -26,6 +26,11 @@ export function SetupWizard({ onExit }: { onExit: () => void }) {
   const scrybe = useScrybe();
   const [step, setStep] = useState<Step>(firstStep);
   const [generation, setGeneration] = useState(0);
+  // The write confirmation lives here rather than inside `RecordingStep`.
+  // Saving calls `recordingSaved`, which reloads settings and readiness
+  // and unmounts that step while the reload is in flight — a flag set
+  // beside the write was destroyed before it could ever render.
+  const [saved, setSaved] = useState(false);
   const { readiness, recheck } = useReadiness();
   const settings = useQuery(() => scrybe.settingsForm(), `settings:${String(generation)}`);
 
@@ -33,6 +38,16 @@ export function SetupWizard({ onExit }: { onExit: () => void }) {
     setGeneration((previous) => previous + 1);
     recheck();
   }, [recheck]);
+
+  const recordingSaved = useCallback(() => {
+    setGeneration((previous) => previous + 1);
+    recheck();
+    setSaved(true);
+  }, [recheck]);
+
+  const recordingEdited = useCallback(() => {
+    setSaved(false);
+  }, []);
 
   const index = STEPS.findIndex((candidate) => candidate.id === step.id);
   const previous = stepBefore(step.id);
@@ -75,7 +90,8 @@ export function SetupWizard({ onExit }: { onExit: () => void }) {
             <RecordingStep
               settings={settings.value}
               readiness={readiness.value}
-              onSaved={changed}
+              onSaved={recordingSaved}
+              onEdited={recordingEdited}
               onRecheck={recheck}
             />
           )}
@@ -90,6 +106,11 @@ export function SetupWizard({ onExit }: { onExit: () => void }) {
             <ReadyStep readiness={readiness.value} onRecheck={recheck} onFinish={onExit} />
           )}
         </div>
+      )}
+      {step.id === "recording" && saved && (
+        <p role="status" className="setup__saved">
+          Saved. Your advanced settings and comments were left untouched.
+        </p>
       )}
 
       <nav className="setup__nav" aria-label="Setup navigation">

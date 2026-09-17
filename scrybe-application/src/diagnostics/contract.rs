@@ -86,9 +86,9 @@ pub enum DiagnosticCode {
     /// directory. Distinct from [`Self::OrphanedPartialFile`], which is
     /// about the storage root.
     ModelDownloadPartial,
-    /// A local notes provider answered.
-    NotesProviderUnreachable,
     /// Nothing answered at the configured local notes endpoint.
+    NotesProviderUnreachable,
+    /// A local notes provider answered.
     NotesProviderReachable,
 }
 

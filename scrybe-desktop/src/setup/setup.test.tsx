@@ -187,6 +187,55 @@ describe("the recording step", () => {
 
     expect(written).toEqual([[{ field: "capture_mic_device", value: "Studio Mic" }]]);
   });
+
+  /// The confirmation used to be state inside `RecordingStep`, set
+  /// beside the same `onSaved` call that reloads settings and
+  /// readiness — which unmounts that step while the reload is in
+  /// flight, destroying the flag before it could ever render. A
+  /// successful write gave the user no feedback at all.
+  it("test_a_successful_save_is_confirmed_after_settings_and_readiness_reload", async () => {
+    const user = userEvent.setup();
+    await renderWith(
+      <SetupWizard onExit={() => undefined} />,
+      servicesReturning({
+        applySettings: () =>
+          Promise.resolve(settingsFormFixture({ capture_mic_device: "Studio Mic" })),
+      }),
+    );
+    await goTo(user, "Recording");
+
+    await user.clear(screen.getByLabelText("Microphone device"));
+    await user.type(screen.getByLabelText("Microphone device"), "Studio Mic");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByRole("status")).toHaveProperty(
+      "textContent",
+      "Saved. Your advanced settings and comments were left untouched.",
+    );
+  });
+
+  it("test_the_confirmation_is_retired_once_the_microphone_is_edited_again", async () => {
+    const user = userEvent.setup();
+    await renderWith(
+      <SetupWizard onExit={() => undefined} />,
+      servicesReturning({
+        applySettings: () =>
+          Promise.resolve(settingsFormFixture({ capture_mic_device: "Studio Mic" })),
+      }),
+    );
+    await goTo(user, "Recording");
+
+    await user.clear(screen.getByLabelText("Microphone device"));
+    await user.type(screen.getByLabelText("Microphone device"), "Studio Mic");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByRole("status")).toBeDefined();
+
+    await user.type(await screen.findByLabelText("Microphone device"), " (USB)");
+
+    await waitFor(() => {
+      expect(screen.queryByRole("status")).toBeNull();
+    });
+  });
 });
 
 describe("the transcription step", () => {
