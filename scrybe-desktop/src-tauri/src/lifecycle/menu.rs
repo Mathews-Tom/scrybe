@@ -24,11 +24,19 @@
 //! one anywhere would make this claim false again.
 //!
 //! Everything else in the menu is a predefined item, dispatched
-//! natively. They are here because replacing the default menu would
-//! otherwise take the Edit items with it, and a `WebView` with no Edit
-//! menu has no copy, paste, or select-all.
+//! natively. They are here because replacing the default menu takes
+//! the platform's own items with it, and the stated principle — that a
+//! `WebView` with no Edit menu has no copy, paste, or select-all — is
+//! not specific to Edit. It was applied to Edit alone, which left ⌘W,
+//! ⌘M, and Full Screen as dead keys. ⌘W is the one that mattered: the
+//! close button is the documented way to dismiss the window, it hides
+//! rather than destroys, and the tray brings the window back, so a
+//! keyboard equivalent for it is part of that loop and there was none.
+//! The predefined close-window item raises the same close request the
+//! button does, so it routes through the existing hide-on-close
+//! handler and needs no logic of its own.
 
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tauri::menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu};
 
 use crate::lifecycle::tray;
 
@@ -45,12 +53,27 @@ pub fn build<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Menu
     // which is what makes the two paths one decision.
     let quit = MenuItem::with_id(app, tray::QUIT, "Quit Scrybe", true, Some("CmdOrCtrl+Q"))?;
 
+    // Built from the same package and bundle information the default
+    // menu uses. `about(app, None, None)` showed an About panel with
+    // neither version nor copyright, where the default showed both.
+    let package = app.package_info();
+    let bundle = &app.config().bundle;
+    let about = AboutMetadata {
+        name: Some(package.name.clone()),
+        version: Some(package.version.to_string()),
+        copyright: bundle.copyright.clone(),
+        authors: bundle.publisher.clone().map(|publisher| vec![publisher]),
+        ..AboutMetadata::default()
+    };
+
     let application = Submenu::with_items(
         app,
         "Scrybe",
         true,
         &[
-            &PredefinedMenuItem::about(app, None, None)?,
+            &PredefinedMenuItem::about(app, None, Some(about))?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::services(app, None)?,
             &PredefinedMenuItem::separator(app)?,
             &PredefinedMenuItem::hide(app, None)?,
             &PredefinedMenuItem::hide_others(app, None)?,
@@ -75,7 +98,28 @@ pub fn build<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Menu
         ],
     )?;
 
-    Menu::with_items(app, &[&application, &edit])
+    let view = Submenu::with_items(
+        app,
+        "View",
+        true,
+        &[&PredefinedMenuItem::fullscreen(app, None)?],
+    )?;
+
+    // Minimize, Zoom, and Close Window, in the default's own order.
+    // Close Window is what restores ⌘W.
+    let window = Submenu::with_items(
+        app,
+        "Window",
+        true,
+        &[
+            &PredefinedMenuItem::minimize(app, None)?,
+            &PredefinedMenuItem::maximize(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::close_window(app, None)?,
+        ],
+    )?;
+
+    Menu::with_items(app, &[&application, &edit, &view, &window])
 }
 
 /// Whether the application menu defines this item itself.
