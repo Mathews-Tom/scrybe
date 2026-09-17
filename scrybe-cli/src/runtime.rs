@@ -5,11 +5,12 @@
 //     https://www.apache.org/licenses/LICENSE-2.0
 
 //! Shared runtime helpers: storage-root expansion, config loading,
-//! session-folder resolution.
+//! session-folder resolution, and application-service construction.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use scrybe_application::{SessionRepository, StorageRoot};
 use scrybe_core::config::Config;
 
 /// Expand a `~/...`-prefixed path against the user's home directory.
@@ -40,6 +41,32 @@ pub fn load_or_default_config() -> Result<Config> {
     } else {
         Ok(Config::default())
     }
+}
+
+/// The storage root this invocation operates on: the `--root`
+/// override when given, otherwise the configured root, tilde-expanded.
+///
+/// # Errors
+///
+/// Propagates configuration loading failures.
+pub fn storage_root(root_override: Option<&Path>) -> Result<StorageRoot> {
+    let path = match root_override {
+        Some(path) => expand_root(path),
+        None => expand_root(&load_or_default_config()?.storage.root),
+    };
+    Ok(StorageRoot::new(path))
+}
+
+/// A session repository over [`storage_root`].
+///
+/// Every command that reads or repairs a session goes through this, so
+/// there is one place the CLI decides which root it is looking at.
+///
+/// # Errors
+///
+/// Propagates configuration loading failures.
+pub fn session_repository(root_override: Option<&Path>) -> Result<SessionRepository> {
+    Ok(SessionRepository::new(storage_root(root_override)?))
 }
 
 /// Resolves `id_or_folder` to a session folder under `root`.

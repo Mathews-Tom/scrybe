@@ -33,6 +33,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 #![allow(clippy::module_name_repetitions)]
 
+pub mod cancellation;
 pub mod config;
 pub mod diagnostics;
 pub mod error;
@@ -41,9 +42,11 @@ pub mod paging;
 pub mod recording;
 pub mod sessions;
 
+pub use cancellation::CancellationToken;
 pub use error::{ApplicationError, ErrorCode, ErrorPayload};
 pub use identity::{IdentityRejection, SessionRef, StorageRoot};
 pub use paging::{Page, PageRequest, DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT};
+pub use sessions::SessionRepository;
 
 /// Convenience alias for a fallible application-service call.
 pub type Result<T> = std::result::Result<T, ApplicationError>;

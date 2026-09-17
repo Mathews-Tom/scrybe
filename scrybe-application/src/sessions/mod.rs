@@ -4,14 +4,17 @@
 // You may obtain a copy of the License at
 //     https://www.apache.org/licenses/LICENSE-2.0
 
-//! Session repository contracts.
+//! The session repository and its contracts.
 //!
-//! These are the serializable request and response shapes shared by the
-//! CLI, the read-only agent surface, and any future frontend. They
-//! describe a session entirely in terms a consumer can act on — state,
-//! availability, eligibility — and never in terms of a filesystem path.
+//! One implementation of the storage-layout invariants serves the CLI,
+//! the read-only agent surface, and any future frontend. Sessions are
+//! addressed by opaque identity, never by path; listings and search are
+//! paged; search is cancellable; and the cached scan is invalidated by
+//! any external write under the configured root.
 
 mod contract;
+mod repository;
+mod scan;
 
 pub use contract::{
     ArtifactAvailability, CaptureMetadata, NotesDocument, NotesGenerationOutcome,
@@ -19,3 +22,4 @@ pub use contract::{
     SearchRequest, SessionDetail, SessionEligibility, SessionPage, SessionState, SessionSummary,
     TranscriptCursor, TranscriptPage,
 };
+pub use repository::{NotesGenerationRequest, NotesGenerator, SessionRepository};

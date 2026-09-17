@@ -3408,7 +3408,9 @@ dependencies = [
  "scrybe-meeting-core",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 1.0.69",
+ "toml",
 ]
 
 [[package]]
