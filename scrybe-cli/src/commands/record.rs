@@ -35,7 +35,7 @@ use scrybe_core::record_defaults;
 use tokio::runtime::Runtime;
 
 use crate::commands::rec::{self, CaptureSourceArg, LlmBackendArg};
-use crate::runtime::load_or_default_config;
+use crate::runtime::config_service;
 
 #[derive(ClapArgs, Clone, Debug)]
 pub struct Args {
@@ -95,7 +95,7 @@ pub struct Args {
 /// Surfaces config-load errors, bundle-launch errors, and the
 /// underlying `rec::run` errors verbatim.
 pub async fn run(args: Args) -> Result<()> {
-    let cfg = load_or_default_config()?;
+    let cfg = config_service()?.load()?;
     let resolved = resolve(&cfg, &args);
 
     if should_use_bundle(&resolved, &args) {
@@ -127,7 +127,7 @@ pub async fn run(args: Args) -> Result<()> {
 /// Surfaces config, bundle-launch, native-surface, and recording errors.
 #[cfg(feature = "cli-shell")]
 pub fn run_with_shell(args: &Args, runtime: &Runtime) -> Result<()> {
-    let cfg = load_or_default_config()?;
+    let cfg = config_service()?.load()?;
     let resolved = resolve(&cfg, args);
 
     #[cfg(all(target_os = "macos", feature = "system-capture-mac"))]

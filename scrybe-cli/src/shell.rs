@@ -28,7 +28,7 @@ use crate::commands::rec::{monitor_signals, run_with_stop, Args, RECORDING_FAILU
 #[cfg(target_os = "macos")]
 use crate::floating_panel::{prepare_application, reduce_motion_enabled, FloatingPanel};
 use crate::hotkey::{HotkeyEvent, HotkeyListener, DEFAULT_STOP_ACCELERATOR};
-use crate::runtime::load_or_default_config;
+use crate::runtime::{application, config_service};
 use crate::tray::{RecordingIndicator, TrayCommand};
 
 /// Pump interval for the polling loop. On macOS this is the duration
@@ -231,7 +231,7 @@ impl NativeSurfaces {
 /// errors (including malformed accelerators), config-load errors, and
 /// any error returned by the recording task itself.
 pub fn run_record_with_shell(args: Args, runtime: &Runtime) -> Result<()> {
-    let cfg = load_or_default_config()?;
+    let cfg = config_service()?.load()?;
     let accelerator = cfg
         .capture
         .hotkey
@@ -239,7 +239,9 @@ pub fn run_record_with_shell(args: Args, runtime: &Runtime) -> Result<()> {
         .unwrap_or_else(|| DEFAULT_STOP_ACCELERATOR.to_string());
 
     let (stop_tx, stop_rx) = watch::channel(false);
-    let controller = Arc::new(RecordingController::new());
+    // One state model per process, obtained from the composition root
+    // rather than constructed here; see `rec::run` for the same.
+    let controller = Arc::clone(application(args.root.as_deref())?.recording());
 
     // Constructing the native surfaces and registering the hotkey is
     // this shell's preflight: if either fails, no session folder is
@@ -511,7 +513,10 @@ mod tests {
     /// A controller already in `Recording`, which is the state every
     /// shell surface is constructed against.
     fn recording() -> (Arc<RecordingController>, ShellStop, watch::Receiver<bool>) {
-        let controller = Arc::new(RecordingController::new());
+        let dir = tempfile::tempdir().unwrap();
+        // The same accessor the shell itself uses; there is no other
+        // way to obtain a controller from outside the services crate.
+        let controller = Arc::clone(application(Some(dir.path())).unwrap().recording());
         controller.begin_preparing().unwrap();
         controller.mark_recording().unwrap();
         let (stop_tx, stop_rx) = watch::channel(false);

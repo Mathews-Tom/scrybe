@@ -21,7 +21,7 @@ use scrybe_application::diagnostics::{DiagnosticCode, DiagnosticReport, Severity
 use scrybe_core::config::{Config, RECORD_SOURCE_MIC_SYSTEM, RECORD_SYSTEM_BACKEND_TAP};
 use scrybe_core::record_defaults;
 
-use crate::runtime::{application, load_or_default_config};
+use crate::runtime::application;
 
 #[derive(ClapArgs, Debug)]
 pub struct Args {
@@ -66,7 +66,7 @@ pub async fn run(args: Args) -> Result<()> {
         app.config().path().exists()
     ));
 
-    let cfg = load_or_default_config()?;
+    let cfg = app.config().load()?;
     let root = app.root().path();
     report.lines.push(format!(
         "storage root: {} (exists={})",

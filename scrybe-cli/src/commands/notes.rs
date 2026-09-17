@@ -34,7 +34,7 @@ use scrybe_core::notes_segments::{pack_segments, parse_canonical_transcript};
 use scrybe_core::providers::openai_compat_llm::OpenAiCompatLlmProvider;
 
 #[cfg(feature = "llm-openai-compat")]
-use crate::runtime::{application, load_or_default_config};
+use crate::runtime::application;
 
 #[derive(ClapArgs, Debug)]
 pub struct Args {
@@ -120,7 +120,7 @@ pub async fn run(args: Args) -> Result<()> {
             .map_err(scrybe_application::ApplicationError::from)
             .with_context(|| format!("resolving session {}", args.id_or_folder))?;
         let generator = ConfiguredNotes {
-            config: load_or_default_config()?,
+            config: app.config().load()?,
         };
         let result = repository
             .regenerate_notes(&id, &generator)

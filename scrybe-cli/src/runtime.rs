@@ -15,7 +15,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use scrybe_application::{ScrybeApplication, StorageRoot};
+use scrybe_application::{ConfigService, ScrybeApplication, StorageRoot};
 use scrybe_core::config::Config;
 
 /// Expand a `~/...`-prefixed path against the user's home directory.
@@ -37,15 +37,23 @@ fn dirs_home() -> Option<PathBuf> {
     directories::BaseDirs::new().map(|b| b.home_dir().to_path_buf())
 }
 
-/// Load config from the platform-conventional path or
-/// `SCRYBE_CONFIG`, returning the default if no file exists.
-pub fn load_or_default_config() -> Result<Config> {
-    let path = Config::discover_path().context("resolving config path")?;
-    if path.exists() {
-        Config::load(&path).with_context(|| format!("loading config at {}", path.display()))
-    } else {
-        Ok(Config::default())
-    }
+/// The configuration service over the platform-conventional path or
+/// `SCRYBE_CONFIG`.
+///
+/// `application` needs the configured storage root before a
+/// [`ScrybeApplication`] can be assembled over it, so the service is
+/// constructed here too. The exists-or-default policy itself lives in
+/// [`ConfigService::load`] and nowhere else; the CLI used to carry a
+/// second copy of it, which is one decision with two implementations
+/// that could drift apart.
+///
+/// # Errors
+///
+/// Propagates configuration path resolution failures.
+pub fn config_service() -> Result<ConfigService> {
+    Ok(ConfigService::new(
+        Config::discover_path().context("resolving config path")?,
+    ))
 }
 
 /// Every application service, over the root this invocation operates
@@ -60,12 +68,15 @@ pub fn load_or_default_config() -> Result<Config> {
 ///
 /// Propagates configuration path resolution and loading failures.
 pub fn application(root_override: Option<&Path>) -> Result<ScrybeApplication> {
+    let config = config_service()?;
     let path = match root_override {
         Some(path) => expand_root(path),
-        None => expand_root(&load_or_default_config()?.storage.root),
+        None => expand_root(&config.load()?.storage.root),
     };
-    let config_path = Config::discover_path().context("resolving config path")?;
-    Ok(ScrybeApplication::new(StorageRoot::new(path), config_path))
+    Ok(ScrybeApplication::new(
+        StorageRoot::new(path),
+        config.path(),
+    ))
 }
 
 #[cfg(test)]
@@ -73,6 +84,7 @@ pub fn application(root_override: Option<&Path>) -> Result<ScrybeApplication> {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+    use std::sync::Arc;
 
     #[test]
     fn test_expand_root_returns_input_path_for_absolute_path() {
@@ -115,12 +127,42 @@ mod tests {
     }
 
     #[test]
-    fn test_load_or_default_config_returns_default_when_path_does_not_exist() {
+    fn test_the_application_is_the_only_source_of_a_recording_controller() {
         let dir = tempfile::tempdir().unwrap();
-        std::env::set_var("SCRYBE_CONFIG", dir.path().join("no-such-config.toml"));
+        // An explicit root means no configuration is read, so this
+        // test does not touch `SCRYBE_CONFIG` and cannot race the
+        // config-service test beside it.
+        let app = application(Some(dir.path())).unwrap();
 
-        let cfg = load_or_default_config().unwrap();
+        // `RecordingController::new` and `with_clock` are crate-private
+        // to `scrybe-application`, so this accessor is the only way the
+        // CLI can obtain one — which is what makes "one process-wide
+        // recording state model" structural rather than a convention.
+        // Both CLI recording paths, `rec::run` and
+        // `shell::run_record_with_shell`, take theirs from here.
+        let from_cli = Arc::clone(app.recording());
 
-        assert_eq!(cfg, scrybe_core::config::Config::default());
+        assert!(Arc::ptr_eq(&from_cli, app.recording()));
+        from_cli.begin_preparing().unwrap();
+        assert_eq!(
+            app.recording().snapshot().state,
+            scrybe_application::recording::RecordingState::Preparing,
+            "a second instance would leave the application reading Idle forever"
+        );
+    }
+
+    #[test]
+    fn test_the_config_service_returns_the_default_when_no_file_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("no-such-config.toml");
+        std::env::set_var("SCRYBE_CONFIG", &path);
+
+        let service = config_service().unwrap();
+
+        assert_eq!(service.path(), path);
+        assert_eq!(
+            service.load().unwrap(),
+            scrybe_core::config::Config::default()
+        );
     }
 }
