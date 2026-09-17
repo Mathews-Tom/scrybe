@@ -411,7 +411,11 @@ fn rebuild(view: &RecoveryActionView) -> Result<RecoveryAction, CommandFailure> 
             .map_err(CommandFailure::from)?,
         },
         "remove_model_partial" => RecoveryAction::RemoveModelPartial {
-            name: view.name.clone().ok_or_else(|| missing("a file name"))?,
+            name: scrybe_application::PartialFileRef::parse(
+                view.name.as_deref().ok_or_else(|| missing("a file name"))?,
+            )
+            .map_err(CommandFailure::from)?
+            .into(),
         },
         "install_transcription_model" => RecoveryAction::InstallTranscriptionModel {
             id: view.id.clone().ok_or_else(|| missing("a model"))?,
