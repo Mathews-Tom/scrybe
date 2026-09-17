@@ -1,0 +1,3 @@
+# Emitted by tauri-build from `tauri.conf.json` and the capability files
+# on every build; regenerating it is part of the build, not of review.
+gen/

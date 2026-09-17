@@ -1,0 +1,45 @@
+# The desktop host is a workspace of its own. The root workspace's jobs
+# build the library and CLI graph with `--no-default-features`; adding a
+# WebView host to that graph would put `tauri` (and, on Linux, a system
+# WebKitGTK) into every one of those jobs. The gate reaches this
+# manifest explicitly with `--manifest-path` instead.
+[workspace]
+members = ["."]
+
+[package]
+name = "scrybe-desktop"
+version = "0.0.0"
+description = "Tauri host for the Scrybe desktop application"
+edition = "2021"
+rust-version = "1.95"
+license = "Apache-2.0"
+authors = ["Mathews Tom"]
+repository = "https://github.com/Mathews-Tom/scrybe"
+publish = false
+
+[lib]
+name = "scrybe_desktop"
+crate-type = ["lib"]
+
+[[bin]]
+name = "scrybe-desktop"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = ["tray-icon"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
