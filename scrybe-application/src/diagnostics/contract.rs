@@ -53,6 +53,9 @@ pub enum DiagnosticCode {
     SessionInProgress,
     /// A `pid.lock` survives with no live process behind it.
     SessionLockStale,
+    /// A `pid.lock` survives but carries no readable process identifier,
+    /// so whether a recorder still owns the session cannot be decided.
+    SessionLockUnreadable,
     /// A `.partial` file was left under the storage root.
     OrphanedPartialFile,
     /// A session has durable state that `repair_session` can recover.
