@@ -24,10 +24,15 @@
 //!   root — the set of folder names, their modification times, and the
 //!   modification time of each `journal/` subdirectory that
 //!   classification reads into — decides whether the whole cached scan
-//!   is still valid. External mutation by any other tool therefore
-//!   invalidates the cache without a watcher, and a burst of reads
-//!   between two mutations shares one scan instead of re-parsing every
-//!   `meta.toml`.
+//!   is still valid. Any write that changes a directory's entries
+//!   invalidates the cache without a watcher, which covers a session
+//!   being created or removed, an artifact appearing or disappearing,
+//!   and every atomic replace the pipeline performs. The one shape it
+//!   cannot see is an in-place rewrite of an existing `meta.toml` or
+//!   `journal/manifest.toml`, which leaves both dirent sets untouched;
+//!   no writer in this product rewrites either in place. A burst of
+//!   reads between two mutations shares one scan instead of re-parsing
+//!   every `meta.toml`.
 //!
 //! No lock is held across filesystem work. The cache mutex is taken to
 //! read a snapshot and released before any I/O, then taken again to
@@ -89,8 +94,13 @@ pub trait NotesGenerator {
 ///
 /// Folder names catch sessions appearing and disappearing;
 /// modification times catch an artifact being created, replaced, or
-/// removed inside one. Both are what any external write to a session
-/// changes, including the atomic replaces the pipeline itself performs.
+/// removed inside one. Between them they catch every write that
+/// changes a directory's entries, which is what creation, removal, and
+/// the atomic replaces the pipeline itself performs all amount to. A
+/// writer that truncated an existing `meta.toml` or
+/// `journal/manifest.toml` and rewrote it in place would change no
+/// dirent and so go unseen; classification reads the contents of both,
+/// so that is the one stale-cache shape this identity does not cover.
 ///
 /// The journal subdirectory's own modification time is carried
 /// alongside the session folder's because classification reads
