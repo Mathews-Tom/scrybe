@@ -9,9 +9,9 @@
 //! One implementation of the storage-layout invariants serves the CLI,
 //! the read-only agent surface, and any future frontend. Sessions are
 //! addressed by opaque identity, never by path; listings and search are
-//! paged; search is cancellable; and the cached scan is invalidated by
-//! any write under the configured root that changes a directory's
-//! entries.
+//! paged; search is cancellable; and the cached scan is invalidated,
+//! on every filesystem, by any artifact classification reads appearing
+//! or disappearing under the configured root.
 
 mod contract;
 mod repository;
