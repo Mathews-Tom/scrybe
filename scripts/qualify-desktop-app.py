@@ -39,11 +39,26 @@ What this cannot establish, stated plainly:
   interface does the latter without an Accessibility grant. The tray
   item's existence and its items' enabled state are read from the
   record the application writes while building it;
-- the no-network assertion is a dependency-graph check plus repeated
-  sampling of the process's open internet sockets. Sampling can miss a
-  request that opens and closes between samples; the graph check is what
-  makes that unlikely, because a graph with no HTTP, TLS, DNS, QUIC, or
-  WebSocket client has nothing to open one with.
+- the no-network assertion has three parts, and each covers something
+  the others do not. The crate-graph check covers the Rust host only: a
+  host graph with no HTTP, TLS, DNS, QUIC, or WebSocket client cannot
+  open a connection from Rust. It says nothing about the webview, which
+  carries the platform's own networking stack, so a single remote image,
+  font, stylesheet, or `fetch()` added to a future view would egress
+  with no denylisted crate anywhere in the graph. What governs that is
+  the content security policy, which is read out of the built bundle and
+  compared against the expected value, and the navigation guard, which
+  is driven from the frontend and observed rather than assumed. The
+  socket sampler runs on a cadence from launch until exit and records
+  the union of everything it saw, so a connection opened and closed
+  between two samples is still likely to be caught — but sampling is
+  sampling, and a connection that opened and closed entirely inside one
+  poll interval would be missed;
+- the WebView-state assertion covers the two directories macOS resolves
+  from the user database for any WKWebView host. It is checked against
+  a positive control, so it is known to be able to fail, but a session
+  artifact written somewhere else under `~/Library` would not be seen
+  by it.
 
 Run locally:
 
@@ -65,6 +80,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -77,6 +93,17 @@ HOST = DESKTOP / "src-tauri"
 BUNDLE_IDENTIFIER = "dev.scrybe.desktop"
 BUNDLE_NAME = "Scrybe.app"
 EXECUTABLE = "scrybe-desktop"
+
+# What `pgrep -f` is given, rather than the path itself.
+#
+# `pgrep -f` matches against whole command lines, and a `pgrep`
+# invocation's own command line contains the pattern it was given. It
+# excludes itself, but not another `pgrep` running the same query
+# concurrently — which the socket sampler does, from its own thread, for
+# the whole run. Bracketing the first character makes the pattern a
+# regular expression that matches the application's command line and not
+# the command line of any process carrying the pattern literally.
+PROCESS_PATTERN = f"[{BUNDLE_NAME[0]}]{BUNDLE_NAME[1:]}/Contents/MacOS/{EXECUTABLE}"
 
 LIFECYCLE_RECORD = ".desktop-lifecycle.jsonl"
 CONTROL_SOCKET = ".desktop-control.sock"
@@ -135,10 +162,41 @@ NETWORK_DENYLIST = frozenset(
 SETTLE_SECONDS = 2.0
 POLL_SECONDS = 0.1
 
+# How often the socket sampler looks, once it is running. Short enough
+# that a request which opens and closes across a settle is seen, long
+# enough that `lsof` is not the thing being measured.
+SAMPLE_SECONDS = 0.25
+
+# The content security policy the bundle must ship, read back out of the
+# built `index.html`. Declared here rather than read from
+# `tauri.conf.json`, because a check that reads the policy from the same
+# file the policy is written in would pass whatever it was changed to.
+#
+# `connect-src` closes fetch, XHR, WebSocket, and beacon; `frame-src`
+# closes iframes; `form-action` closes form submission, which does not
+# inherit from `default-src` and so has to be named. Top-level
+# navigation is governed by none of them — that is the navigation guard,
+# checked separately below.
+EXPECTED_CSP = (
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost; "
+    "object-src 'none'; base-uri 'none'; frame-src 'none'; form-action 'none'"
+)
+
+# The origin the bundled application is served from. A window URL with
+# any other origin after the navigation probe means the guard let it go.
+APPLICATION_ORIGIN = "tauri://localhost"
+
 # The tray's own menu-item identities, which the control channel accepts
 # so a run drives the same dispatch the platform drives.
 TRAY_OPEN = "open"
 TRAY_QUIT = "quit"
+
+# Control verbs that are not tray items: the two window verbs, and the
+# navigation probe that drives the exfiltration path the policy cannot
+# govern.
+NAVIGATE_OFFSITE = "navigate-offsite"
+RECORD_WINDOW_URL = "record-window-url"
 
 
 @dataclass
@@ -219,7 +277,7 @@ class Candidate:
     def process_ids(self) -> list[int]:
         """Every process running this bundle's executable."""
         result = subprocess.run(
-            ["pgrep", "-f", f"{BUNDLE_NAME}/Contents/MacOS/{EXECUTABLE}"],
+            ["pgrep", "-f", PROCESS_PATTERN],
             capture_output=True,
             text=True,
             check=False,
@@ -319,6 +377,39 @@ class Candidate:
             subprocess.run(["kill", "-9", str(pid)], check=False)
 
 
+class SocketSampler:
+    """Every internet socket the application held, sampled on a cadence.
+
+    One sample at one instant cannot see a connection opened during
+    startup and closed before that instant, which is the dominant shape
+    of an unwanted request. This runs from launch until the scenario
+    stops it and records the union of everything it saw. It is still
+    sampling: a connection opened and closed entirely inside one poll
+    interval would be missed.
+    """
+
+    def __init__(self, candidate: Candidate) -> None:
+        self._candidate = candidate
+        self._seen: set[str] = set()
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            self._seen.update(self._candidate.internet_sockets())
+            self._stop.wait(SAMPLE_SECONDS)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> list[str]:
+        """Stops sampling and returns everything seen, oldest call last."""
+        self._stop.set()
+        self._thread.join(timeout=SETTLE_SECONDS)
+        self._seen.update(self._candidate.internet_sockets())
+        return sorted(self._seen)
+
+
 def snapshot(path: Path) -> object:
     """A comparable fingerprint of a path the run must not touch."""
     if not path.exists():
@@ -346,6 +437,78 @@ def host_dependency_graph() -> set[str]:
     }
 
 
+def policy_occurrences(binary: Path, policy: str) -> tuple[bool, int]:
+    """Whether the built executable carries `policy`, and how many
+    policies it carries at all.
+
+    Tauri embeds the frontend in the executable rather than shipping it
+    as a file in the bundle, and embeds the configured policy alongside
+    it as the value it injects at run time. Reading it back out of the
+    built artifact is what makes this a check on what was shipped rather
+    than on what `tauri.conf.json` says, which would pass whatever the
+    file was changed to.
+    """
+    image = binary.read_bytes()
+    return policy.encode() in image, image.count(b"default-src ")
+
+
+def hermeticity(candidate: Candidate, run: Run, untouched: list[tuple[str, Path, object]]) -> None:
+    """Whether the run stayed inside the root it was given.
+
+    Runs on every exit from the scenario, including the early one. The
+    most likely cause of that early return is a hermeticity failure —
+    the configuration environment variable not reaching the launched
+    process, or a configuration the service layer rejects — in which
+    case the application resolved the real configuration and the real
+    storage root, wrote its lifecycle record and its control socket
+    there, and was then killed with `SIGKILL`, so the exit handler never
+    removed the socket. Reporting one failure about a control channel
+    and nothing about the root it had just written into would name the
+    symptom and hide the breach.
+    """
+    for label, path, before in untouched:
+        run.record(f"confinement: {label} is unchanged", before, snapshot(path))
+    run.record(
+        "confinement: nothing of this run reached the real storage root",
+        [],
+        sorted(
+            shorten(path)
+            for path in (
+                REAL_STORAGE_ROOT / LIFECYCLE_RECORD,
+                REAL_STORAGE_ROOT / CONTROL_SOCKET,
+            )
+            if path.exists()
+        ),
+    )
+
+
+def webview_state(run: Run) -> None:
+    """No session artifact reaches the directories macOS resolves for a
+    WKWebView host.
+
+    The assertion passes when the directories hold nothing, so on its
+    own it would also pass if it were looking in the wrong place or
+    matching nothing. The positive control below is what distinguishes
+    those: it plants an artifact-shaped file and requires the same
+    function to find it.
+    """
+    for directory in WEBVIEW_STATE:
+        run.record(
+            f"confinement: no session artifact reaches {shorten(directory)}",
+            [],
+            session_artifacts_under(directory),
+        )
+    with tempfile.TemporaryDirectory() as probe:
+        planted = Path(probe) / "Default" / SESSION_ARTIFACTS[0]
+        planted.parent.mkdir(parents=True)
+        planted.write_text("a session artifact, where one must never be")
+        run.record(
+            "confinement: the session-artifact check finds one when it is there",
+            [f"Default/{SESSION_ARTIFACTS[0]}"],
+            session_artifacts_under(Path(probe)),
+        )
+
+
 def lifecycle(candidate: Candidate, run: Run) -> None:
     """One process, one tray, one recoverable window, one clean exit."""
     untouched = [
@@ -355,6 +518,8 @@ def lifecycle(candidate: Candidate, run: Run) -> None:
 
     # (a) Launch creates one process, one tray item, one window.
     candidate.launch()
+    sockets = SocketSampler(candidate)
+    sockets.start()
     opened = candidate.wait_for_control_socket()
     run.assert_that(
         "launch: the control channel opens",
@@ -364,7 +529,17 @@ def lifecycle(candidate: Candidate, run: Run) -> None:
     if not opened:
         # Every later step drives the application through that channel,
         # so continuing would report a cascade of failures that all mean
-        # this one thing.
+        # this one thing. The confinement checks are not among them: a
+        # control socket that never appeared is most likely a control
+        # socket that appeared somewhere else, and the one place it must
+        # never be is the user's real storage root.
+        run.record(
+            "no network: internet sockets held by the application, sampled from launch to exit",
+            [],
+            sockets.stop(),
+        )
+        hermeticity(candidate, run, untouched)
+        webview_state(run)
         return
     candidate.wait_for_event("window-shown")
 
@@ -435,8 +610,30 @@ def lifecycle(candidate: Candidate, run: Run) -> None:
         {record["pid"] for record in candidate.records()},
     )
 
-    # (h) No external request, sampled while the application is up.
-    run.record("running: internet sockets held by the application", [], candidate.internet_sockets())
+    # (h) The exfiltration path no policy can close: frontend code
+    # execution, then a top-level navigation carrying what the granted
+    # commands return. `connect-src` does not see it and `form-action`
+    # does not cover it, so what refuses it is the navigation guard —
+    # driven here from the frontend and observed rather than assumed.
+    candidate.control(NAVIGATE_OFFSITE)
+    candidate.control(RECORD_WINDOW_URL)
+    attempted = candidate.detail_of("navigation-attempted")
+    refused = candidate.detail_of("navigation-refused")
+    run.record(
+        "navigation: the guard refuses a scripted top-level navigation off the application origin",
+        attempted,
+        refused,
+    )
+    # A refused navigation leaves the window where it was — but so does
+    # an allowed one that cannot be reached, which is why the refusal
+    # above is what the guard is judged on. This is the second half:
+    # having refused, it also did not move.
+    reached = candidate.detail_of("window-url")
+    run.assert_that(
+        "navigation: the window is still on the application origin afterwards",
+        reached is not None and reached.startswith(APPLICATION_ORIGIN),
+        f"the window reached {reached!r} after {attempted!r}",
+    )
 
     # (d) Idle quit exits cleanly.
     candidate.control(TRAY_QUIT)
@@ -456,19 +653,13 @@ def lifecycle(candidate: Candidate, run: Run) -> None:
         [LIFECYCLE_RECORD],
         written,
     )
-    for label, path, before in untouched:
-        run.record(f"confinement: {label} is unchanged", before, snapshot(path))
     run.record(
         "confinement: the process-coordination socket is removed on exit",
         False,
         SINGLE_INSTANCE_SOCKET.exists(),
     )
-    for directory in WEBVIEW_STATE:
-        run.record(
-            f"confinement: no session artifact reaches {shorten(directory)}",
-            [],
-            session_artifacts_under(directory),
-        )
+    hermeticity(candidate, run, untouched)
+    webview_state(run)
 
     # What the bundle actually ships. A developer tool or a bundled
     # runtime reaching the application is the kind of thing that only
@@ -495,13 +686,37 @@ def lifecycle(candidate: Candidate, run: Run) -> None:
         links_system_webkit(shipped / EXECUTABLE),
     )
 
-    # (h) No network, structurally.
+    # The application menu's quit item carries the tray's own identity,
+    # which is what routes it through the shared quit decision instead
+    # of the platform's native `terminate:`. `muda` refuses to build a
+    # menu off the main thread, so the installed menu cannot be read
+    # from a unit test; the application reports what it installed.
+    run.record(
+        "quit: the menu item runs the same decision the tray item runs",
+        "quit:quit",
+        candidate.detail_of("menu-ready"),
+    )
+
+    # (h) No network from the Rust host, structurally. This covers the
+    # host graph and nothing else: the webview carries the platform's
+    # own networking stack, so the policy and the navigation guard
+    # checked above are what govern it.
     graph = host_dependency_graph()
     run.record(
         "no network: HTTP, TLS, DNS, QUIC, or WebSocket clients in the host graph",
         [],
         sorted(NETWORK_DENYLIST & graph),
     )
+    run.record(
+        "no network: internet sockets held by the application, sampled from launch to exit",
+        [],
+        sockets.stop(),
+    )
+
+    # (h) The policy the bundle ships, read back out of it.
+    carried, policies = policy_occurrences(shipped / EXECUTABLE, EXPECTED_CSP)
+    run.record("policy: the bundle carries the expected content security policy", True, carried)
+    run.record("policy: the bundle carries exactly one content security policy", 1, policies)
 
     # The debug-only channel is compiled out of a release build.
     release = build_release_binary()
@@ -624,14 +839,15 @@ def main() -> int:
     print(
         f"desktop {arguments.scenario} qualification: ok — {len(run.entries)} checks "
         "across launch, close, restore, recreation, second launch, quit, "
-        "disposable-root confinement, and egress"
+        "disposable-root confinement, the shipped content security policy, "
+        "navigation, and egress"
     )
     return 0
 
 
 def candidates_already_running() -> bool:
     result = subprocess.run(
-        ["pgrep", "-f", f"{BUNDLE_NAME}/Contents/MacOS/{EXECUTABLE}"],
+        ["pgrep", "-f", PROCESS_PATTERN],
         capture_output=True,
         text=True,
         check=False,

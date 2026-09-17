@@ -23,6 +23,7 @@ pub mod channel;
 #[cfg(debug_assertions)]
 pub mod control;
 pub mod menu;
+pub mod navigation;
 pub mod tray;
 pub mod window;
 
@@ -80,7 +81,11 @@ pub fn keep_running_without_a_window(app: &tauri::AppHandle, event: tauri::RunEv
             api.prevent_exit();
             crate::note!(app, "implicit-exit-prevented");
         }
-        tauri::RunEvent::Exit => crate::note!(app, "exited"),
+        tauri::RunEvent::Exit => {
+            #[cfg(debug_assertions)]
+            control::remove_socket(app);
+            crate::note!(app, "exited");
+        }
         _ => {}
     }
 }
