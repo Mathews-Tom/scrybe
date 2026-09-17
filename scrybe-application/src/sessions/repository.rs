@@ -21,18 +21,20 @@
 //!   stops within one session's worth of I/O and never hands back a
 //!   page belonging to a query the caller has already dropped.
 //! - **Coalesced invalidation.** One cheap fingerprint pass over the
-//!   root — the set of folder names, their modification times, and the
-//!   modification time of each `journal/` subdirectory that
+//!   root — the set of folder names, whether each artifact
+//!   classification probes for is present, and the modification times
+//!   of the session folder and of the `journal/` subdirectory
 //!   classification reads into — decides whether the whole cached scan
-//!   is still valid. Any write that changes a directory's entries
-//!   invalidates the cache without a watcher, which covers a session
-//!   being created or removed, an artifact appearing or disappearing,
-//!   and every atomic replace the pipeline performs. The one shape it
-//!   cannot see is an in-place rewrite of an existing `meta.toml` or
-//!   `journal/manifest.toml`, which leaves both dirent sets untouched;
-//!   no writer in this product rewrites either in place. A burst of
-//!   reads between two mutations shares one scan instead of re-parsing
-//!   every `meta.toml`.
+//!   is still valid. An artifact appearing or disappearing invalidates
+//!   the cache without a watcher, on every filesystem and with no
+//!   dependence on directory-timestamp semantics, which covers a
+//!   session being created or removed and every atomic replace the
+//!   pipeline performs. The one shape it cannot see is an in-place
+//!   rewrite of an existing `meta.toml` or `journal/manifest.toml`,
+//!   which changes neither a dirent nor a presence flag; no writer in
+//!   this product rewrites either in place. A burst of reads between
+//!   two mutations shares one scan instead of re-parsing every
+//!   `meta.toml`.
 //!
 //! No lock is held across filesystem work. The cache mutex is taken to
 //! read a snapshot and released before any I/O, then taken again to
@@ -57,7 +59,8 @@ use crate::sessions::contract::{
     TranscriptCursor, TranscriptDocument, TranscriptPage,
 };
 use crate::sessions::scan::{
-    classify, Classified, FolderView, ScannedSession, JOURNAL_DIR, NOTES_FILE, TRANSCRIPT_FILE,
+    classify, Classified, FolderView, ScannedSession, AUDIO_FILE, JOURNAL_DIR,
+    JOURNAL_MANIFEST_FILE, META_FILE, NOTES_FILE, TRANSCRIPT_FILE,
 };
 use crate::Result;
 
@@ -96,28 +99,58 @@ pub trait NotesGenerator: Sync {
 
 /// Identity of the storage root's observable state.
 ///
-/// Folder names catch sessions appearing and disappearing;
-/// modification times catch an artifact being created, replaced, or
-/// removed inside one. Between them they catch every write that
-/// changes a directory's entries, which is what creation, removal, and
-/// the atomic replaces the pipeline itself performs all amount to. A
-/// writer that truncated an existing `meta.toml` or
-/// `journal/manifest.toml` and rewrote it in place would change no
-/// dirent and so go unseen; classification reads the contents of both,
-/// so that is the one stale-cache shape this identity does not cover.
+/// Folder names catch sessions appearing and disappearing. Inside a
+/// folder, the identity carries the presence of each artifact
+/// `classify` probes, so invalidation is decided by the same facts
+/// classification is decided by: if an artifact appears or disappears,
+/// a flag flips and the cached verdict is discarded.
 ///
-/// The journal subdirectory's own modification time is carried
-/// alongside the session folder's because classification reads
-/// `journal/manifest.toml`, one level deeper than the folder itself.
-/// POSIX bumps a directory's mtime only when its own dirent set
-/// changes, so writing the manifest moves `<session>/journal/` and
-/// leaves `<session>/` untouched. Without the second timestamp a scan
-/// taken between `journal/` being created and its manifest being
-/// written would cache the session as `Unfinished` against a
-/// fingerprint that never changes again, so repair would stay
-/// unavailable for a session `repair_session` could recover.
-type FolderFingerprint = (String, Option<SystemTime>, Option<SystemTime>);
+/// Presence is recorded directly rather than inferred from a
+/// directory's modification time because that inference is not
+/// portable. A directory mtime is a proxy for "this directory's entry
+/// set changed", and NTFS does not guarantee the proxy is observable
+/// at the granularity a consumer scanning straight after a write
+/// needs: a file created inside a session folder can leave that
+/// folder's reported mtime byte-identical. A boolean taken from the
+/// same `exists` probe classification makes has no such dependence —
+/// `meta.toml` is either there or it is not, on every filesystem.
+///
+/// Both modification times are kept alongside the flags. They are what
+/// still notices a change to an entry set that classification does not
+/// probe for, and `journal/`'s doubles as that subdirectory's own
+/// presence flag: it is `None` exactly when the directory is absent.
+///
+/// A writer that truncated an existing `meta.toml` or
+/// `journal/manifest.toml` and rewrote it in place would change no
+/// dirent and flip no flag, so it would go unseen; classification
+/// reads the contents of both, so that is the one stale-cache shape
+/// this identity does not cover.
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+struct FolderFingerprint {
+    name: String,
+    modified: Option<SystemTime>,
+    journal_modified: Option<SystemTime>,
+    artifacts: ArtifactPresence,
+}
+
 type RootFingerprint = Vec<FolderFingerprint>;
+
+/// Whether each artifact `classify` probes for is present, in the
+/// order its classification rules consult them.
+type ArtifactPresence = [bool; 5];
+
+/// Probes what `classify` probes, through the view `classify` itself
+/// is handed, so the two cannot drift on which artifacts decide a
+/// verdict or on how their relative paths are built.
+fn probe_artifacts(view: &DirectoryView) -> ArtifactPresence {
+    [
+        view.exists(META_FILE),
+        view.exists(AUDIO_FILE),
+        view.exists(NOTES_FILE),
+        view.exists(TRANSCRIPT_FILE),
+        view.exists(&format!("{JOURNAL_DIR}/{JOURNAL_MANIFEST_FILE}")),
+    ]
+}
 
 struct CachedScan {
     fingerprint: RootFingerprint,
@@ -444,9 +477,13 @@ impl SessionRepository {
     ///
     /// Fingerprinting precedes the cache comparison, so it runs on a
     /// warm hit too and is the pass a type-ahead search actually pays
-    /// for on nearly every keystroke. The token is therefore checked
-    /// before it starts and between its entries as well, not only in
-    /// the classification loop that may never run.
+    /// for on nearly every keystroke. It costs a `read_dir` of the root
+    /// plus seven `stat`s per folder — two modification times and the
+    /// five artifact probes — which is bounded per folder, independent
+    /// of artifact size, and strictly less than the classification it
+    /// guards. The token is therefore checked before it starts and
+    /// between its entries as well, not only in the classification loop
+    /// that may never run.
     ///
     /// A cancelled pass caches nothing: the partial classification is
     /// not the root's state and must not be served to the next caller.
@@ -464,14 +501,14 @@ impl SessionRepository {
         }
 
         let mut sessions = Vec::new();
-        for (name, _, _) in &fingerprint {
+        for folder in &fingerprint {
             if cancel.is_some_and(CancellationToken::is_cancelled) {
                 return Err(cancelled());
             }
             // A folder whose name cannot form a confined identity is
             // not addressable through this layer, so it is omitted
             // rather than listed as something no caller could open.
-            let Ok(id) = SessionRef::parse(name) else {
+            let Ok(id) = SessionRef::parse(&folder.name) else {
                 continue;
             };
             let folder = self.root.resolve(&id);
@@ -491,8 +528,9 @@ impl SessionRepository {
         Ok(sessions)
     }
 
-    /// The root's observable state, as folder names paired with their
-    /// modification times.
+    /// The root's observable state, as folder names paired with the
+    /// presence of every artifact classification probes for and the
+    /// modification times of the folder and its `journal/`.
     fn fingerprint(&self, cancel: Option<&CancellationToken>) -> Result<RootFingerprint> {
         let root = self.root.path();
         let entries = std::fs::read_dir(root).map_err(|source| {
@@ -523,10 +561,18 @@ impl SessionRepository {
                 continue;
             };
             let modified = entry.metadata().and_then(|meta| meta.modified()).ok();
-            let journal = std::fs::metadata(entry.path().join(JOURNAL_DIR))
+            let view = DirectoryView {
+                folder: entry.path(),
+            };
+            let journal_modified = std::fs::metadata(view.folder.join(JOURNAL_DIR))
                 .and_then(|meta| meta.modified())
                 .ok();
-            fingerprint.push((name, modified, journal));
+            fingerprint.push(FolderFingerprint {
+                name,
+                modified,
+                journal_modified,
+                artifacts: probe_artifacts(&view),
+            });
         }
         fingerprint.sort();
         Ok(fingerprint)
@@ -1040,6 +1086,36 @@ mod tests {
 
         assert_eq!(detail.state, SessionState::Repairable);
         assert!(detail.eligibility.repair);
+    }
+
+    #[test]
+    fn test_an_artifact_appearing_changes_the_fingerprint_with_no_mtime_moving() {
+        let tree = Tree::new();
+        tree.journal_only("2026-04-29-1430-acme-01HXYZ");
+        let repository = tree.repository();
+        // Compares the presence flags alone, discarding both mtimes, so
+        // the assertion holds on a filesystem that never moves a
+        // directory's timestamp at all. Nothing here sleeps, retries, or
+        // touches a clock.
+        let presence = |taken: &RootFingerprint| {
+            taken
+                .iter()
+                .map(|folder| folder.artifacts)
+                .collect::<Vec<_>>()
+        };
+        let before = presence(&repository.fingerprint(None).unwrap());
+
+        std::fs::write(
+            tree.dir
+                .path()
+                .join("2026-04-29-1430-acme-01HXYZ")
+                .join("journal")
+                .join("manifest.toml"),
+            b"",
+        )
+        .unwrap();
+
+        assert_ne!(before, presence(&repository.fingerprint(None).unwrap()));
     }
 
     #[test]
