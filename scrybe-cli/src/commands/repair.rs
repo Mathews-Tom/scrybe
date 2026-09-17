@@ -80,7 +80,7 @@ fn clear_stale_session_lock(folder: &std::path::Path) -> Result<()> {
     if !lock_path.exists() {
         return Ok(());
     }
-    if crate::commands::doctor::pid_alive_from_lock(&lock_path)? {
+    if scrybe_application::diagnostics::lock_owner_alive(&lock_path) == Some(true) {
         anyhow::bail!(
             "session at {} is still owned by the process in {}",
             folder.display(),

@@ -14,8 +14,11 @@
 //! this layer is unrepresentable rather than merely disallowed.
 
 mod contract;
+mod editor;
+mod service;
 
 pub use contract::{
     ConfigDiagnostic, ConfigField, ConfigForm, ConfigSnapshot, ConfigUpdate, ConfigValue,
     ConfigValueKind, EDITABLE_FIELDS,
 };
+pub use service::{ConfigChange, ConfigService};

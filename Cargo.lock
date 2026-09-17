@@ -3404,6 +3404,7 @@ name = "scrybe-meeting-application"
 version = "1.6.0"
 dependencies = [
  "chrono",
+ "libc",
  "pretty_assertions",
  "scrybe-meeting-core",
  "serde",
@@ -3411,6 +3412,9 @@ dependencies = [
  "tempfile",
  "thiserror 1.0.69",
  "toml",
+ "toml_edit 0.20.2",
+ "url",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

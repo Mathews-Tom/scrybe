@@ -13,8 +13,12 @@
 //! mutation, so opening a diagnostics screen cannot change the system.
 
 mod contract;
+mod process;
+mod service;
 
 pub use contract::{
     DiagnosticCode, DiagnosticComponent, DiagnosticFinding, DiagnosticReport, RecoveryAction,
     RepairApplication, RepairStatus, Severity,
 };
+pub use process::lock_owner_alive;
+pub use service::DiagnosticsService;
