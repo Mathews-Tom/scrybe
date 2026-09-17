@@ -65,6 +65,11 @@ NOT_A_SESSION = "not-a-session"
 LOCK_ONLY = "2026-04-25-1000-killed-at-startup-01QUALIFYEEEEEEEEEEEEEEEE"
 # A lock whose contents cannot be interpreted as a process id.
 UNREADABLE_LOCK = "2026-04-24-1000-unreadable-lock-01QUALIFYFFFFFFFFFFFFFFFF"
+# The same uninterpretable lock, but on a folder `scrybe repair` will
+# resolve and act on. `LOCK_ONLY` and `UNREADABLE_LOCK` hold nothing
+# else, so neither classifies as a session and repair never reaches its
+# lock check on them.
+LOCKED_REPAIRABLE = "2026-04-23-0900-locked-repairable-01QUALIFYGGGGGGGGGGGGGGGG"
 
 COMPLETE_META = """session_id = "01QUALIFYAAAAAAAAAAAAAAAA"
 title = "Quarterly review"
@@ -203,6 +208,11 @@ def write_fixture_tree(root: Path) -> None:
     unreadable_lock.mkdir(parents=True)
     (unreadable_lock / "pid.lock").write_text("not-a-pid\n")
 
+    locked_repairable = root / LOCKED_REPAIRABLE
+    (locked_repairable / "journal").mkdir(parents=True)
+    (locked_repairable / "journal" / "manifest.toml").write_text("")
+    (locked_repairable / "pid.lock").write_text("not-a-pid\n")
+
     (root / "model.gguf.partial").write_bytes(b"abc")
 
 
@@ -255,7 +265,9 @@ def parity(binary: Path, root: Path, config: Path) -> Run:
     listing = cli(binary, config, root, "list")
     run.record("list.exit_status", "0", str(listing.returncode))
     rows = [line for line in listing.stdout.splitlines() if line.startswith("2026-")]
-    run.record("list.session_count", "4", str(len(rows)))
+    # One per classifier branch, plus the locked repairable session the
+    # repair checks below act on.
+    run.record("list.session_count", "5", str(len(rows)))
     run.assert_that(
         "list.omits_non_session_folder",
         NOT_A_SESSION not in listing.stdout,
@@ -388,6 +400,37 @@ def parity(binary: Path, root: Path, config: Path) -> Run:
         (root / UNREADABLE_LOCK / "pid.lock").exists(),
         "diagnosis left the uninterpretable lock in place",
     )
+    # --- repair refuses a lock it cannot interpret -----------------
+    # Whether a recorder still owns the session cannot be decided from
+    # an unreadable lock, and clearing it would let a second recorder
+    # write into a session a live one may still hold. Refusing is the
+    # behavior `main` had, through a `pid_alive_from_lock(..)?` that
+    # returned `Err`; a rewrite of that check onto a three-valued
+    # `Option<bool>` matched only `Some(true)` and let the undecidable
+    # case fall through to an unconditional delete.
+    locked_repair = cli(binary, config, root, "repair", LOCKED_REPAIRABLE)
+    run.assert_that(
+        "repair.refuses_a_lock_it_cannot_interpret",
+        locked_repair.returncode != 0,
+        "repair fails rather than clearing a lock whose owner is unknown",
+    )
+    run.assert_that(
+        "repair.says_why_it_refused_the_lock",
+        "no readable process id" in locked_repair.stderr,
+        "the refusal names the undecidable lock rather than a generic error",
+    )
+    run.assert_that(
+        "repair.does_not_delete_the_lock_it_refused",
+        (root / LOCKED_REPAIRABLE / "pid.lock").exists(),
+        "the refused lock is still on disk",
+    )
+    run.assert_that(
+        "repair.does_not_rewrite_the_session_it_refused",
+        (root / LOCKED_REPAIRABLE / "journal" / "manifest.toml").exists()
+        and not (root / LOCKED_REPAIRABLE / "audio.opus").exists(),
+        "the refused session is untouched, journal included",
+    )
+
     run.assert_that(
         "doctor.reports_local_egress",
         "llm egress: no egress" in doctor.stdout,
