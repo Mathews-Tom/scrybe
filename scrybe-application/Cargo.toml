@@ -51,7 +51,7 @@ tempfile.workspace = true
 # `net` is what the local fixture server binds a listener with, exactly
 # as `scrybe-core`'s provider tests do. A dev edge, invisible to the
 # egress baselines, which resolve normal edges only.
-tokio = { version = "1.42", features = ["macros", "net", "rt-multi-thread"] }
+tokio = { version = "1.42", features = ["macros", "net", "rt-multi-thread", "time"] }
 # The same local fixture server `scrybe-core`'s provider tests use. A
 # dev dependency, so it stays out of the graph the egress baselines
 # read, which resolve normal edges only.

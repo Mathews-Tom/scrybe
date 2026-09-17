@@ -18,6 +18,15 @@
 //! to. It fails at [`ModelSource::open`], which is after the
 //! confirmation gate, so a build with no transport still refuses an
 //! unconfirmed request for the same reason a build with one does.
+//!
+//! Every implementation is expected to bound how long a single read may
+//! block. The manager checks cancellation between chunks, so a chunk
+//! that never arrives is a chunk during which a cancellation cannot be
+//! observed and the install cannot resolve at all. That is not a
+//! hypothetical: a peer that accepts the connection and then stops
+//! sending without closing it — a half-open connection after a dropped
+//! network, a stalled edge — parks the read forever unless the
+//! transport says otherwise.
 
 use async_trait::async_trait;
 
@@ -67,10 +76,26 @@ pub use http::HttpModelSource;
 
 #[cfg(feature = "model-download")]
 mod http {
+    use std::time::Duration;
+
     use super::{ArtifactChunks, ModelSource};
     use crate::error::{ApplicationError, ErrorCode};
     use crate::Result;
     use async_trait::async_trait;
+
+    /// How long the client waits for a connection to be established.
+    const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+
+    /// How long the client waits between two consecutive reads before
+    /// it gives up on the stream.
+    ///
+    /// Deliberately not a *total* timeout. A half-gigabyte artifact
+    /// legitimately takes minutes on a slow line, and a total timeout
+    /// would abandon a download that was making steady progress. What
+    /// has to be bounded is silence, not duration: a peer that is still
+    /// sending resets this on every chunk, and a peer that has stopped
+    /// does not.
+    const READ_TIMEOUT: Duration = Duration::from_secs(30);
 
     /// Reads a model artifact over HTTPS.
     ///
@@ -91,13 +116,33 @@ mod http {
         /// [`ErrorCode::ModelDownloadUnavailable`] when the platform
         /// TLS stack will not initialise.
         pub fn new() -> Result<Self> {
-            let client = reqwest::Client::builder().build().map_err(|source| {
-                ApplicationError::new(
-                    ErrorCode::ModelDownloadUnavailable,
-                    "the model transport could not be initialised",
-                )
-                .with_source(source)
-            })?;
+            Self::with_timeouts(CONNECT_TIMEOUT, READ_TIMEOUT)
+        }
+
+        /// A source whose client gives up after `connect` without a
+        /// connection, or after `read` without a byte.
+        ///
+        /// [`Self::new`] is the production constructor and supplies
+        /// figures sized for a half-gigabyte artifact over a real
+        /// network. This exists so a test can assert the abandonment
+        /// happens at all without waiting those figures out.
+        ///
+        /// # Errors
+        ///
+        /// [`ErrorCode::ModelDownloadUnavailable`] when the platform
+        /// TLS stack will not initialise.
+        pub fn with_timeouts(connect: Duration, read: Duration) -> Result<Self> {
+            let client = reqwest::Client::builder()
+                .connect_timeout(connect)
+                .read_timeout(read)
+                .build()
+                .map_err(|source| {
+                    ApplicationError::new(
+                        ErrorCode::ModelDownloadUnavailable,
+                        "the model transport could not be initialised",
+                    )
+                    .with_source(source)
+                })?;
             Ok(Self { client })
         }
     }

@@ -18,8 +18,8 @@
 //! zero-request property testable rather than merely intended.
 //!
 //! After that the sequence is: free space, unique `.partial`, stream
-//! with cancellation checked between chunks, exact size, exact digest,
-//! rename. Every failure and every cancellation leaves the partial
+//! with cancellation checked between chunks and again whenever one
+//! fails to arrive, exact size, exact digest, rename. Every failure and every cancellation leaves the partial
 //! where it is and the destination untouched, so nothing half-written
 //! is ever reachable under the name a runtime would load.
 //!
@@ -248,8 +248,11 @@ impl ModelManager {
     /// Acquires `id`, having been told the user agreed to it.
     ///
     /// `progress` is called as bytes arrive, at a coarse stride.
-    /// `cancel` is checked between chunks; a cancelled download leaves
-    /// its `.partial` in place and promotes nothing.
+    /// `cancel` is checked between chunks, and again when a chunk fails
+    /// to arrive, so how soon a cancellation is observed is bounded by
+    /// how long the source lets one read block rather than by whether
+    /// the peer keeps sending. A cancelled download leaves its
+    /// `.partial` in place and promotes nothing.
     ///
     /// # Errors
     ///
@@ -594,12 +597,24 @@ async fn stream_into(
             Ok(Some(chunk)) => chunk,
             Ok(None) => break,
             Err(error) => {
+                // Cancellation first. A transport bounded by a read
+                // timeout reports a stalled peer as an error, and a
+                // user who pressed Cancel during that stall asked for
+                // this to stop — reporting the timeout instead would
+                // name the consequence rather than the cause.
+                if cancel.is_cancelled() {
+                    return Streamed::Stopped(InstallReport {
+                        id: manifest.id.clone(),
+                        state: ModelState::Cancelled,
+                        promoted: false,
+                    });
+                }
                 return Streamed::Stopped(failed(
                     manifest,
                     ModelFailure::Transport {
                         summary: error.message().to_string(),
                     },
-                ))
+                ));
             }
         };
         // An artifact longer than the manifest is stopped as it
