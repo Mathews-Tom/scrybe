@@ -52,6 +52,9 @@ use async_trait::async_trait;
 use chrono::Utc;
 use clap::{Args as ClapArgs, ValueEnum};
 use futures::stream::{self, Stream, StreamExt};
+use scrybe_application::recording::{
+    RecordingController, RecordingState, StopAcceptance, StopSource,
+};
 #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
 use scrybe_capture_mac::{input_devices, InputDevice, MacCapture, NativeMicCapture, SckCapture};
 #[cfg(all(feature = "mic-capture", not(feature = "system-capture-mac")))]
@@ -349,14 +352,57 @@ impl From<ConsentModeArg> for ConsentMode {
     }
 }
 
+/// Record a session, stoppable by `Ctrl-C` or `SIGTERM`.
+///
+/// Drives the same process-wide recording controller the native shell
+/// uses, so a signal stop and a tray stop are the same accepted
+/// transition rather than two implementations of one idea.
+///
+/// # Errors
+///
+/// Propagates configuration, capture, provider, and storage failures
+/// from the recording session.
 pub async fn run(args: Args) -> Result<()> {
     let (stop_tx, stop_rx) = watch::channel(false);
+    let controller = Arc::new(RecordingController::new());
+    controller.begin_preparing().map_err(anyhow::Error::from)?;
+    controller.mark_recording().map_err(anyhow::Error::from)?;
+
+    let signal_controller = Arc::clone(&controller);
     let signal_handle = tokio::spawn(monitor_signals(move || {
-        let _ = stop_tx.send(true);
+        if signal_controller.request_stop(StopSource::Signal) == StopAcceptance::Accepted {
+            let _ = stop_tx.send(true);
+        }
     }));
     let result = run_with_stop(args, stop_rx).await;
     signal_handle.abort();
+    settle(&controller, result.as_ref().err());
     result
+}
+
+/// Walks the controller to a terminal state and back to idle.
+///
+/// The controller labels a failure from the state it happened in, so
+/// this never decides whether a failure was capture-side or
+/// finalization-side.
+fn settle(controller: &RecordingController, failure: Option<&anyhow::Error>) {
+    if let Some(error) = failure {
+        if let Err(conflict) = controller.fail(error.to_string()) {
+            tracing::debug!(%conflict, "recording failure arrived in a state that cannot fail");
+        }
+    } else {
+        if controller.snapshot().state == RecordingState::Recording {
+            if let Err(conflict) = controller.begin_saving() {
+                tracing::debug!(%conflict, "recording controller could not enter saving");
+            }
+        }
+        if let Err(conflict) = controller.complete() {
+            tracing::debug!(%conflict, "recording controller could not complete");
+        }
+    }
+    if let Err(conflict) = controller.acknowledge() {
+        tracing::debug!(%conflict, "recording controller could not settle to idle");
+    }
 }
 
 #[cfg(feature = "mic-capture")]

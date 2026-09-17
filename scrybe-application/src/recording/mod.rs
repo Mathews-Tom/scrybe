@@ -17,8 +17,12 @@
 //! event.
 
 mod contract;
+mod controller;
 
 pub use contract::{
     RecordingEvent, RecordingFailure, RecordingFailureKind, RecordingSnapshot, RecordingState,
     StopAcceptance, StopSource, RECORDING_EVENT_SCHEMA_VERSION,
+};
+pub use controller::{
+    MonotonicClock, RecordingController, RecordingEventObserver, SystemMonotonicClock,
 };
