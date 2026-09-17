@@ -16,10 +16,12 @@
 //! in flight rather than abandoning it — held for the tray item alone.
 //!
 //! The menu below replaces the default so the quit item carries the
-//! tray's own menu identity. The global menu-event handler routes that
-//! identity through [`tray::activate`], which is the same function the
-//! tray's own handler and the debug control channel call, so there is
-//! one quit decision rather than three.
+//! tray's own menu identity. The process's one global menu-event
+//! listener routes that identity through [`tray::activate`], which is
+//! the same function the debug control channel calls, so there is one
+//! quit decision rather than three. That listener is registered once,
+//! on the builder; `tests/menu_event_listener.rs` says why a second
+//! one anywhere would make this claim false again.
 //!
 //! Everything else in the menu is a predefined item, dispatched
 //! natively. They are here because replacing the default menu would
@@ -74,18 +76,6 @@ pub fn build<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Menu
     )?;
 
     Menu::with_items(app, &[&application, &edit])
-}
-
-/// Runs the action behind one application-menu item.
-///
-/// Only the items this application defines are dispatched here.
-/// Everything else in the menu is predefined and carries out its own
-/// action natively, so forwarding it would either duplicate that action
-/// or report it as unhandled.
-pub fn activate(app: &tauri::AppHandle, item: &str) {
-    if owned(item) {
-        tray::activate(app, item);
-    }
 }
 
 /// Whether the application menu defines this item itself.
@@ -156,9 +146,10 @@ mod tests {
 
     #[test]
     fn test_the_menu_leaves_the_trays_other_items_and_predefined_ones_alone() {
-        // `Open Scrybe` belongs to the tray and is not in this menu;
-        // forwarding it from here would act on an item the user cannot
-        // see. A predefined item carries out its own action natively.
+        // `Open Scrybe` and `Record now` belong to the tray menu, and a
+        // predefined item carries out its own action natively. This
+        // menu defines none of them, so the quit identity it does
+        // define is the only one it can be read as claiming.
         assert!(!owned(tray::OPEN));
         assert!(!owned(tray::RECORD));
         assert!(!owned("__core__predefined__copy"));
