@@ -448,9 +448,38 @@ describe("the ready step", () => {
     );
     await goTo(user, "Ready");
 
-    expect(screen.getByText("This Mac is ready to record.")).toBeDefined();
+    expect(screen.getByText(/Nothing above is blocking a recording/)).toBeDefined();
     expect(screen.getByText(/nothing is answering/)).toBeDefined();
-    expect(screen.getByText(/record that notes were missing/)).toBeDefined();
+    expect(screen.getByText(/Notes need a language model running on this Mac/)).toBeDefined();
+  });
+
+  /// The verdict used to read "This Mac is ready to record." for any
+  /// installation whose facets were not blocked. Nothing in this
+  /// application checks a capture permission, so that told a user who
+  /// had refused both prompts that recording would work.
+  it("test_the_verdict_does_not_claim_a_permission_nothing_checked", async () => {
+    const user = userEvent.setup();
+    await renderWith(
+      <SetupWizard onExit={() => undefined} />,
+      servicesReturning({
+        readinessReport: () =>
+          Promise.resolve(
+            readiness({
+              capture: readinessFacet({
+                state: "unverified",
+                summary:
+                  "whether macOS has granted microphone and system-audio recording is not checked here; macOS asks the first time a recording needs it",
+              }),
+              can_record: true,
+            }),
+          ),
+      }),
+    );
+    await goTo(user, "Ready");
+
+    expect(screen.queryByText(/ready to record/)).toBeNull();
+    expect(screen.getByText(/does not check whether macOS has granted/)).toBeDefined();
+    expect(screen.getByText("Not checked")).toBeDefined();
   });
 
   it("test_a_blocked_facet_says_recording_is_not_available_yet", async () => {

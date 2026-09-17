@@ -19,6 +19,8 @@ function word(facet: ReadinessFacet): string {
       return "Needs attention";
     case "not_configured":
       return "Not configured";
+    case "unverified":
+      return "Not checked";
   }
 }
 
