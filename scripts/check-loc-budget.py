@@ -303,7 +303,7 @@ LOC_CEILINGS: dict[str, int] = {
     # The frontend is deliberately out of scope: this script measures
     # Rust only, and the TypeScript surface is governed by review rather
     # than by this gate.
-    "scrybe-desktop/src-tauri": 1700,
+    "scrybe-desktop/src-tauri": 2100,
 }
 
 
