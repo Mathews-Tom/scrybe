@@ -98,7 +98,7 @@ export type SettingsForm = { config_path: string, config_exists: boolean, schema
  */
 editable: Array<SettingsFieldSpec>, warnings: Array<SettingsWarning>, };
 
-export type ReadinessState = "ready" | "blocked" | "not_configured";
+export type ReadinessState = "ready" | "blocked" | "not_configured" | "unverified";
 
 export type ReadinessFacet = { state: ReadinessState, summary: string, };
 
