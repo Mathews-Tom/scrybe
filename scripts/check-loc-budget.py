@@ -248,18 +248,28 @@ LOC_CEILINGS: dict[str, int] = {
     # this table is silently uncounted rather than failing closed.
     # Sized for the transport contracts and their generated-binding
     # export, the narrow per-service commands, the process-lifetime
-    # application state, the window/tray/single-instance/idle lifecycle,
-    # the debug-only lifecycle channel, and the inline `#[cfg(test)]`
-    # coverage this script counts. Grounded in the 2,292 measured lines
-    # of `scrybe-application/src/sessions` and `src/config`, which the
-    # host mirrors as data-transfer types and forwarding commands rather
-    # than reimplements; it carries no domain policy of its own, so it
-    # is budgeted well under the service layer it fronts. The measured
-    # implementation is 908. The frontend
-    # is deliberately out of scope: this script measures Rust only, and
-    # the TypeScript surface is governed by review rather than by this
-    # gate.
-    "scrybe-desktop/src-tauri": 1000,
+    # application state, the window/tray/menu/single-instance/idle
+    # lifecycle, the navigation guard, the debug-only lifecycle channel
+    # and control socket, and the inline `#[cfg(test)]` coverage this
+    # script counts. Grounded in the 2,292 measured lines of
+    # `scrybe-application/src/sessions` and `src/config`, which the host
+    # mirrors as data-transfer types and forwarding commands rather than
+    # reimplements; it carries no domain policy of its own, so it is
+    # budgeted well under the service layer it fronts.
+    #
+    # The measured implementation is 1,062, leaving 138 lines of
+    # headroom. That is sized against the next thing to land here rather
+    # than chosen round: recording control adds two commands to
+    # `commands.rs` and their contract types, and turns the tray's
+    # `Record now` from a disabled item into a live one with a
+    # confirmation on the quit path — the same shape as the four
+    # commands and one tray item already measured here, which together
+    # account for roughly that many lines.
+    #
+    # The frontend is deliberately out of scope: this script measures
+    # Rust only, and the TypeScript surface is governed by review rather
+    # than by this gate.
+    "scrybe-desktop/src-tauri": 1200,
 }
 
 
