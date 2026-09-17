@@ -120,13 +120,13 @@ pub fn search_sessions(
     offset: usize,
     limit: usize,
 ) -> Result<SessionRows, CommandFailure> {
-    let cancel = desktop.queries().begin(&request_id);
+    let (cancel, generation) = desktop.queries().begin(&request_id);
     let request = SearchRequest::new(query).at(PageRequest::new(offset, limit));
     let outcome = desktop
         .application()
         .sessions()
         .search_sessions(&request, &cancel);
-    desktop.queries().finish(&request_id);
+    desktop.queries().finish(&request_id, generation);
     outcome.map(Into::into).map_err(Into::into)
 }
 
