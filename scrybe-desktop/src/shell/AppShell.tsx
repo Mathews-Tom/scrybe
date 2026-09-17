@@ -1,50 +1,32 @@
 import { useState } from "react";
 
-import { SearchView } from "./views/SearchView";
-import { SessionsView } from "./views/SessionsView";
-import { SettingsView } from "./views/SettingsView";
+import { ROUTES, defaultRoute } from "./routes";
 
-type ViewId = "sessions" | "search" | "settings";
-
-const NAVIGATION: readonly { id: ViewId; label: string }[] = [
-  { id: "sessions", label: "Sessions" },
-  { id: "search", label: "Search" },
-  { id: "settings", label: "Settings" },
-];
-
-function view(id: ViewId) {
-  switch (id) {
-    case "sessions":
-      return <SessionsView />;
-    case "search":
-      return <SearchView />;
-    case "settings":
-      return <SettingsView />;
-  }
-}
+const FIRST_ROUTE = defaultRoute();
 
 /**
  * The persistent frame: a primary navigation sidebar, the local/offline
  * status indicator, and the active view.
  */
 export function AppShell() {
-  const [active, setActive] = useState<ViewId>("sessions");
+  const [activeId, setActiveId] = useState(FIRST_ROUTE.id);
+  const active = ROUTES.find((route) => route.id === activeId) ?? FIRST_ROUTE;
 
   return (
     <div className="app-shell">
       <nav className="app-shell__sidebar" aria-label="Primary">
         <ul className="app-shell__nav">
-          {NAVIGATION.map(({ id, label }) => (
-            <li key={id}>
+          {ROUTES.map((route) => (
+            <li key={route.id}>
               <button
                 type="button"
                 className="app-shell__nav-item"
-                aria-current={active === id ? "page" : undefined}
+                aria-current={route.id === active.id ? "page" : undefined}
                 onClick={() => {
-                  setActive(id);
+                  setActiveId(route.id);
                 }}
               >
-                {label}
+                {route.label}
               </button>
             </li>
           ))}
@@ -55,7 +37,7 @@ export function AppShell() {
         </p>
       </nav>
       <main className="app-shell__main" aria-labelledby="view-heading">
-        {view(active)}
+        {active.render()}
       </main>
     </div>
   );

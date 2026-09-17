@@ -108,9 +108,14 @@ const FORBIDDEN_NAMESPACES = [
 // whatever the next plugin is called.
 const ALLOWED_CORE_PERMISSIONS = ["core:event:allow-listen", "core:event:allow-unlisten"];
 
-// Tauri plugins this application is allowed to depend on. Empty: every
-// capability it needs is a command it defines itself.
-const ALLOWED_PLUGINS = [];
+// Tauri plugins this application is allowed to depend on.
+//
+// `single-instance` registers no command, so it widens nothing the
+// frontend can reach; it exists so a second launch activates this
+// process instead of creating a second owner of the same storage root.
+// Every other capability the application needs is a command it defines
+// itself.
+const ALLOWED_PLUGINS = ["tauri-plugin-single-instance"];
 
 // The manifest tables that make a crate a dependency of this host.
 //

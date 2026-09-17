@@ -33,6 +33,7 @@ scrybe-application = { package = "scrybe-meeting-application", path = "../../scr
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-single-instance = "2"
 ts-rs = "12"
 
 [lints.rust]
@@ -59,4 +60,5 @@ panic = "warn"
 # It is what lets `tests/capability_audit.rs` read a TOML capability
 # file rather than skip one, which `tauri-utils` loads unconditionally.
 [dev-dependencies]
+tempfile = "3.27.0"
 toml = "0.8"

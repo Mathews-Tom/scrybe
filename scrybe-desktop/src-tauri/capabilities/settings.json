@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "settings",
+  "description": "Reading the configuration a settings view displays. Read-only, and narrowed in Rust: no credential and no credential environment-variable name crosses this boundary.",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "allow-settings-summary"
+  ]
+}
