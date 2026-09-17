@@ -4,8 +4,7 @@
 // You may obtain a copy of the License at
 //     https://www.apache.org/licenses/LICENSE-2.0
 
-//! `scrybe mcp` — read-only local-agent access server over stdio (M9,
-//! `.docs/DEVELOPMENT_PLAN.md` §6).
+//! `scrybe mcp` — read-only local-agent access server over stdio.
 //!
 //! Serves `list_recent_meetings`, `search_meetings`, `get_meeting`,
 //! `get_meeting_notes`, and `get_meeting_transcript` as MCP tools over
@@ -20,10 +19,10 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::Args as ClapArgs;
-use scrybe_core::agent_access::{handle_message, RealReadOnlyFs};
+use scrybe_application::agent_access::handle_message;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-use crate::runtime::{expand_root, load_or_default_config};
+use crate::runtime::{application, config_service};
 
 #[derive(ClapArgs, Debug)]
 pub struct Args {
@@ -39,7 +38,7 @@ pub struct Args {
 /// Returns an error if `[agent_access].enabled` is not `true` in
 /// config, or if reading from stdin or writing to stdout fails.
 pub async fn run(args: Args) -> Result<()> {
-    let cfg = load_or_default_config()?;
+    let cfg = config_service()?.load()?;
     if !cfg.agent_access.enabled {
         anyhow::bail!(
             "scrybe mcp: refusing to start — this is an opt-in, read-only surface; enable it \
@@ -47,12 +46,7 @@ pub async fn run(args: Args) -> Result<()> {
              Privacy and Network Posture section)"
         );
     }
-    let root = args
-        .root
-        .as_deref()
-        .map_or_else(|| expand_root(&cfg.storage.root), expand_root);
-
-    let fs = RealReadOnlyFs;
+    let app = application(args.root.as_deref())?;
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
     let mut stdout = tokio::io::stdout();
 
@@ -61,7 +55,7 @@ pub async fn run(args: Args) -> Result<()> {
         if trimmed.is_empty() {
             continue;
         }
-        if let Some(response) = handle_message(&fs, &root, trimmed) {
+        if let Some(response) = handle_message(app.session_reader(), trimmed) {
             stdout
                 .write_all(response.as_bytes())
                 .await
@@ -82,7 +76,7 @@ mod tests {
     async fn test_run_refuses_to_start_when_agent_access_disabled() {
         let cfg_dir = tempfile::tempdir().unwrap();
         let config_path = cfg_dir.path().join("nonexistent-config.toml");
-        // `load_or_default_config` falls back to `Config::default()`
+        // `ConfigService::load` falls back to `Config::default()`
         // when the discovered path does not exist, and the default
         // has `agent_access.enabled = false`.
         std::env::set_var("SCRYBE_CONFIG", &config_path);

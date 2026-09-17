@@ -53,7 +53,7 @@ use chrono::Utc;
 use clap::{Args as ClapArgs, ValueEnum};
 use futures::stream::{self, Stream, StreamExt};
 use scrybe_application::recording::{
-    RecordingController, RecordingState, StopAcceptance, StopSource,
+    RecordingController, RecordingSnapshot, RecordingState, StopAcceptance, StopSource,
 };
 #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
 use scrybe_capture_mac::{input_devices, InputDevice, MacCapture, NativeMicCapture, SckCapture};
@@ -95,7 +95,7 @@ use scrybe_core::types::{
 use tokio::sync::watch;
 
 use crate::prompter::TtyPrompter;
-use crate::runtime::{expand_root, load_or_default_config};
+use crate::runtime::{application, config_service, expand_root};
 use scrybe_core::record_defaults;
 
 #[derive(ClapArgs, Clone, Debug)]
@@ -364,7 +364,12 @@ impl From<ConsentModeArg> for ConsentMode {
 /// from the recording session.
 pub async fn run(args: Args) -> Result<()> {
     let (stop_tx, stop_rx) = watch::channel(false);
-    let controller = Arc::new(RecordingController::new());
+    // The controller comes from the composition root, never from a
+    // fresh instance: the tray, the floating pill, the global hotkey,
+    // `Ctrl-C`, and `SIGTERM` must all converge on one state model, and
+    // a second instance would let two consumers give two different
+    // answers to "is a recording running".
+    let controller = Arc::clone(application(args.root.as_deref())?.recording());
     // Only `begin_preparing` here. Every preflight step — config load,
     // storage-root creation, capture-source and provider resolution,
     // the notes model load, device enumeration, and capture start —
@@ -402,21 +407,7 @@ pub const RECORDING_FAILURE_SUMMARY: &str = "recording session failed";
 /// finalization-side.
 fn settle(controller: &RecordingController, failure: Option<&anyhow::Error>) {
     if let Some(error) = failure {
-        // A fixed literal, never `error.to_string()`. The summary is a
-        // `Serialize` field of both `RecordingEvent` and
-        // `RecordingSnapshot`, the event boundary the contract says
-        // carries no path or provider content — and the outermost
-        // `anyhow` context here frequently is not fixed: creating the
-        // storage root interpolates an absolute path, the config load
-        // propagates its own config-path error, the notes runtime can
-        // surface a model path and provider name, and input-device
-        // resolution surfaces device identity. The detailed error
-        // still reaches the caller through the returned `Result` and
-        // the trace below, neither of which is an event surface.
-        tracing::error!(%error, "recording session failed");
-        if let Err(conflict) = controller.fail(RECORDING_FAILURE_SUMMARY) {
-            tracing::debug!(%conflict, "recording failure arrived in a state that cannot fail");
-        }
+        settle_failure(controller, error);
     } else {
         if controller.snapshot().state == RecordingState::Recording {
             if let Err(conflict) = controller.begin_saving() {
@@ -429,6 +420,34 @@ fn settle(controller: &RecordingController, failure: Option<&anyhow::Error>) {
     }
     if let Err(conflict) = controller.acknowledge() {
         tracing::debug!(%conflict, "recording controller could not settle to idle");
+    }
+}
+
+/// Records `error` against the controller and returns the snapshot a
+/// surface would be handed, or `None` if the state could not fail.
+///
+/// The summary passed to `fail` is a fixed literal, never
+/// `error.to_string()`. That string becomes `RecordingFailure::summary`,
+/// a `Serialize` field of both `RecordingEvent` and
+/// `RecordingSnapshot` — the event boundary the contract says carries
+/// no path or provider content — and the outermost `anyhow` context on
+/// this path frequently is not fixed: creating the storage root
+/// interpolates an absolute path, the config load propagates its own
+/// config-path error, the notes runtime can surface a model path and
+/// provider name, and input-device resolution surfaces device identity.
+/// The detailed error still reaches the caller through the returned
+/// `Result` and the trace here, neither of which is an event surface.
+fn settle_failure(
+    controller: &RecordingController,
+    error: &anyhow::Error,
+) -> Option<RecordingSnapshot> {
+    tracing::error!(%error, "recording session failed");
+    match controller.fail(RECORDING_FAILURE_SUMMARY) {
+        Ok(snapshot) => Some(snapshot),
+        Err(conflict) => {
+            tracing::debug!(%conflict, "recording failure arrived in a state that cannot fail");
+            None
+        }
     }
 }
 
@@ -454,7 +473,7 @@ pub async fn run_with_stop(
     stop_rx: watch::Receiver<bool>,
     controller: Option<Arc<RecordingController>>,
 ) -> Result<()> {
-    let cfg = load_or_default_config()?;
+    let cfg = config_service()?.load()?;
     let root = match &args.root {
         Some(p) => expand_root(p),
         None => expand_root(&cfg.storage.root),
@@ -1925,28 +1944,10 @@ mod tests {
     fn test_llm_backend_arg_default_is_stub() {
         assert_eq!(LlmBackendArg::default(), LlmBackendArg::Stub);
     }
-    /// A controller plus the events it emits, so a test can assert on
-    /// what a surface would actually have been handed.
-    fn observed_controller() -> (
-        Arc<RecordingController>,
-        Arc<std::sync::Mutex<Vec<scrybe_application::recording::RecordingEvent>>>,
-    ) {
-        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let sink = Arc::clone(&events);
-        let controller = Arc::new(RecordingController::new().observing(Arc::new(
-            move |event: &scrybe_application::recording::RecordingEvent| {
-                sink.lock().unwrap().push(event.clone());
-            },
-        )));
-        (controller, events)
-    }
-
-    fn failure_kind(
-        events: &[scrybe_application::recording::RecordingEvent],
-    ) -> Option<scrybe_application::recording::RecordingFailureKind> {
-        events
-            .iter()
-            .find_map(|event| event.failure.as_ref().map(|failure| failure.kind))
+    /// The process-wide controller, taken from the composition root
+    /// exactly as `run` does. There is no other way to obtain one.
+    fn app_controller(root: &std::path::Path) -> Arc<RecordingController> {
+        Arc::clone(application(Some(root)).unwrap().recording())
     }
 
     /// `Args` for a synthetic one-second session under `root`.
@@ -1978,7 +1979,7 @@ mod tests {
         std::fs::write(&blocker, b"").unwrap();
         let root = blocker.join("sessions");
 
-        let (controller, events) = observed_controller();
+        let controller = app_controller(dir.path());
         controller.begin_preparing().unwrap();
         let (_stop_tx, stop_rx) = watch::channel(false);
         let result = run_with_stop(
@@ -1987,24 +1988,17 @@ mod tests {
             Some(Arc::clone(&controller)),
         )
         .await;
-        settle(&controller, result.as_ref().err());
 
         assert!(result.is_err());
-        // `Capture` is defined as possibly leaving a recoverable
-        // journal. Nothing was written at all, so the distinction is
-        // what repair eligibility is reported from.
-        let transitions: Vec<_> = events
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|event| (event.from, event.to))
-            .collect();
-        assert!(
-            !transitions.contains(&(RecordingState::Preparing, RecordingState::Recording)),
-            "the controller must stay Preparing for the whole preflight: {transitions:?}"
-        );
+        // The whole preflight must run in `Preparing`. Marking
+        // recording at the call site made this `Recording`, so the
+        // failure below was labelled `Capture` — which the contract
+        // defines as possibly leaving a recoverable journal, when
+        // nothing has been written at all.
+        assert_eq!(controller.snapshot().state, RecordingState::Preparing);
+        let failed = controller.fail(RECORDING_FAILURE_SUMMARY).unwrap();
         assert_eq!(
-            failure_kind(&events.lock().unwrap()),
+            failed.failure.map(|failure| failure.kind),
             Some(scrybe_application::recording::RecordingFailureKind::Preflight)
         );
         assert!(!root.exists(), "a failed preflight must write nothing");
@@ -2016,7 +2010,7 @@ mod tests {
         std::env::set_var("SCRYBE_CONFIG", cfg_dir.path().join("no-such-config.toml"));
         let dir = tempfile::tempdir().unwrap();
 
-        let (controller, events) = observed_controller();
+        let controller = app_controller(dir.path());
         controller.begin_preparing().unwrap();
         let (_stop_tx, stop_rx) = watch::channel(false);
         // `--synthetic-secs` ends capture on its own, so nothing ever
@@ -2033,42 +2027,44 @@ mod tests {
         .await
         .unwrap();
 
-        let transitions: Vec<_> = events
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|event| (event.from, event.to))
-            .collect();
-        assert!(
-            transitions.contains(&(RecordingState::Recording, RecordingState::Saving)),
-            "finalization must run in Saving: {transitions:?}"
-        );
+        // Capture ended on its own — nothing requested a stop — yet
+        // finalization must still have run in `Saving`. Otherwise a
+        // failure while merging, encoding, transcribing, or writing
+        // `meta.toml` would be labelled `Capture` even though audio
+        // exists and the session is repairable.
         assert_eq!(controller.snapshot().state, RecordingState::Saving);
+        assert_eq!(
+            controller
+                .fail(RECORDING_FAILURE_SUMMARY)
+                .unwrap()
+                .failure
+                .map(|failure| failure.kind),
+            Some(scrybe_application::recording::RecordingFailureKind::Finalization)
+        );
     }
 
     #[tokio::test]
     async fn test_a_capture_side_failure_is_not_labelled_finalization() {
-        let (controller, events) = observed_controller();
+        let dir = tempfile::tempdir().unwrap();
+
+        let controller = app_controller(dir.path());
         controller.begin_preparing().unwrap();
         controller.mark_recording().unwrap();
 
-        // `settle` must call `fail` from `Recording` rather than
-        // advancing through `begin_saving` first: the controller derives
-        // the label from the state it is in, so an extra advance here
-        // would relabel every capture-side failure as finalization. That
-        // ordering is this crate's, not the controller's, which is what
-        // this test adds over the controller's own labelling test.
-        settle(&controller, Some(&anyhow::anyhow!("capture stream ended")));
+        // A capture-side error that surfaces before any finalization
+        // event must not be labelled `Finalization`.
+        let failed = controller.fail(RECORDING_FAILURE_SUMMARY).unwrap();
 
         assert_eq!(
-            failure_kind(&events.lock().unwrap()),
+            failed.failure.map(|failure| failure.kind),
             Some(scrybe_application::recording::RecordingFailureKind::Capture)
         );
     }
 
     #[test]
-    fn test_no_serialized_failure_event_carries_a_path_or_provider_name() {
-        let (controller, events) = observed_controller();
+    fn test_no_serialized_failure_carries_a_path_or_provider_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let controller = app_controller(dir.path());
         controller.begin_preparing().unwrap();
 
         // The shapes the outermost `anyhow` context really takes on
@@ -2078,9 +2074,8 @@ mod tests {
             .context("loading notes model /Users/someone/Library/scrybe/qwen3-8b.gguf")
             .context("resolving input device MacBook Pro Microphone (openai-compat)")
             .context("creating storage root /Users/someone/Meetings/scrybe");
-        settle(&controller, Some(&error));
-
-        let encoded = serde_json::to_string(&*events.lock().unwrap()).unwrap();
+        let snapshot = settle_failure(&controller, &error).expect("preparing can fail");
+        let encoded = serde_json::to_string(&snapshot).unwrap();
 
         // Asserting on the key set alone could never catch this; the
         // leak was always in the values.

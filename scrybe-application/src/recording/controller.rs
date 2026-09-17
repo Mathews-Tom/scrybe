@@ -134,14 +134,24 @@ impl fmt::Debug for RecordingController {
 
 impl RecordingController {
     /// An idle controller on the process's monotonic clock.
+    ///
+    /// Crate-private on purpose. The stack's central claim is that one
+    /// process-wide state model backs every surface, and a second
+    /// instance would make that claim false silently: a desktop host
+    /// holding a `ScrybeApplication` would read its own controller as
+    /// `Idle` forever while another instance drove a real recording,
+    /// giving two consumers two different answers to "is a recording
+    /// running". `ScrybeApplication::recording` is therefore the only
+    /// way to obtain one, so the guarantee is structural rather than a
+    /// convention every consumer has to keep.
     #[must_use]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::with_clock(Arc::new(SystemMonotonicClock))
     }
 
     /// An idle controller on `clock`.
     #[must_use]
-    pub fn with_clock(clock: Arc<dyn MonotonicClock>) -> Self {
+    pub(crate) fn with_clock(clock: Arc<dyn MonotonicClock>) -> Self {
         Self {
             clock,
             observers: Mutex::new(Vec::new()),
@@ -151,8 +161,10 @@ impl RecordingController {
 
     /// The same controller, notifying `observer` once per transition.
     ///
-    /// Consumes `self`, so it can only be called before the controller
-    /// is shared. [`Self::subscribe`] is the route once it is.
+    /// Consuming `self` rather than taking `&mut self` is what keeps
+    /// this from being a second route to an instance: a caller outside
+    /// the crate has no way to obtain the `Self` it needs.
+    /// [`Self::subscribe`] is the route once the controller is shared.
     #[must_use]
     pub fn observing(self, observer: Arc<RecordingEventObserver>) -> Self {
         self.subscribe(observer);
@@ -413,12 +425,6 @@ impl RecordingController {
     /// SIGINT as the only way to end the session.
     fn lock(&self) -> MutexGuard<'_, ControllerState> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-}
-
-impl Default for RecordingController {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

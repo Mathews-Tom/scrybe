@@ -56,7 +56,7 @@ use crate::paging::{Page, PageRequest};
 use crate::sessions::contract::{
     NotesDocument, NotesGenerationOutcome, NotesGenerationResult, RepairOutcomeKind, RepairResult,
     SearchPage, SearchRequest, SessionDetail, SessionPage, SessionState, SessionSummary,
-    TranscriptCursor, TranscriptPage,
+    TranscriptCursor, TranscriptDocument, TranscriptPage,
 };
 use crate::sessions::scan::{
     classify, Classified, FolderView, ScannedSession, AUDIO_FILE, JOURNAL_DIR,
@@ -79,7 +79,11 @@ pub struct NotesGenerationRequest<'a> {
 }
 
 /// Produces a notes document from a durable transcript.
-pub trait NotesGenerator {
+///
+/// Asynchronous because a real generator talks to a language-model
+/// provider; the stub generators tests use simply return immediately.
+#[async_trait::async_trait]
+pub trait NotesGenerator: Sync {
     /// Renders notes markdown for `request`.
     ///
     /// # Errors
@@ -87,7 +91,7 @@ pub trait NotesGenerator {
     /// Any generator failure. The repository surfaces it as
     /// [`ErrorCode::NotesGenerationFailed`] and retains this error as
     /// the internal source.
-    fn generate(
+    async fn generate(
         &self,
         request: &NotesGenerationRequest<'_>,
     ) -> std::result::Result<String, Box<dyn StdError + Send + Sync>>;
@@ -274,6 +278,29 @@ impl SessionRepository {
         })
     }
 
+    /// A session's complete durable transcript.
+    ///
+    /// For a consumer that needs the whole document rather than a
+    /// window onto it. A view that renders a transcript should page
+    /// through [`Self::read_transcript_page`] instead.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::read_notes`].
+    pub fn read_transcript(&self, id: &SessionRef) -> Result<TranscriptDocument> {
+        let session = self.resolve(id)?;
+        let markdown = if session.artifacts.transcript {
+            Some(self.read_artifact(&session, TRANSCRIPT_FILE)?)
+        } else {
+            None
+        };
+        Ok(TranscriptDocument {
+            id: session.id.clone(),
+            state: session.state,
+            markdown,
+        })
+    }
+
     /// One window of a session's durable transcript.
     ///
     /// `page` is the cursor: its offset is the first transcript line
@@ -370,7 +397,7 @@ impl SessionRepository {
     /// [`ErrorCode::NotesGenerationFailed`] when `generator` fails, and
     /// [`ErrorCode::StorageUnavailable`] when the replacement cannot be
     /// written.
-    pub fn regenerate_notes(
+    pub async fn regenerate_notes(
         &self,
         id: &SessionRef,
         generator: &dyn NotesGenerator,
@@ -391,6 +418,7 @@ impl SessionRepository {
                 title: meta.and_then(|meta| meta.title.as_deref()),
                 started_at: meta.map(|meta| meta.started_at),
             })
+            .await
             .map_err(|source| {
                 ApplicationError::new(
                     ErrorCode::NotesGenerationFailed,
@@ -1111,6 +1139,23 @@ mod tests {
     }
 
     #[test]
+    fn test_the_whole_transcript_read_matches_what_paging_walks() {
+        let tree = Tree::new();
+        tree.complete("2026-04-29-1430-acme-01HXYZ", "Acme");
+        let repository = tree.repository();
+
+        let whole = repository.read_transcript(&id("01HXYZ")).unwrap();
+        let paged = repository
+            .read_transcript_page(&id("01HXYZ"), PageRequest::new(0, 200))
+            .unwrap();
+
+        assert_eq!(
+            whole.markdown.unwrap().lines().collect::<Vec<_>>(),
+            paged.lines
+        );
+    }
+
+    #[test]
     fn test_reading_notes_of_a_session_without_notes_reports_absence_not_failure() {
         let tree = Tree::new();
         tree.journal_only("2026-04-29-1430-acme-01HXYZ");
@@ -1145,8 +1190,9 @@ mod tests {
 
     struct FixedNotes(&'static str);
 
+    #[async_trait::async_trait]
     impl NotesGenerator for FixedNotes {
-        fn generate(
+        async fn generate(
             &self,
             _request: &NotesGenerationRequest<'_>,
         ) -> std::result::Result<String, Box<dyn StdError + Send + Sync>> {
@@ -1156,8 +1202,9 @@ mod tests {
 
     struct FailingNotes;
 
+    #[async_trait::async_trait]
     impl NotesGenerator for FailingNotes {
-        fn generate(
+        async fn generate(
             &self,
             _request: &NotesGenerationRequest<'_>,
         ) -> std::result::Result<String, Box<dyn StdError + Send + Sync>> {
@@ -1165,14 +1212,15 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_regenerating_notes_replaces_the_durable_document() {
+    #[tokio::test]
+    async fn test_regenerating_notes_replaces_the_durable_document() {
         let tree = Tree::new();
         tree.complete("2026-04-29-1430-acme-01HXYZ", "Acme");
         let repository = tree.repository();
 
         let result = repository
             .regenerate_notes(&id("01HXYZ"), &FixedNotes("## TL;DR\n- regenerated\n"))
+            .await
             .unwrap();
 
         assert_eq!(result.outcome, NotesGenerationOutcome::Replaced);
@@ -1186,27 +1234,29 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_regenerating_identical_notes_leaves_the_document_untouched() {
+    #[tokio::test]
+    async fn test_regenerating_identical_notes_leaves_the_document_untouched() {
         let tree = Tree::new();
         tree.complete("2026-04-29-1430-acme-01HXYZ", "Acme");
 
         let result = tree
             .repository()
             .regenerate_notes(&id("01HXYZ"), &FixedNotes("## TL;DR\n- covered widgets\n"))
+            .await
             .unwrap();
 
         assert_eq!(result.outcome, NotesGenerationOutcome::Unchanged);
     }
 
-    #[test]
-    fn test_a_generator_failure_leaves_the_previous_notes_in_place() {
+    #[tokio::test]
+    async fn test_a_generator_failure_leaves_the_previous_notes_in_place() {
         let tree = Tree::new();
         tree.complete("2026-04-29-1430-acme-01HXYZ", "Acme");
         let repository = tree.repository();
 
         let error = repository
             .regenerate_notes(&id("01HXYZ"), &FailingNotes)
+            .await
             .unwrap_err();
 
         assert_eq!(error.code(), ErrorCode::NotesGenerationFailed);
@@ -1220,14 +1270,15 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_regeneration_is_refused_for_a_session_without_a_durable_transcript() {
+    #[tokio::test]
+    async fn test_regeneration_is_refused_for_a_session_without_a_durable_transcript() {
         let tree = Tree::new();
         tree.repairable("2026-04-29-1430-acme-01HXYZ");
 
         let error = tree
             .repository()
             .regenerate_notes(&id("01HXYZ"), &FixedNotes("x"))
+            .await
             .unwrap_err();
 
         assert_eq!(error.code(), ErrorCode::NotApplicable);

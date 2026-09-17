@@ -18,7 +18,7 @@ use clap::Args as ClapArgs;
 use scrybe_application::sessions::{SessionState, SessionSummary};
 use scrybe_application::{ErrorCode, PageRequest, SessionRepository, MAX_PAGE_LIMIT};
 
-use crate::runtime::session_repository;
+use crate::runtime::application;
 
 #[derive(ClapArgs, Debug)]
 pub struct Args {
@@ -29,10 +29,11 @@ pub struct Args {
 
 #[allow(clippy::unused_async)]
 pub async fn run(args: Args) -> Result<()> {
-    let repository = session_repository(args.root.as_deref())?;
+    let app = application(args.root.as_deref())?;
+    let repository = app.sessions();
     let root = repository.root().path().display().to_string();
 
-    let sessions = match collect(&repository) {
+    let sessions = match collect(repository) {
         Ok(sessions) => sessions,
         Err(error) if error.code() == ErrorCode::StorageRootMissing => {
             println!("scrybe list: no sessions found (root {root} does not exist)");
@@ -166,8 +167,8 @@ mod tests {
             .unwrap();
         }
 
-        let repository = session_repository(Some(dir.path())).unwrap();
-        let sessions = collect(&repository).unwrap();
+        let app = application(Some(dir.path())).unwrap();
+        let sessions = collect(app.sessions()).unwrap();
 
         assert_eq!(
             sessions
@@ -179,8 +180,8 @@ mod tests {
     }
 
     fn only_session(root: &std::path::Path) -> SessionSummary {
-        let repository = session_repository(Some(root)).unwrap();
-        let mut sessions = collect(&repository).unwrap();
+        let app = application(Some(root)).unwrap();
+        let mut sessions = collect(app.sessions()).unwrap();
 
         assert_eq!(sessions.len(), 1);
         sessions.remove(0)

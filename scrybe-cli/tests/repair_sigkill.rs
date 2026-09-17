@@ -4,8 +4,7 @@
 // You may obtain a copy of the License at
 //     https://www.apache.org/licenses/LICENSE-2.0
 
-//! `SIGKILL`-then-repair integration test (M2 PR-5 verification,
-//! `.docs/EXECUTION_PROMPTS.md` M2 PR-5).
+//! `SIGKILL`-then-repair integration test.
 //!
 //! Spawns the real `scrybe` binary recording a `--source synthetic`
 //! session, `SIGKILL`s it mid-stream (no chance to run any shutdown
@@ -136,8 +135,15 @@ fn test_sigkill_mid_recording_then_repair_recovers_audio() {
         "killed session must never have reached the offline merge"
     );
 
+    // `scrybe repair` addresses a session by name under a root, never by
+    // path: an absolute path is refused at the application boundary.
     let repair_output = Command::new(scrybe_bin())
-        .args(["repair", folder.to_str().unwrap()])
+        .args([
+            "repair",
+            folder.file_name().unwrap().to_str().unwrap(),
+            "--root",
+            folder.parent().unwrap().to_str().unwrap(),
+        ])
         .env(
             "SCRYBE_CONFIG",
             cfg_dir.path().join("nonexistent-config.toml"),

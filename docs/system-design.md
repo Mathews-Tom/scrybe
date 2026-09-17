@@ -137,11 +137,56 @@ scrybe/
 ├── context-ics/            # implements ContextProvider from .ics file
 ├── hook-git/               # optional cargo feature
 ├── hook-webhook/           # optional cargo feature
+├── application/            # shared user-facing services (see §3.1)
+│   └── src/
+│       ├── identity.rs     # opaque, root-confined session identity
+│       ├── sessions/       # repository, classification, read-only view
+│       ├── config/         # form projection + structure-preserving editor
+│       ├── diagnostics/    # findings, and repairs as a separate call
+│       ├── recording/      # one process-wide recording state model
+│       └── agent_access/   # read-only stdio JSON-RPC/MCP surface
 ├── cli/                    # main desktop binary; hotkey + tray + record
 └── android/                # Android Studio project
     ├── app/                # Kotlin Compose UI
     └── jniLibs/            # built from capture-android + core
 ```
+
+### 3.1 The application-service boundary
+
+`scrybe-core` owns the pipeline, storage primitives, and the Tier-1
+contracts frozen in §12.1. Frontends own presentation. Between them sits
+`scrybe-application`, which owns the use cases more than one frontend
+needs: listing and reading sessions, reading and updating
+configuration, diagnosing an install, and driving a recording.
+
+It exists because the alternative had already happened. `scrybe list`,
+`scrybe show`, and the read-only agent surface each carried their own
+reading of the §5 storage-layout invariants, and the readings did not
+agree — a session with merged audio but no `meta.toml` was invisible to
+one and reported by neither as recoverable. One implementation removes
+the class of defect rather than the instance.
+
+Four properties hold across every service, and are structural rather
+than conventional:
+
+- **Confinement.** A consumer supplies an opaque `SessionRef`, never a
+  path. Construction refuses absolute paths, separators, `.`/`..`
+  traversal, drive-relative and home-relative forms, and control
+  characters; resolution selects only among folder names read from the
+  configured root. A frontend that never receives a path cannot send
+  one back.
+- **A read-only view.** `SessionReader` exposes the reads and nothing
+  else. The agent surface is handed one, so no handler in it could
+  perform a mutation however it were written.
+- **Separate mutation.** Diagnosis reads; repair is a second call
+  taking one explicit recovery action. A diagnostics screen cannot
+  change the system by being opened.
+- **One recording state model.** Tray, floating pill, hotkey, CLI
+  signal bridge, and any future window drive the same controller, with
+  one monotonic clock origin and at most one accepted stop.
+
+The crate links no WebView, `AppKit`, `WinUI`, GTK, Compose, or
+`SwiftUI` code, and neither does `scrybe-core`.
 
 ## 4. The four extension seams in detail
 

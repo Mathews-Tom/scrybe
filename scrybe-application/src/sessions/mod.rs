@@ -14,6 +14,7 @@
 //! or disappearing under the configured root.
 
 mod contract;
+mod reader;
 mod repository;
 mod scan;
 
@@ -21,6 +22,7 @@ pub use contract::{
     ArtifactAvailability, CaptureMetadata, NotesDocument, NotesGenerationOutcome,
     NotesGenerationResult, ProviderMetadata, RepairOutcomeKind, RepairResult, SearchPage,
     SearchRequest, SessionDetail, SessionEligibility, SessionPage, SessionState, SessionSummary,
-    TranscriptCursor, TranscriptPage,
+    TranscriptCursor, TranscriptDocument, TranscriptPage,
 };
+pub use reader::SessionReader;
 pub use repository::{NotesGenerationRequest, NotesGenerator, SessionRepository};
