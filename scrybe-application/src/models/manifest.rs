@@ -70,8 +70,8 @@ struct Catalog {
 impl ModelManifest {
     /// Where the verified artifact belongs, under `models_dir`.
     ///
-    /// [`validate`] has already refused any destination carrying a
-    /// separator, a parent reference, or a root, so the join is a
+    /// [`Self::validate`] has already refused any destination carrying
+    /// a separator, a parent reference, or a root, so the join is a
     /// direct child of `models_dir`.
     #[must_use]
     pub fn destination_under(&self, models_dir: &Path) -> PathBuf {
