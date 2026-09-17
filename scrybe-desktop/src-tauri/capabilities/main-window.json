@@ -22,6 +22,8 @@
     "allow-settings-summary",
     "allow-recording-status",
     "allow-recording-preflight",
+    "allow-start-recording",
+    "allow-stop-recording",
     "allow-settings-form",
     "allow-apply-settings",
     "allow-diagnostics-report",

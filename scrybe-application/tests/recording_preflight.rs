@@ -590,3 +590,88 @@ fn test_a_second_start_is_refused_as_a_conflict_without_running_preflight() {
         RecordingState::Preparing
     );
 }
+
+/// The providers and the source a recording falls back to when nothing
+/// is configured. They moved here from the command-line recorder, where
+/// no other frontend could reach them; these are the tests that came
+/// with them.
+mod without_a_configured_provider {
+    use futures::StreamExt;
+    use scrybe_application::recording::{synthetic_frames, StubNotes, StubTranscription};
+    use scrybe_core::providers::{LlmProvider, SttProvider};
+    use scrybe_core::types::{AudioChunk, FrameSource};
+
+    fn chunk(samples: Vec<f32>) -> AudioChunk {
+        AudioChunk {
+            samples: samples.into(),
+            start: std::time::Duration::ZERO,
+            duration: std::time::Duration::from_millis(100),
+            source: FrameSource::Mic,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_the_synthetic_source_emits_speech_frames_before_silence() {
+        let frames: Vec<_> = synthetic_frames(1).collect().await;
+
+        assert!(!frames.is_empty());
+        let speech = frames
+            .iter()
+            .filter(|frame| {
+                frame
+                    .as_ref()
+                    .is_ok_and(|frame| frame.samples.iter().any(|sample| sample.abs() > 0.01))
+            })
+            .count();
+        assert!(speech >= 5, "expected speech frames; got {speech}");
+        assert!(
+            frames
+                .last()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .samples
+                .iter()
+                .all(|sample| *sample == 0.0),
+            "the source must end in silence so the chunker has a boundary to cut on"
+        );
+    }
+
+    /// The stub says what it is. A transcript produced without a model
+    /// must not be mistakable for one produced with it.
+    #[tokio::test]
+    async fn test_the_stub_transcription_marks_a_speech_chunk_as_synthetic() {
+        let result = StubTranscription
+            .transcribe(chunk(vec![0.5; 160]))
+            .await
+            .unwrap();
+
+        assert!(result.text.contains("synthetic"), "{}", result.text);
+    }
+
+    #[tokio::test]
+    async fn test_the_stub_transcription_marks_a_silent_chunk_as_silence() {
+        let result = StubTranscription
+            .transcribe(chunk(vec![0.0; 160]))
+            .await
+            .unwrap();
+
+        assert_eq!(result.text, "[silence]");
+    }
+
+    #[tokio::test]
+    async fn test_the_stub_notes_return_a_well_formed_body() {
+        let body = StubNotes.complete("Summarize the meeting").await.unwrap();
+
+        assert!(body.contains("## TL;DR"));
+        assert!(body.contains("## Action items"));
+    }
+
+    /// The names reach `meta.toml`, so a reader of a stored session can
+    /// tell which provider produced it.
+    #[test]
+    fn test_the_stubs_name_themselves_for_the_session_metadata() {
+        assert_eq!(StubTranscription.name(), "stub-local-stt");
+        assert_eq!(StubNotes.name(), "stub-local-llm");
+    }
+}

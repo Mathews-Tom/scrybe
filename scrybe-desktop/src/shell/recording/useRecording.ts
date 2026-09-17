@@ -1,7 +1,10 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useScrybe } from "../../ipc/ScrybeProvider";
-import type { RecordingStatus } from "../../generated/bindings";
+import type {
+  RecordingProgressView,
+  RecordingStatus,
+} from "../../generated/bindings";
 
 /**
  * How often the elapsed display is refreshed while a recording runs.
@@ -21,8 +24,42 @@ export interface Recording {
   elapsed: string;
   /** Whether a stop control should be enabled. */
   stopEnabled: boolean;
+  /** Whether a new recording may be started right now. */
+  startEnabled: boolean;
+  /** How far through saving, while saving. `null` otherwise. */
+  progress: RecordingProgressView | null;
+  /** The last refusal or failure, until the next attempt clears it. */
+  error: string | null;
+  /** Starts a recording with the given title. */
+  start: (title: string) => void;
+  /** Asks the recording in flight to stop and save. */
+  stop: () => void;
   /** Re-reads the host's snapshot now. */
   refresh: () => void;
+}
+
+/**
+ * The line a reader is shown for a failed command.
+ *
+ * The host's message is used verbatim: it is written by the service
+ * layer specifically to be read, and it never carries a source chain.
+ * A code with no message would leave the reader nothing to act on, so
+ * the code is the fallback rather than the other way round.
+ */
+function failureText(error: unknown): string {
+  if (typeof error !== "object" || error === null) {
+    return "the recording could not be started";
+  }
+  if ("message" in error) {
+    const { message } = error;
+    if (typeof message === "string" && message.length > 0) {
+      return message;
+    }
+  }
+  if ("code" in error) {
+    return String(error.code);
+  }
+  return "the recording could not be started";
 }
 
 /**
@@ -59,9 +96,17 @@ function isLive(status: RecordingStatus | null): boolean {
  * window can disagree with the service layer about whether a recording
  * is running.
  */
-export function useRecording(): Recording {
+export function useRecording(onSettled?: (settled: boolean) => void): Recording {
   const scrybe = useScrybe();
   const [status, setStatus] = useState<RecordingStatus | null>(null);
+  const [progress, setProgress] = useState<RecordingProgressView | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  // Held in a ref so a caller passing an inline callback does not tear
+  // the subscription down and rebuild it on every render.
+  const settled = useRef(onSettled);
+  useEffect(() => {
+    settled.current = onSettled;
+  }, [onSettled]);
   // The refresh effect below depends on this rather than on `status`,
   // so the interval is built once when a recording starts and torn down
   // once when it ends, instead of being rebuilt by every tick it
@@ -82,7 +127,43 @@ export function useRecording(): Recording {
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | undefined;
-    void scrybe.onRecordingTransition(() => {
+    void scrybe.onRecordingProgress((next) => {
+      setProgress(next);
+    }).then(
+      (stop) => {
+        if (cancelled) {
+          stop();
+          return;
+        }
+        unlisten = stop;
+      },
+      () => undefined,
+    );
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [scrybe]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+    void scrybe.onRecordingTransition((transition) => {
+      // Saving progress belongs to the recording that produced it. A
+      // step left over from the last one would render beside the next
+      // recording's elapsed time.
+      if (transition.to === "recording" || transition.to === "idle") {
+        setProgress(null);
+      }
+      if (transition.failure_summary !== null) {
+        setError(transition.failure_summary);
+      }
+      // A recording that has ended, either way. A caller that wants to
+      // re-check something once per recording hooks it here rather than
+      // watching the rendered state, which settles for many renders.
+      if (transition.to === "completed" || transition.to === "failed") {
+        settled.current?.(true);
+      }
       refresh();
     }).then(
       (stop) => {
@@ -110,10 +191,43 @@ export function useRecording(): Recording {
     };
   }, [live, refresh]);
 
+  const start = useCallback(
+    (title: string) => {
+      setError(null);
+      setProgress(null);
+      void scrybe.startRecording(title.trim() === "" ? null : title.trim()).then(
+        setStatus,
+        (failure: unknown) => {
+          setError(failureText(failure));
+          // The host settled its own controller; re-read rather than
+          // assume, so the two cannot disagree.
+          refresh();
+        },
+      );
+    },
+    [scrybe, refresh],
+  );
+
+  const stop = useCallback(() => {
+    void scrybe.stopRecording().then(setStatus, (failure: unknown) => {
+      setError(failureText(failure));
+      refresh();
+    });
+  }, [scrybe, refresh]);
+
   return {
     status,
-    elapsed: status === null || status.state === "idle" ? "" : elapsedLabel(status.elapsed_ms),
+    elapsed:
+      status === null || status.state === "idle" ? "" : elapsedLabel(status.elapsed_ms),
     stopEnabled: live && !(status?.stop_requested ?? true),
+    // A new recording is refused while one is in flight, and while the
+    // last one is still saving. The host refuses it too — this only
+    // keeps the control from offering what would be refused.
+    startEnabled: status !== null && (status.state === "idle" || status.state === "completed" || status.state === "failed"),
+    progress: status?.state === "saving" ? progress : null,
+    error,
+    start,
+    stop,
     refresh,
   };
 }

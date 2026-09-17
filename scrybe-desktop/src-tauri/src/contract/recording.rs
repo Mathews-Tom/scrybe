@@ -13,7 +13,8 @@
 
 use scrybe_application::recording::{
     CheckOutcome as ServiceCheckOutcome, PreflightCheck as ServicePreflightCheck, PreflightReport,
-    RecordingEvent, RecordingSnapshot, RecordingState as ServiceRecordingState,
+    RecordingEvent, RecordingProgress as ServiceRecordingProgress, RecordingSnapshot,
+    RecordingState as ServiceRecordingState, SavingStep as ServiceSavingStep,
 };
 use serde::Serialize;
 use ts_rs::TS;
@@ -24,6 +25,9 @@ use ts_rs::TS;
 /// the name the host actually publishes rather than to a copy that can
 /// drift from it.
 pub const TRANSITION_EVENT: &str = "recording-transition";
+
+/// The window event one saving step is delivered on.
+pub const PROGRESS_EVENT: &str = "recording-progress";
 
 /// Mirrors `scrybe_application::recording::RecordingState` through an
 /// exhaustive match.
@@ -200,6 +204,59 @@ impl From<PreflightReport> for PreflightView {
                     summary: finding.summary,
                 })
                 .collect(),
+        }
+    }
+}
+
+/// Which of the four ordered saving steps is running.
+///
+/// Mirrors `scrybe_application::recording::SavingStep` through an
+/// exhaustive match.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum SavingStep {
+    FinalizingTranscript,
+    EncodingAudio,
+    GeneratingNotes,
+    WritingMetadata,
+}
+
+impl From<ServiceSavingStep> for SavingStep {
+    fn from(step: ServiceSavingStep) -> Self {
+        match step {
+            ServiceSavingStep::FinalizingTranscript => Self::FinalizingTranscript,
+            ServiceSavingStep::EncodingAudio => Self::EncodingAudio,
+            ServiceSavingStep::GeneratingNotes => Self::GeneratingNotes,
+            ServiceSavingStep::WritingMetadata => Self::WritingMetadata,
+        }
+    }
+}
+
+/// How far through saving one recording is.
+///
+/// Carries a step, a position, and a total, and nothing that was said:
+/// the service layer's progress projection refuses to derive a step
+/// from the one pipeline event that holds a transcribed line, so there
+/// is no payload here that could carry one.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, TS)]
+pub struct RecordingProgressView {
+    /// The service layer's progress schema version, forwarded
+    /// unchanged so a frontend can refuse a payload it was not built
+    /// for.
+    pub schema_version: u32,
+    pub step: SavingStep,
+    /// From 1.
+    pub index: u32,
+    pub total: u32,
+}
+
+impl From<ServiceRecordingProgress> for RecordingProgressView {
+    fn from(progress: ServiceRecordingProgress) -> Self {
+        Self {
+            schema_version: progress.schema_version,
+            step: progress.step.into(),
+            index: progress.index,
+            total: progress.total,
         }
     }
 }

@@ -3,9 +3,11 @@ import { listen } from "@tauri-apps/api/event";
 
 import { SETUP_COMMANDS } from "./setup";
 import {
+  RECORDING_PROGRESS_EVENT,
   RECORDING_TRANSITION_EVENT,
   type NotesRegeneration,
   type PreflightView,
+  type RecordingProgressView,
   type RecordingStatus,
   type RecordingTransition,
   type SessionDetail,
@@ -39,6 +41,8 @@ export const COMMANDS = [
   "settings_summary",
   "recording_status",
   "recording_preflight",
+  "start_recording",
+  "stop_recording",
   ...SETUP_COMMANDS,
 ] as const;
 
@@ -153,6 +157,38 @@ export function recordingStatus(): Promise<RecordingStatus> {
  */
 export function recordingPreflight(): Promise<PreflightView> {
   return invoke<PreflightView>("recording_preflight");
+}
+
+/**
+ * Starts a recording and returns as soon as it is under way.
+ *
+ * The host does not wait for the session: what happens next arrives on
+ * the transition and progress subscriptions.
+ */
+export function startRecording(title: string | null): Promise<RecordingStatus> {
+  return invoke<RecordingStatus>("start_recording", { title });
+}
+
+/**
+ * Asks the recording in flight to stop and save.
+ *
+ * Idempotent: the host's controller decides under one lock whether a
+ * request is the one that counts, so pressing twice is not two stops.
+ */
+export function stopRecording(): Promise<RecordingStatus> {
+  return invoke<RecordingStatus>("stop_recording");
+}
+
+/**
+ * Calls `onProgress` each time saving moves a step, until the returned
+ * function is called.
+ */
+export function onRecordingProgress(
+  onProgress: (progress: RecordingProgressView) => void,
+): Promise<() => void> {
+  return listen<RecordingProgressView>(RECORDING_PROGRESS_EVENT, (event) => {
+    onProgress(event.payload);
+  });
 }
 
 /**

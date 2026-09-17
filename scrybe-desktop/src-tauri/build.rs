@@ -35,6 +35,8 @@ const COMMANDS: &[&str] = &[
     "settings_summary",
     "recording_status",
     "recording_preflight",
+    "start_recording",
+    "stop_recording",
     "settings_form",
     "apply_settings",
     "diagnostics_report",

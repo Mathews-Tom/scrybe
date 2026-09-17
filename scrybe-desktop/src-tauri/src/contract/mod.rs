@@ -37,8 +37,9 @@ pub use detail::{
 };
 pub use error::{CommandFailure, FailureCode};
 pub use recording::{
-    CheckOutcomeView, PreflightCheckView, PreflightFindingView, PreflightView, RecordingState,
-    RecordingStatus, RecordingTransition, TRANSITION_EVENT,
+    CheckOutcomeView, PreflightCheckView, PreflightFindingView, PreflightView,
+    RecordingProgressView, RecordingState, RecordingStatus, RecordingTransition, SavingStep,
+    PROGRESS_EVENT, TRANSITION_EVENT,
 };
 pub use session::{SessionProgress, SessionRow, SessionRows};
 pub use settings::{SettingsSummary, SettingsWarning, WarningSeverity};
@@ -88,6 +89,8 @@ contract![
     CheckOutcomeView,
     PreflightFindingView,
     PreflightView,
+    SavingStep,
+    RecordingProgressView,
     WarningSeverity,
     SettingsWarning,
     SettingsSummary,
@@ -139,6 +142,10 @@ pub fn render() -> String {
     let _ = writeln!(
         out,
         "export const MODEL_PROGRESS_EVENT = \"{MODEL_PROGRESS_EVENT}\";"
+    );
+    let _ = writeln!(
+        out,
+        "export const RECORDING_PROGRESS_EVENT = \"{PROGRESS_EVENT}\";"
     );
     out
 }
@@ -213,6 +220,8 @@ mod tests {
                 "CheckOutcomeView",
                 "PreflightFindingView",
                 "PreflightView",
+                "SavingStep",
+                "RecordingProgressView",
                 "WarningSeverity",
                 "SettingsWarning",
                 "SettingsSummary",

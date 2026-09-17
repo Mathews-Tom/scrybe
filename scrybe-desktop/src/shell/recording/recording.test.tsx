@@ -1,9 +1,16 @@
-import { act, renderHook, waitFor } from "@testing-library/react";
+import { act, renderHook, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
-import type { RecordingStatus, RecordingTransition } from "../../generated/bindings";
+import type {
+  RecordingProgressView,
+  RecordingStatus,
+  RecordingTransition,
+} from "../../generated/bindings";
 import { ScrybeProvider } from "../../ipc/ScrybeProvider";
-import { servicesReturning } from "../../testing/services";
+import { renderWith } from "../../testing/render";
+import { clearedPreflight, servicesReturning } from "../../testing/services";
+import { RecordingView } from "./RecordingView";
 import { elapsedLabel, useRecording } from "./useRecording";
 
 function status(overrides: Partial<RecordingStatus> = {}): RecordingStatus {
@@ -198,5 +205,224 @@ describe("useRecording", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("RecordingView", () => {
+  /** Renders the view over a set of services and waits for its first read. */
+  async function view(overrides: Parameters<typeof servicesReturning>[0] = {}) {
+    const scrybe = servicesReturning(overrides);
+    await renderWith(<RecordingView />, scrybe);
+    return scrybe;
+  }
+
+  it("refuses to offer a recording this installation cannot make", async () => {
+    await view({
+      recordingPreflight: () =>
+        Promise.resolve(
+          clearedPreflight({
+            can_record: false,
+            findings: [
+              {
+                check: "capture",
+                outcome: "failed",
+                summary: "source mic needs microphone capture, which this build does not carry",
+              },
+            ],
+          }),
+        ),
+    });
+
+    expect(
+      await screen.findByText(/this build does not carry/),
+    ).toBeDefined();
+    expect(screen.getByRole("button", { name: "Record" })).toHaveProperty("disabled", true);
+  });
+
+  /**
+   * The permission finding is `unverified`, and the view must present it
+   * as something that was not checked rather than as something that
+   * passed. A reader whose recording later fails on a revoked grant was
+   * told, in advance, that nothing here measured it.
+   */
+  it("says what this release did not check rather than implying it passed", async () => {
+    await view();
+
+    expect(
+      await screen.findByText(/1 thing\(s\) this release does not check/),
+    ).toBeDefined();
+    expect(
+      screen.getByText(/this release measures no permission grant/),
+    ).toBeDefined();
+  });
+
+  it("starts a recording with the title the reader typed", async () => {
+    const startRecording = vi
+      .fn<(title: string | null) => Promise<RecordingStatus>>()
+      .mockResolvedValue(status({ state: "preparing" }));
+    await view({ startRecording });
+
+    await userEvent.type(
+      screen.getByLabelText("What is this recording called?"),
+      "  Weekly sync  ",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Record" }));
+
+    expect(startRecording).toHaveBeenCalledWith("Weekly sync");
+  });
+
+  it("sends no title when the reader typed none", async () => {
+    const startRecording = vi
+      .fn<(title: string | null) => Promise<RecordingStatus>>()
+      .mockResolvedValue(status({ state: "preparing" }));
+    await view({ startRecording });
+
+    await userEvent.click(screen.getByRole("button", { name: "Record" }));
+
+    expect(startRecording).toHaveBeenCalledWith(null);
+  });
+
+  it("shows the refusal the host returned rather than a generic failure", async () => {
+    await view({
+      startRecording: () =>
+        Promise.reject({
+          code: "preflight_failed",
+          message: "recording cannot start — model: no whisper.cpp model file at /m/s.bin",
+        }),
+    });
+
+    await userEvent.click(screen.getByRole("button", { name: "Record" }));
+
+    expect(
+      await screen.findByText(/no whisper.cpp model file at/),
+    ).toBeDefined();
+  });
+
+  /**
+   * A new recording during saving is refused by the host; the control
+   * must not offer what would be refused, and the stop control must not
+   * offer a second stop either.
+   */
+  it("offers neither a new recording nor a second stop while saving", async () => {
+    await view({
+      recordingStatus: () =>
+        Promise.resolve(
+          status({ state: "saving", elapsed_ms: 30_000, stop_requested: true }),
+        ),
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Record" })).toHaveProperty("disabled", true);
+    });
+    expect(screen.getByRole("button", { name: "Stop & save" })).toHaveProperty(
+        "disabled",
+        true,
+      );
+  });
+
+  it("offers Stop & save while a recording is running", async () => {
+    await view({
+      recordingStatus: () =>
+        Promise.resolve(status({ state: "recording", elapsed_ms: 5_000 })),
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Stop & save" })).toHaveProperty(
+        "disabled",
+        false,
+      );
+    });
+    expect(screen.getByText("00:05")).toBeDefined();
+  });
+
+  it("asks the host to stop when Stop & save is pressed", async () => {
+    const stopRecording = vi
+      .fn<() => Promise<RecordingStatus>>()
+      .mockResolvedValue(status({ state: "saving", stop_requested: true }));
+    await view({
+      recordingStatus: () =>
+        Promise.resolve(status({ state: "recording", elapsed_ms: 5_000 })),
+      stopRecording,
+    });
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Stop & save" })).toHaveProperty(
+        "disabled",
+        false,
+      );
+    });
+
+    await userEvent.click(screen.getByRole("button", { name: "Stop & save" }));
+
+    expect(stopRecording).toHaveBeenCalledTimes(1);
+  });
+
+  it("names the saving step the host is on, and its place in the order", async () => {
+    let deliverProgress:
+      | ((progress: RecordingProgressView) => void)
+      | undefined;
+    await view({
+      recordingStatus: () =>
+        Promise.resolve(
+          status({ state: "saving", elapsed_ms: 30_000, stop_requested: true }),
+        ),
+      onRecordingProgress: (onProgress) => {
+        deliverProgress = onProgress;
+        return Promise.resolve(() => undefined);
+      },
+    });
+
+    act(() => {
+      deliverProgress?.({
+        schema_version: 1,
+        step: "generating_notes",
+        index: 3,
+        total: 4,
+      });
+    });
+
+    expect(
+      await screen.findByText(/Generating the notes — step 3 of 4/),
+    ).toBeDefined();
+  });
+
+  it("reports a completed recording as saved", async () => {
+    await view({
+      recordingStatus: () =>
+        Promise.resolve(status({ state: "completed", elapsed_ms: 42_000 })),
+    });
+
+    expect(await screen.findByText("Saved")).toBeDefined();
+    expect(screen.getByText("00:42")).toBeDefined();
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Record" })).toHaveProperty(
+        "disabled",
+        false,
+      );
+    });
+  });
+
+  it("surfaces a failure summary the host reported on a transition", async () => {
+    let deliver: ((transition: RecordingTransition) => void) | undefined;
+    await view({
+      onRecordingTransition: (onTransition) => {
+        deliver = onTransition;
+        return Promise.resolve(() => undefined);
+      },
+    });
+
+    act(() => {
+      deliver?.({
+        schema_version: 1,
+        sequence: 4,
+        from: "recording",
+        to: "failed",
+        elapsed_ms: 9_000,
+        failure_summary: "recording could not start",
+      });
+    });
+
+    expect(
+      await screen.findByText("recording could not start"),
+    ).toBeDefined();
   });
 });
