@@ -42,7 +42,7 @@ pub mod recording;
 pub mod sessions;
 
 pub use error::{ApplicationError, ErrorCode, ErrorPayload};
-pub use identity::{IdentityRejection, SessionRef, StorageRoot};
+pub use identity::{IdentityRejection, PartialFileRef, SessionRef, StorageRoot};
 pub use paging::{Page, PageRequest, DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT};
 
 /// Convenience alias for a fallible application-service call.
