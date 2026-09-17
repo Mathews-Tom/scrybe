@@ -42,6 +42,9 @@ pub enum IdentityRejection {
     /// The identity began with `~`, which a consumer may expand to a home
     /// directory outside the storage root.
     HomeRelative,
+    /// A partial-download name did not end in `.partial`, so it names
+    /// something other than an abandoned download.
+    NotAPartialFile,
 }
 
 impl IdentityRejection {
@@ -57,6 +60,7 @@ impl IdentityRejection {
             Self::Traversal => "session identity must not contain a `.` or `..` component",
             Self::DriveOrStream => "session identity must not contain `:`",
             Self::HomeRelative => "session identity must not start with `~`",
+            Self::NotAPartialFile => "partial-download name must end in `.partial`",
         }
     }
 }
@@ -157,6 +161,64 @@ fn validate(candidate: &str) -> Result<(), IdentityRejection> {
         return Err(IdentityRejection::HomeRelative);
     }
     Ok(())
+}
+
+/// The suffix every abandoned-download file carries.
+pub const PARTIAL_SUFFIX: &str = ".partial";
+
+/// An opaque, root-confined reference to one leftover `.partial` file.
+///
+/// Holds the same guarantee as [`SessionRef`] — the name addresses at
+/// most one direct child of a [`StorageRoot`] — plus the requirement
+/// that it end in [`PARTIAL_SUFFIX`], so a recovery action carrying one
+/// cannot be pointed at anything but an abandoned download.
+///
+/// Construction is the only validation point, so downstream code
+/// performs no further name checking.
+#[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct PartialFileRef(String);
+
+impl PartialFileRef {
+    /// Validates `candidate` and returns a confined reference.
+    ///
+    /// # Errors
+    ///
+    /// [`IdentityRejection`] describing the first rule the candidate
+    /// broke.
+    pub fn parse(candidate: &str) -> Result<Self, IdentityRejection> {
+        validate(candidate)?;
+        if !candidate.ends_with(PARTIAL_SUFFIX) {
+            return Err(IdentityRejection::NotAPartialFile);
+        }
+        Ok(Self(candidate.to_string()))
+    }
+
+    /// The name's textual form.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for PartialFileRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl TryFrom<String> for PartialFileRef {
+    type Error = IdentityRejection;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(&value)
+    }
+}
+
+impl From<PartialFileRef> for String {
+    fn from(value: PartialFileRef) -> Self {
+        value.0
+    }
 }
 
 /// The configured storage root every session identity resolves beneath.
@@ -313,5 +375,48 @@ mod tests {
 
         assert_eq!(encoded, "\"2026-04-29-1430-acme-01HXYZ\"");
         assert_eq!(serde_json::from_str::<SessionRef>(&encoded).unwrap(), id);
+    }
+
+    #[test]
+    fn test_partial_reference_accepts_a_name_directly_under_the_root() {
+        let parsed = PartialFileRef::parse("model-tiny.bin.partial").unwrap();
+
+        assert_eq!(parsed.as_str(), "model-tiny.bin.partial");
+    }
+
+    #[test]
+    fn test_partial_reference_refuses_every_name_that_could_address_elsewhere() {
+        let cases = [
+            ("/tmp/leftover.partial", IdentityRejection::Absolute),
+            ("\\tmp\\leftover.partial", IdentityRejection::Absolute),
+            ("sub/leftover.partial", IdentityRejection::Separator),
+            ("sub\\leftover.partial", IdentityRejection::Separator),
+            ("../leftover.partial", IdentityRejection::Traversal),
+            ("C:leftover.partial", IdentityRejection::DriveOrStream),
+            ("~/leftover.partial", IdentityRejection::Separator),
+            ("~leftover.partial", IdentityRejection::HomeRelative),
+            ("left\u{7}over.partial", IdentityRejection::Control),
+            ("   ", IdentityRejection::Empty),
+            ("leftover.bin", IdentityRejection::NotAPartialFile),
+            ("leftover.partial.bin", IdentityRejection::NotAPartialFile),
+        ];
+
+        for (candidate, expected) in cases {
+            assert_eq!(
+                PartialFileRef::parse(candidate).unwrap_err(),
+                expected,
+                "{candidate} was not refused as expected"
+            );
+        }
+    }
+
+    #[test]
+    fn test_deserializing_a_partial_reference_applies_the_same_rules() {
+        assert!(serde_json::from_str::<PartialFileRef>("\"C:leftover.partial\"").is_err());
+        assert!(serde_json::from_str::<PartialFileRef>("\"leftover.bin\"").is_err());
+        assert_eq!(
+            serde_json::from_str::<PartialFileRef>("\"leftover.partial\"").unwrap(),
+            PartialFileRef::parse("leftover.partial").unwrap()
+        );
     }
 }

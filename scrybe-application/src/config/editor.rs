@@ -91,16 +91,25 @@ fn table_mut<'doc>(document: &'doc mut Document, name: &str) -> Result<&'doc mut
 
 /// Replaces `key`'s value while keeping the whitespace and comments
 /// that surrounded the old one.
+///
+/// The existing entry is mutated in place rather than re-inserted.
+/// `Table::insert` builds a whole new `TableKeyValue` around a fresh
+/// `Key`, and a fresh `Key` carries a default decor — but the parser
+/// stores everything preceding a key-value, blank lines and full-line
+/// comments alike, in that `Key`'s decor prefix. Re-inserting therefore
+/// deletes the comment a user wrote above the key they just edited,
+/// which is precisely the loss this module exists to prevent. Only the
+/// value's own decor (the spacing around `=` and any trailing comment)
+/// has to be carried across by hand.
 fn set_preserving_decor(table: &mut Table, key: &str, replacement: Item) {
-    let decor = table
-        .get(key)
-        .and_then(Item::as_value)
-        .map(|value| value.decor().clone());
-    table.insert(key, replacement);
-    if let Some(decor) = decor {
-        if let Some(value) = table.get_mut(key).and_then(Item::as_value_mut) {
-            *value.decor_mut() = decor;
-        }
+    let Some(existing) = table.get_mut(key) else {
+        table.insert(key, replacement);
+        return;
+    };
+    let decor = existing.as_value().map(|value| value.decor().clone());
+    *existing = replacement;
+    if let (Some(decor), Some(value)) = (decor, existing.as_value_mut()) {
+        *value.decor_mut() = decor;
     }
 }
 
@@ -138,6 +147,40 @@ api_key_env = "SCRYBE_LLM_KEY"
 url = "http://127.0.0.1:9000/scrybe"
 timeout_ms = 3000
 "#;
+
+    const COMMENTED_KEY: &str = r#"schema_version = 1
+
+[storage]
+root = "~/scrybe"
+
+# keep at 32 for smaller files
+audio_bitrate_kbps = 32
+audio_format = "opus"
+"#;
+
+    #[test]
+    fn test_editing_a_key_preserves_the_comment_and_blank_line_above_it() {
+        let edited = apply(
+            COMMENTED_KEY,
+            &ConfigUpdate::new().set(ConfigField::StorageAudioBitrateKbps, 64_u32),
+        )
+        .unwrap();
+
+        // The parser stores everything preceding a key-value — blank
+        // lines and full-line comments alike — in the `Key`'s decor
+        // prefix, not the value's. Replacing the whole entry replaces
+        // the `Key` too, and a fresh `Key` has a default decor, so both
+        // lines are silently dropped.
+        assert!(
+            edited.contains("# keep at 32 for smaller files"),
+            "the comment above the edited key was dropped:\n{edited}"
+        );
+        assert!(
+            edited.contains("\n\n# keep at 32 for smaller files\naudio_bitrate_kbps = 64"),
+            "the blank line above the edited key was dropped:\n{edited}"
+        );
+        assert!(edited.contains("audio_format = \"opus\""));
+    }
 
     #[test]
     fn test_editing_one_key_preserves_every_comment_in_the_document() {
