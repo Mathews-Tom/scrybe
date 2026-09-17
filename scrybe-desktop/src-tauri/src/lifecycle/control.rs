@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 
 use tauri::Manager as _;
 
-use crate::lifecycle::{tray, window};
+use crate::lifecycle::{model_probe, tray, window};
 use crate::state::Desktop;
 
 /// The socket's name inside the storage root.
@@ -121,6 +121,12 @@ fn dispatch(app: &tauri::AppHandle, verb: String) {
 }
 
 fn run(app: &tauri::AppHandle, verb: &str) {
+    // Tried first because these carry arguments, so they are a prefix
+    // of the line rather than the whole of it; everything below matches
+    // a bare verb.
+    if model_probe::run(app, verb) {
+        return;
+    }
     match verb {
         CLOSE_WINDOW => close(app),
         DESTROY_WINDOW => destroy(app),

@@ -214,10 +214,20 @@ cargo install --path scrybe-cli \
   --features cli-shell,hook-git,mic-capture,system-capture-mac,whisper-local,encoder-opus,llm-openai-compat
 
 # Download a whisper.cpp model into scrybe's platform data directory
-# (one-time; pick a size that fits your RAM).
+# (one-time). The URL is pinned to an immutable upstream revision and
+# the digest is the one the application's own catalog carries, so this
+# and the in-app download install the same bytes. A `resolve/main` URL
+# names whatever that branch points at today; do not substitute one.
 mkdir -p ~/Library/Application\ Support/dev.scrybe.scrybe/models
 curl -L -o ~/Library/Application\ Support/dev.scrybe.scrybe/models/ggml-small.en.bin \
-  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-small.en.bin
+shasum -a 256 ~/Library/Application\ Support/dev.scrybe.scrybe/models/ggml-small.en.bin
+# expect c6138d6d58ecc8322097e0f987c32f1be8bb0a18532a3f88f734d1bbf9c41e5d
+# (487,614,201 bytes, MIT, ggerganov/whisper.cpp)
+#
+# The desktop application does all of this for you, with the same
+# revision and the same digest, and verifies both before installing —
+# see "First Local Recording Setup" in README.md.
 
 # Write the one-time local Mac profile. This lands at
 # ~/Library/Application Support/dev.scrybe.scrybe/config.toml unless

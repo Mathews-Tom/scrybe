@@ -69,9 +69,38 @@ What this cannot establish, stated plainly:
   artifact written somewhere else under `~/Library` would not be seen
   by it.
 
+Two scenarios, one build. Both compile the shape the application
+ships — default features, which include the model transport — and
+there is no per-scenario feature selection at all. There used to be:
+`setup` named `model-download` explicitly while the host's default set
+did not carry it, and the effect was that the only artifact ever built
+with a transport was a qualification candidate. A scenario that
+qualifies a binary nobody installs establishes nothing about the one
+they do, so the selection is gone and the candidate differs from the
+shipped bundle only in the `--debug` profile that makes the control
+channel reachable.
+
+What differs is what each run drives, and therefore what its socket
+observations mean.
+
+`lifecycle` never asks for a model. Its claim rests on three legs — the
+host's crate graph carries exactly the approved transport and nothing
+more; the content security policy read back out of the built artifact
+is the expected one directive for directive; and the socket sampler
+observed no internet socket at all. That last leg is what says the
+compiled-in client stays unused unless somebody asks it to act.
+
+`setup` does ask, against a fixture on loopback, so an empty set of
+destinations would mean the run had not exercised what it exists to
+exercise. Its socket leg is the stronger statement rather than the
+weaker one: every destination observed must be the local fixture, on
+loopback, on the fixture's own port, with a separate assertion that
+some socket was seen at all so the check cannot pass by vacuity.
+
 Run locally:
 
     python3 scripts/qualify-desktop-app.py --hermetic --scenario lifecycle
+    python3 scripts/qualify-desktop-app.py --hermetic --scenario setup
 
 Exit status 0 means every check held. Exit status 1 means at least one
 did not; each failing check prints what was expected and what was
@@ -81,6 +110,9 @@ observed.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import http.server
+import ipaddress
 import json
 import os
 import re
@@ -158,6 +190,33 @@ DEBUG_ONLY_STRINGS = [
     "quit-accepted",
     "implicit-exit-prevented",
 ]
+
+# The model-acquisition probe the `setup` scenario drives. Its absence
+# from a release binary is what makes the probe a debug affordance
+# rather than a shipped one; the `lifecycle` scenario does not drive it,
+# so it checks the list above and this one is checked where it is used.
+MODEL_PROBE_STRINGS = ["probe-model-install", "probe-model-cancel", "probe-model-offer"]
+
+# The artifact the setup scenario's own server hands the application.
+#
+# Large enough that the download is not instantaneous, so a sampler can
+# look at the models directory while it is in flight and see what is
+# there mid-way; small enough that a run does not spend real time on it.
+FIXTURE_ARTIFACT_BYTES = 6 * 1024 * 1024
+
+# How long the fixture server takes to serve the whole artifact, spread
+# evenly across its chunks. Long enough for the mid-flight samples and
+# the cancellation below to land inside it.
+FIXTURE_SERVE_SECONDS = 3.0
+FIXTURE_CHUNK_BYTES = 64 * 1024
+
+# The filename the fixture artifact is promoted to. Deliberately not the
+# catalog's own, so a run cannot be confused with one that fetched the
+# real model.
+FIXTURE_DESTINATION = "ggml-harness-fixture.bin"
+
+# How often the models directory is sampled while a download is running.
+MODELS_SAMPLE_SECONDS = 0.05
 
 # Crates whose presence would mean the host can speak HTTP, TLS, DNS, or
 # a streaming transport to a remote peer. Mirrors the denylist
@@ -267,14 +326,24 @@ class Run:
 
 
 def build_candidate() -> Path:
-    """Builds the bundle a double-click opens, and returns its path."""
+    """Builds the bundle a double-click opens, and returns its path.
+
+    Default features, and no way to ask for anything else. That is the
+    point: the candidate every scenario drives differs from the bundle
+    a user installs only in the `--debug` profile, which is what makes
+    the debug-only control channel reachable. No scenario can qualify a
+    feature selection nobody ships.
+    """
     subprocess.run(
         ["pnpm", "--dir", str(DESKTOP), "install", "--frozen-lockfile"],
         cwd=REPO_ROOT,
         check=True,
     )
     subprocess.run(
-        ["pnpm", "--dir", str(DESKTOP), "tauri", "build", "--debug", "--bundles", "app"],
+        [
+            "pnpm", "--dir", str(DESKTOP), "exec",
+            "tauri", "build", "--debug", "--bundles", "app",
+        ],
         cwd=REPO_ROOT,
         check=True,
     )
@@ -285,7 +354,13 @@ def build_candidate() -> Path:
 
 
 def build_release_binary() -> Path:
-    """Builds the release host, for the compiled-out assertion."""
+    """Builds the release host, for the compiled-out assertion.
+
+    Default features, like the candidate: the string pools being
+    compared have to come from the same feature selection, or the
+    absence of a debug-only symbol from the release binary would say
+    as much about a feature as about the profile.
+    """
     subprocess.run(
         [
             "cargo", "build", "--manifest-path", str(HOST / "Cargo.toml"),
@@ -485,6 +560,130 @@ class SocketSampler:
         self._thread.join(timeout=SETTLE_SECONDS)
         self._seen.update(self._candidate.internet_sockets())
         return sorted(self._seen)
+
+
+class FixtureServer:
+    """An artifact source on loopback, which counts what it is asked for.
+
+    The checked-in catalog names a half-gigabyte artifact on a public
+    host. A qualification run must not request it, so the application is
+    handed a manifest describing this instead — and because this server
+    built the artifact, it knows its exact size and digest and can
+    deliberately misstate either.
+
+    It serves slowly on purpose. An instantaneous download cannot be
+    observed part way through, and "the destination name never appears
+    before verification" is a statement about the middle of a download
+    rather than about its ends.
+    """
+
+    def __init__(self) -> None:
+        self.body = bytes(
+            (index * 37 + 11) % 251 for index in range(FIXTURE_ARTIFACT_BYTES)
+        )
+        self.digest = hashlib.sha256(self.body).hexdigest()
+        self.requests: list[str] = []
+        self._lock = threading.Lock()
+        self._server = self._build()
+        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+
+    def _build(self) -> http.server.ThreadingHTTPServer:
+        outer = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def do_GET(self) -> None:  # noqa: N802 - the interface's own spelling
+                with outer._lock:
+                    outer.requests.append(self.path)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Length", str(len(outer.body)))
+                self.end_headers()
+                chunks = max(1, len(outer.body) // FIXTURE_CHUNK_BYTES)
+                pause = FIXTURE_SERVE_SECONDS / chunks
+                for start in range(0, len(outer.body), FIXTURE_CHUNK_BYTES):
+                    try:
+                        self.wfile.write(outer.body[start : start + FIXTURE_CHUNK_BYTES])
+                        self.wfile.flush()
+                    except (BrokenPipeError, ConnectionResetError):
+                        # A cancelled download closes the connection
+                        # mid-stream. That is the behaviour under test,
+                        # not a server failure.
+                        return
+                    time.sleep(pause)
+
+            def log_message(self, *_: object) -> None:
+                """Silence the default stderr access log."""
+
+        class Server(http.server.ThreadingHTTPServer):
+            def handle_error(self, *_: object) -> None:
+                """Say nothing about a connection the client dropped.
+
+                A cancelled download closes the socket mid-response, so
+                the default handler would print a traceback for the one
+                behaviour this scenario most wants to exercise.
+                """
+
+        return Server(("127.0.0.1", 0), Handler)
+
+    @property
+    def port(self) -> int:
+        return self._server.server_address[1]
+
+    def url(self, path: str = "/fixture/model.bin") -> str:
+        return f"http://127.0.0.1:{self.port}{path}"
+
+    def count(self) -> int:
+        with self._lock:
+            return len(self.requests)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+
+
+class ModelsSampler:
+    """What the models directory held, sampled while a download ran.
+
+    Atomic promotion is a statement about the middle of a download: the
+    destination name must not exist while bytes are still arriving. A
+    single look before and after cannot see that, so this looks
+    repeatedly and records every distinct thing it saw.
+    """
+
+    def __init__(self, directory: Path, destination: str, size: int) -> None:
+        self._directory = directory
+        self._destination = destination
+        self._size = size
+        self._short_destination: list[int] = []
+        self._saw_partial = False
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            target = self._directory / self._destination
+            if target.is_file():
+                size = target.stat().st_size
+                if size != self._size:
+                    self._short_destination.append(size)
+            if any(self._directory.glob("*.partial")) if self._directory.is_dir() else False:
+                self._saw_partial = True
+            self._stop.wait(MODELS_SAMPLE_SECONDS)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> tuple[list[int], bool]:
+        """Returns the destination sizes seen that were not the full one,
+        and whether a partial was ever observed."""
+        self._stop.set()
+        self._thread.join(timeout=SETTLE_SECONDS)
+        return self._short_destination, self._saw_partial
 
 
 def snapshot(path: Path) -> object:
@@ -939,11 +1138,391 @@ def strings_in(binary: Path) -> str:
     return result.stdout
 
 
+
+def setup(candidate: Candidate, run: Run) -> None:
+    """Model acquisition, driven against a local fixture on the real app.
+
+    What this establishes that the unit tests cannot: the properties
+    hold in the shipped binary, driven through the same manager the
+    interface drives, with real sockets that can be watched.
+
+    How the no-network proof works here, and how it differs from the
+    one `lifecycle` makes. Both scenarios build the same shape — the
+    shipped one, default features, transport included — so neither can
+    argue from the absence of an HTTP client, and `lifecycle`'s
+    crate-graph check is an equality against the approved transport
+    rather than an absence.
+
+    What differs is what each run drives. `lifecycle` never asks for a
+    model, so its socket sampler asserts the set of destinations is
+    empty: the compiled-in client stays unused unless somebody asks it
+    to act. This scenario does ask, against a fixture on loopback, so
+    an empty set would mean the run had not exercised what it exists to
+    exercise. Its socket leg therefore asserts every member of the set
+    is the fixture, on loopback, on the fixture's own port — and
+    asserts separately that the set is non-empty, so it cannot pass by
+    vacuity. Beside it sits the exact comparison of the shipped content
+    security policy against the built artifact, which is what governs
+    the webview.
+    """
+    untouched = [
+        ("the real configuration file", REAL_CONFIG, snapshot(REAL_CONFIG)),
+        ("the default storage root", REAL_STORAGE_ROOT, snapshot(REAL_STORAGE_ROOT)),
+    ]
+    server = FixtureServer()
+    server.start()
+    models = candidate.models
+    try:
+        _setup_checks(candidate, run, server)
+    finally:
+        server.stop()
+
+    # (h) Disposable-root confinement, and the models directory it
+    # redirects. A run that reached the platform models directory would
+    # have written half a gigabyte into the developer's own install.
+    run.record(
+        "confinement: nothing of this run reached the platform models directory",
+        False,
+        PLATFORM_MODELS.exists() and any(PLATFORM_MODELS.glob("*harness-fixture*")),
+    )
+    run.record(
+        "confinement: everything the run installed is under the disposable models directory",
+        True,
+        models.is_dir() and models.is_relative_to(candidate.workspace),
+    )
+    hermeticity(candidate, run, untouched)
+    webview_state(run)
+
+    # The probe is a debug affordance, not a shipped one.
+    release = build_release_binary()
+    release_strings = strings_in(release)
+    run.record(
+        "release: the model-acquisition probe is compiled out of a release build",
+        [],
+        sorted(name for name in MODEL_PROBE_STRINGS if name in release_strings),
+    )
+
+    # (h) The policy the bundle ships, read back out of it. Carried over
+    # from `lifecycle` deliberately: with a network client compiled in,
+    # what the WebView itself may reach matters more, not less.
+    policies = shipped_policies(candidate.bundle / "Contents" / "MacOS" / EXECUTABLE)
+    run.record("policy: the bundle carries exactly one content security policy", 1, len(policies))
+    run.record(
+        "policy: the policy the bundle carries is the expected one, directive for directive",
+        EXPECTED_CSP,
+        policies[0] if len(policies) == 1 else policies,
+    )
+
+
+def _setup_checks(candidate: Candidate, run: Run, server: FixtureServer) -> None:
+    """Everything that needs the application running and the fixture up."""
+    candidate.launch()
+    sockets = SocketSampler(candidate)
+    sockets.start()
+    opened = candidate.wait_for_control_socket()
+    run.assert_that(
+        "launch: the control channel opens",
+        opened,
+        f"no control socket appeared at {candidate.root / CONTROL_SOCKET}",
+    )
+    if not opened:
+        run.record("no network: every destination the application reached", [], sockets.stop())
+        return
+    candidate.wait_for_event("window-shown")
+
+    models = candidate.models
+
+    # (a) Reading the offer opens nothing. This is the call a
+    # confirmation prompt is built from, so it has to be safe to make
+    # before the user has agreed to anything.
+    candidate.control("probe-model-offer")
+    run.assert_that(
+        "offer: the catalog is readable without fetching anything",
+        candidate.wait_for_event("probe-model-offer"),
+        "the application recorded no `model-offer`",
+    )
+    # There is deliberately no "requests the fixture received while
+    # reading the offer" check here. It would compare a counter that
+    # has never been incremented against zero, at a point in the run
+    # where nothing has yet been able to increment it — it could not
+    # fail, and a check that cannot fail inflates the count while
+    # establishing nothing. The zero-request property is asserted below
+    # against the confirmation gate, where a control exists: the
+    # counter is read again after a confirmed install has provably
+    # moved it.
+
+    # (a) An unconfirmed install reaches the source no further. The
+    # digest handed back is not the one on offer, which is the shape a
+    # caller that skipped the prompt would produce.
+    candidate.control(
+        f"probe-model-install {server.url()} {FIXTURE_ARTIFACT_BYTES} {server.digest} "
+        f"{FIXTURE_DESTINATION} unconfirmed"
+    )
+    run.assert_that(
+        "confirmation: an unconfirmed install is refused",
+        candidate.wait_for_event("probe-model-install"),
+        "the application recorded no outcome for the unconfirmed install",
+    )
+    run.record(
+        "confirmation: the outcome of an unconfirmed install",
+        "refused:model_confirmation_required",
+        candidate.last_detail_of("probe-model-install"),
+    )
+    run.record(
+        "confirmation: requests the fixture received before any confirmation",
+        0,
+        server.count(),
+    )
+    run.record(
+        "confirmation: what an unconfirmed install left in the models directory",
+        [],
+        listing(models),
+    )
+
+    # (b) A free-space failure is decided before any request. The size
+    # is larger than any volume will report free, so the preflight
+    # rejects rather than the write.
+    before_space = server.count()
+    candidate.control(
+        f"probe-model-install {server.url()} {2**62} {server.digest} {FIXTURE_DESTINATION} confirmed"
+    )
+    candidate.wait_for_event("probe-model-install", count=2)
+    run.record(
+        "free space: the outcome when the artifact does not fit",
+        "failed:insufficient_space:promoted=false",
+        candidate.last_detail_of("probe-model-install"),
+    )
+    run.record(
+        "free space: requests the fixture received for an artifact that does not fit",
+        before_space,
+        server.count(),
+    )
+    run.record(
+        "free space: what the rejected install left behind",
+        [],
+        listing(models),
+    )
+
+    # (b) A digest that does not describe what arrives promotes nothing.
+    candidate.control(
+        f"probe-model-install {server.url()} {FIXTURE_ARTIFACT_BYTES} {'0' * 64} "
+        f"{FIXTURE_DESTINATION} confirmed"
+    )
+    candidate.wait_for_event("probe-model-install", count=3, timeout=60.0)
+    run.record(
+        "digest: the outcome when the artifact does not match",
+        "failed:digest_mismatch:promoted=false",
+        candidate.last_detail_of("probe-model-install"),
+    )
+    run.record(
+        "digest: the destination after a digest failure",
+        False,
+        (models / FIXTURE_DESTINATION).exists(),
+    )
+    run.assert_that(
+        "digest: the part that arrived is kept where the user can see it",
+        bool(list(models.glob("*.partial"))),
+        "a failed download deleted its own partial",
+    )
+    for leftover in models.glob("*.partial"):
+        leftover.unlink()
+
+    # (b) A cancellation promotes nothing either.
+    candidate.control(
+        f"probe-model-install {server.url()} {FIXTURE_ARTIFACT_BYTES} {server.digest} "
+        f"{FIXTURE_DESTINATION} confirmed"
+    )
+    time.sleep(FIXTURE_SERVE_SECONDS / 3)
+    candidate.control("probe-model-cancel")
+    candidate.wait_for_event("probe-model-install", count=4, timeout=60.0)
+    run.record(
+        "cancellation: the outcome when the user stops it",
+        "cancelled:promoted=false",
+        candidate.last_detail_of("probe-model-install"),
+    )
+    run.record(
+        "cancellation: the destination after a cancellation",
+        False,
+        (models / FIXTURE_DESTINATION).exists(),
+    )
+    run.assert_that(
+        "cancellation: the part that arrived is kept rather than deleted",
+        bool(list(models.glob("*.partial"))),
+        "a cancelled download deleted its own partial",
+    )
+    for leftover in models.glob("*.partial"):
+        leftover.unlink()
+
+    # (a)(b) A confirmed install that verifies, watched while it runs.
+    watcher = ModelsSampler(models, FIXTURE_DESTINATION, FIXTURE_ARTIFACT_BYTES)
+    watcher.start()
+    before_install = server.count()
+    candidate.control(
+        f"probe-model-install {server.url()} {FIXTURE_ARTIFACT_BYTES} {server.digest} "
+        f"{FIXTURE_DESTINATION} confirmed"
+    )
+    candidate.wait_for_event("probe-model-install", count=5, timeout=60.0)
+    short, saw_partial = watcher.stop()
+    run.record(
+        "install: the outcome of a confirmed install of the artifact on offer",
+        "ready:promoted=true",
+        candidate.last_detail_of("probe-model-install"),
+    )
+    run.record(
+        "install: requests the fixture received for the confirmed install",
+        before_install + 1,
+        server.count(),
+    )
+    run.record(
+        "atomic promotion: destination sizes seen while the artifact was still arriving",
+        [],
+        short,
+    )
+    run.assert_that(
+        "atomic promotion: the sampler could see the download at all",
+        saw_partial,
+        "no `.partial` was ever observed, so the atomicity sample proves nothing",
+    )
+    run.record(
+        "install: the installed artifact is exactly the bytes the fixture served",
+        FIXTURE_ARTIFACT_BYTES,
+        (models / FIXTURE_DESTINATION).stat().st_size
+        if (models / FIXTURE_DESTINATION).is_file()
+        else None,
+    )
+    run.record(
+        "install: nothing unverified is left beside it",
+        [FIXTURE_DESTINATION],
+        listing(models),
+    )
+
+    # (b)(c) An artifact already installed and already valid is ready
+    # without a request. The one that was just installed is the
+    # pre-seeded one.
+    before_existing = server.count()
+    candidate.control(
+        f"probe-model-install {server.url()} {FIXTURE_ARTIFACT_BYTES} {server.digest} "
+        f"{FIXTURE_DESTINATION} confirmed"
+    )
+    candidate.wait_for_event("probe-model-install", count=6, timeout=60.0)
+    run.record(
+        "existing model: the outcome when the artifact is already installed",
+        "ready:promoted=false",
+        candidate.last_detail_of("probe-model-install"),
+    )
+    run.record(
+        "existing model: requests the fixture received for an artifact already installed",
+        before_existing,
+        server.count(),
+    )
+
+    # (d) Quit cleanly, then judge the sockets over the whole run.
+    candidate.control(TRAY_QUIT)
+    run.assert_that(
+        "quit: the process exits",
+        candidate.wait_for_exit(),
+        f"{len(candidate.process_ids())} process(es) still running",
+    )
+
+    observed = sockets.stop()
+    run.assert_that(
+        "no network: the application did open sockets, so the check below is not vacuous",
+        bool(observed),
+        "the socket sampler saw nothing at all, including the fixture it was meant to see",
+    )
+    run.record(
+        "no network: every destination the application reached that was not the local fixture",
+        [],
+        sorted(line for line in observed if not reaches_only(line, server.port)),
+    )
+
+
+def listing(directory: Path) -> list[str]:
+    """Every file directly under `directory`, or nothing when it is absent."""
+    if not directory.is_dir():
+        return []
+    return sorted(entry.name for entry in directory.iterdir())
+
+
+def reaches_only(line: str, port: int) -> bool:
+    """Whether one `lsof` line reaches nothing but the fixture.
+
+    `lsof -i -nP` prints COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE
+    NAME, with an optional state in parentheses after it. The NAME is
+    the ninth field and the only one that carries an address; taking the
+    last field instead would read `(ESTABLISHED)` and find no address at
+    all, which would make this pass everything.
+
+    Every host named must be an explicit loopback address, and where the
+    name has a remote half — the `->` form, which is a connection rather
+    than a listening socket — its port must be the fixture's. A
+    connection to some other service on this machine is as much a
+    failure here as one to a public host.
+
+    "Explicit" rules out `*`, which this used to accept. A wildcard is
+    not a loopback address: `*:8080 (LISTEN)` is a socket bound to every
+    interface on the machine, reachable from the network, and
+    `*:52000->*:51234` names a peer this check cannot see. Accepting
+    either made the scenario's only no-network leg pass on sockets it
+    had not actually established anything about — and because this build
+    carries a compiled-in HTTP client by design, that leg is the proof,
+    not a corroboration of one.
+    """
+    fields = line.split()
+    if len(fields) < 9:
+        return False
+    name = fields[8]
+    local, _, remote = name.partition("->")
+    for endpoint in (local, remote):
+        if endpoint == "":
+            continue
+        if not is_loopback_host(endpoint.rsplit(":", 1)[0].strip("[]")):
+            return False
+    if remote == "":
+        return True
+    return remote.rsplit(":", 1)[-1] == str(port)
+
+
+def is_loopback_host(host: str) -> bool:
+    """Whether `host` is literally a loopback address.
+
+    Parsed rather than matched against a list of spellings: `lsof -nP`
+    prints numeric addresses, and the whole of `127.0.0.0/8` and `::1`
+    are loopback, not just the two spellings anyone thinks to write
+    down. A name — including `localhost` — is not an address and is
+    refused; `-n` means one should never appear, and if one does, this
+    check cannot say where it points.
+    """
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 # Scenarios are registered here rather than enumerated at each call
-# site, so later work adds `setup`, `recording`, or `library` by adding
-# one entry and its function.
+# site, so later work adds `recording` or `library` by adding one entry
+# and its function.
 SCENARIOS: dict[str, Callable[[Candidate, Run], None]] = {
     "lifecycle": lifecycle,
+    "setup": setup,
+}
+
+
+# What each scenario's success line claims to have covered. Stated per
+# scenario rather than once, because a summary that described the wrong
+# run would be the most quietly misleading line this file prints.
+SCENARIO_COVERAGE: dict[str, str] = {
+    "lifecycle": (
+        "launch, close, restore, recreation, second launch, quit, "
+        "disposable-root confinement, the shipped content security policy, "
+        "navigation, and egress"
+    ),
+    "setup": (
+        "reading the catalog without fetching, the confirmation gate, "
+        "free-space rejection, digest failure, cancellation, atomic promotion, "
+        "existing-model preservation, disposable model and configuration roots, "
+        "the shipped content security policy, and every socket the process opened"
+    ),
 }
 
 
@@ -973,6 +1552,13 @@ def main() -> int:
         )
         return 1
 
+    # Every scenario builds the shape the application ships: default
+    # features, no additions and no subtractions. There is deliberately
+    # no per-scenario feature selection any more — `setup` used to name
+    # `model-download` explicitly, back when the host's default feature
+    # set did not include it, and the effect was that the only artifact
+    # ever built with a transport was this candidate. Qualifying a
+    # binary nobody installs proves nothing about the one they do.
     bundle = build_candidate()
     # A Unix socket path cannot exceed 104 bytes on macOS, and the
     # platform's own temporary directory is already most of that, so the
@@ -997,9 +1583,7 @@ def main() -> int:
         return 1
     print(
         f"desktop {arguments.scenario} qualification: ok — {len(run.entries)} checks "
-        "across launch, close, restore, recreation, second launch, quit, "
-        "disposable-root confinement, the shipped content security policy, "
-        "navigation, and egress"
+        f"across {SCENARIO_COVERAGE[arguments.scenario]}"
     )
     return 0
 

@@ -114,6 +114,7 @@ export function modelOfferFixture(overrides: Partial<ModelOffer> = {}): ModelOff
     sufficient_space: true,
     state: "available",
     failure: null,
+    reason: null,
     ...overrides,
   };
 }
@@ -123,6 +124,7 @@ export function modelOutcome(overrides: Partial<ModelOutcome> = {}): ModelOutcom
     id: "whisper-small-en",
     state: "ready",
     failure: null,
+    reason: null,
     promoted: true,
     ...overrides,
   };

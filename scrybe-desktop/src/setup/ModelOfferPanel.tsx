@@ -236,20 +236,59 @@ function Outcome({ outcome, onRetry }: { outcome: ModelOutcome; onRetry: () => v
       </p>
     );
   }
-  const reason =
-    outcome.state === "cancelled"
-      ? "The download was cancelled. Nothing was installed, and the part that had arrived was kept where you can see it."
-      : (outcome.failure ?? "The download did not complete.");
+  if (outcome.state === "cancelled") {
+    return (
+      <>
+        <p className="model__warning" role="alert">
+          The download was cancelled. Nothing was installed, and the part that had arrived was kept
+          where you can see it.
+        </p>
+        <button type="button" onClick={onRetry}>
+          Try again
+        </button>
+      </>
+    );
+  }
   return (
     <>
       <p className="model__warning" role="alert">
-        {reason}
+        {outcome.failure ?? "The download did not complete."}
       </p>
-      <button type="button" onClick={onRetry}>
-        Try again
-      </button>
+      <p className="setup__note">{advice(outcome.reason)}</p>
+      {outcome.reason !== "insufficient_space" && (
+        <button type="button" onClick={onRetry}>
+          Try again
+        </button>
+      )}
     </>
   );
+}
+
+/**
+ * What to do about a failure, per failure.
+ *
+ * Every install failure used to arrive as the single state `failed`, so
+ * a full disk and a corrupted download offered the same `Try again` —
+ * which for the full disk could never work, because nothing about the
+ * disk had changed. The reason now crosses the boundary beside the
+ * prose, and this is what it buys.
+ */
+function advice(reason: string | null): string {
+  switch (reason) {
+    case "insufficient_space":
+      return "There is not enough room on the disk. Free some space and check again; retrying on its own will not help.";
+    case "digest_mismatch":
+    case "size_mismatch":
+      return "What arrived was not the file the catalog describes, so nothing was installed. This is usually a download that was interrupted or altered in transit, and trying again often succeeds.";
+    case "transport":
+      return "The download could not be completed over the network. Check the connection and try again.";
+    case "storage":
+      return "The models directory could not be written. Check that it exists and is writable, then try again.";
+    case "installed_artifact_unrecognized":
+      return "Something already occupies the destination that the catalog does not describe. It has been left exactly as it is; move or remove it yourself if you want this model installed there.";
+    default:
+      return "Nothing was installed.";
+  }
 }
 
 /**

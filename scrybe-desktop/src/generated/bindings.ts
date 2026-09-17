@@ -154,13 +154,30 @@ export type ModelOffer = { id: string, source_url: string, source_revision: stri
  */
 available_bytes: string | null, sufficient_space: boolean, state: string, 
 /**
- * Present when the state is a failure, describing which one.
+ * Present when the state is a failure, describing which one in a
+ * sentence a person reads.
  */
-failure: string | null, };
+failure: string | null, 
+/**
+ * Present when the state is a failure: which refusal it was, as a
+ * value a surface can branch on. `failure` is the prose beside it.
+ */
+reason: string | null, };
 
 export type ModelProgress = { id: string, received_bytes: string, total_bytes: string, };
 
-export type ModelOutcome = { id: string, state: string, failure: string | null, 
+export type ModelOutcome = { id: string, state: string, 
+/**
+ * The line a person reads, present when the state is a failure.
+ */
+failure: string | null, 
+/**
+ * Which refusal it was, present when the state is a failure. A
+ * full disk and a corrupted download are different problems with
+ * different answers, and a surface cannot offer the right one
+ * from prose.
+ */
+reason: string | null, 
 /**
  * Whether this call put a verified artifact at the destination.
  */

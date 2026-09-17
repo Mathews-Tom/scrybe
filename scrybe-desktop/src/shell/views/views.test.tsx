@@ -8,8 +8,8 @@ import {
   page,
   servicesReturning,
   session,
-  settings,
 } from "../../testing/services";
+import { settingsFormFixture } from "../../testing/setup";
 import { SearchView } from "./SearchView";
 import { SessionsView } from "./SessionsView";
 import { SettingsView } from "./SettingsView";
@@ -134,34 +134,29 @@ describe("SearchView", () => {
   });
 });
 
+// The settings surface is editable now, so most of what it does is
+// asserted in `src/setup/settings.test.tsx` beside the panels that do
+// it. What stays here is what every view in this file is checked for:
+// that the view renders the state Rust returned rather than a
+// placeholder.
 describe("SettingsView", () => {
   it("test_settings_shows_where_storage_and_configuration_live", async () => {
     await renderWith(<SettingsView />);
 
-    expect(screen.getByText("/configured/sessions")).toBeDefined();
-    expect(screen.getByText("/configured/config.toml")).toBeDefined();
-  });
-
-  it("test_settings_says_when_no_configuration_file_has_been_written_yet", async () => {
-    await renderWith(
-      <SettingsView />,
-      servicesReturning({
-        settingsSummary: () => Promise.resolve(settings({ config_exists: false })),
-      }),
+    expect(screen.getByLabelText("Storage root")).toHaveProperty(
+      "value",
+      "/configured/sessions",
     );
-
-    expect(
-      screen.getByText("/configured/config.toml (not yet written)"),
-    ).toBeDefined();
+    expect(screen.getByText(/\/configured\/config\.toml/)).toBeDefined();
   });
 
   it("test_settings_reports_the_service_layers_configuration_warnings", async () => {
     await renderWith(
       <SettingsView />,
       servicesReturning({
-        settingsSummary: () =>
+        settingsForm: () =>
           Promise.resolve(
-            settings({
+            settingsFormFixture({
               warnings: [
                 { severity: "warning", message: "the storage root does not exist" },
               ],

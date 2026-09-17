@@ -483,13 +483,17 @@ pub struct ModelOffer {
     pub available_bytes: Option<String>,
     pub sufficient_space: bool,
     pub state: String,
-    /// Present when the state is a failure, describing which one.
+    /// Present when the state is a failure, describing which one in a
+    /// sentence a person reads.
     pub failure: Option<String>,
+    /// Present when the state is a failure: which refusal it was, as a
+    /// value a surface can branch on. `failure` is the prose beside it.
+    pub reason: Option<String>,
 }
 
 impl From<ModelPlan> for ModelOffer {
     fn from(plan: ModelPlan) -> Self {
-        let (state, failure) = describe_state(&plan.state);
+        let described = describe_state(&plan.state);
         Self {
             id: plan.id,
             source_url: plan.source_url,
@@ -507,39 +511,81 @@ impl From<ModelPlan> for ModelOffer {
             required_bytes: plan.required_bytes.to_string(),
             available_bytes: plan.available_bytes.map(|bytes| bytes.to_string()),
             sufficient_space: plan.sufficient_space,
-            state,
-            failure,
+            state: described.state,
+            failure: described.failure,
+            reason: described.reason,
         }
     }
 }
 
 impl From<InstallReport> for ModelOutcome {
     fn from(report: InstallReport) -> Self {
-        let (state, failure) = describe_state(&report.state);
+        let described = describe_state(&report.state);
         Self {
             id: report.id,
-            state,
-            failure,
+            state: described.state,
+            failure: described.failure,
+            reason: described.reason,
             promoted: report.promoted,
         }
     }
 }
 
-/// The state's discriminant, and a line about the failure when there is
-/// one.
+/// The state's discriminant, the line about the failure when there is
+/// one, and which failure it was.
 ///
 /// Flattened here rather than mirrored as a tagged union, because the
 /// frontend branches on the discriminant and renders the line; a
 /// second enumeration would be a second thing to keep in step for no
 /// rendering it enables.
-fn describe_state(state: &ModelState) -> (String, Option<String>) {
+fn describe_state(state: &ModelState) -> DescribedState {
     match state {
-        ModelState::Available => ("available".into(), None),
-        ModelState::Downloading { .. } => ("downloading".into(), None),
-        ModelState::Verifying => ("verifying".into(), None),
-        ModelState::Ready => ("ready".into(), None),
-        ModelState::Cancelled => ("cancelled".into(), None),
-        ModelState::Failed { reason } => ("failed".into(), Some(describe_failure(reason))),
+        ModelState::Available => DescribedState::plain("available"),
+        ModelState::Downloading { .. } => DescribedState::plain("downloading"),
+        ModelState::Verifying => DescribedState::plain("verifying"),
+        ModelState::Ready => DescribedState::plain("ready"),
+        ModelState::Cancelled => DescribedState::plain("cancelled"),
+        ModelState::Failed { reason } => DescribedState {
+            state: "failed".into(),
+            failure: Some(describe_failure(reason)),
+            reason: Some(failure_kind(reason).into()),
+        },
+    }
+}
+
+/// A state's discriminant, the line about it, and which failure it was.
+struct DescribedState {
+    state: String,
+    failure: Option<String>,
+    reason: Option<String>,
+}
+
+impl DescribedState {
+    fn plain(state: &str) -> Self {
+        Self {
+            state: state.into(),
+            failure: None,
+            reason: None,
+        }
+    }
+}
+
+/// Which refusal a failure was, as a value a caller can branch on.
+///
+/// Distinct from [`describe_failure`], which writes a sentence for a
+/// person. Every install failure used to reach the frontend as the
+/// single state `failed` plus prose, so a full disk and a corrupted
+/// download were indistinguishable to anything but a human reader —
+/// and a surface that wanted to offer "free some space" rather than
+/// "try again" had nothing to branch on.
+const fn failure_kind(reason: &ModelFailure) -> &'static str {
+    match reason {
+        ModelFailure::SizeMismatch { .. } => "size_mismatch",
+        ModelFailure::DigestMismatch { .. } => "digest_mismatch",
+        ModelFailure::InsufficientSpace { .. } => "insufficient_space",
+        ModelFailure::Transport { .. } => "transport",
+        ModelFailure::Storage { .. } => "storage",
+        ModelFailure::InstalledArtifactUnrecognized { .. } => "installed_artifact_unrecognized",
     }
 }
 
@@ -577,7 +623,13 @@ pub const MODEL_PROGRESS_EVENT: &str = "scrybe://model-progress";
 pub struct ModelOutcome {
     pub id: String,
     pub state: String,
+    /// The line a person reads, present when the state is a failure.
     pub failure: Option<String>,
+    /// Which refusal it was, present when the state is a failure. A
+    /// full disk and a corrupted download are different problems with
+    /// different answers, and a surface cannot offer the right one
+    /// from prose.
+    pub reason: Option<String>,
     /// Whether this call put a verified artifact at the destination.
     pub promoted: bool,
 }
