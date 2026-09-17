@@ -16,7 +16,7 @@ const jsxA11yStrict = jsxA11y.flatConfigs.strict;
 /* eslint-enable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access */
 
 export default defineConfig([
-  globalIgnores(["dist", "src-tauri/target", "src/bindings"]),
+  globalIgnores(["dist", "src-tauri/target", "src/generated"]),
   js.configs.recommended,
   tseslint.configs.strictTypeChecked,
   tseslint.configs.stylisticTypeChecked,
