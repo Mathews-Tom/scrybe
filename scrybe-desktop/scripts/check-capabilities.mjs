@@ -17,9 +17,11 @@
 // that covers only some of them is opt-out for whoever writes the one
 // it misses. Tauri collects capabilities with the glob
 // `capabilities/**/*`, accepts three file formats, and additionally
-// honours capabilities declared inline in `tauri.conf.json` under
-// `app.security.capabilities` — which, when present, replace the
-// directory rather than adding to it.
+// honours capabilities declared inline under `app.security.capabilities`
+// in its configuration — which, when present, replace the directory
+// rather than adding to it. That configuration is a base file plus,
+// when present, a `tauri.<platform>.conf.json` merged over it as an
+// RFC 7396 patch, so every name Tauri recognises is read here.
 //
 // Run: pnpm --dir scrybe-desktop run check:capabilities
 //
@@ -27,7 +29,7 @@
 // can be tested against a tree that deliberately breaks them.
 
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { dirname, extname, join, resolve } from "node:path";
+import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import JSON5 from "json5";
@@ -38,7 +40,36 @@ const hostRoot =
   process.argv[2] === undefined ? join(desktopRoot, "src-tauri") : resolve(process.argv[2]);
 const capabilityDir = join(hostRoot, "capabilities");
 const permissionDir = join(hostRoot, "permissions");
-const configPath = join(hostRoot, "tauri.conf.json");
+// The configuration files `tauri_utils::config::parse::read_from`
+// reads. It loads one base file and then, when the file for the target
+// platform is present, merges it in with `json_patch::merge` — RFC
+// 7396 JSON Merge Patch, which **replaces** an array outright rather
+// than concatenating it. `app.security.capabilities` declared in
+// `tauri.macos.conf.json` would therefore replace the inline list and,
+// being non-empty, the capability directory with it; reading only
+// `tauri.conf.json` left the policy that actually ships on the one
+// platform this application targets entirely unaudited.
+//
+// Every recognised name is audited rather than the base plus the one
+// platform in use: auditing the union of what any of them declares
+// cannot miss the set that wins the merge, and a platform file added
+// for a future target is audited the day it lands rather than the day
+// someone remembers to add it here. The `json5` and `toml` names are
+// behind the `config-json5` and `config-toml` features for the same
+// reason the capability parsers cover those formats — auditing one the
+// build does not load costs nothing, and skipping one it does load is
+// how a rule becomes optional.
+const CONFIG_PLATFORMS = ["macos", "windows", "linux", "android", "ios"];
+const CONFIG_FILES = [
+  "tauri.conf.json",
+  "tauri.conf.json5",
+  "Tauri.toml",
+  ...CONFIG_PLATFORMS.flatMap((platform) => [
+    `tauri.${platform}.conf.json`,
+    `tauri.${platform}.conf.json5`,
+    `Tauri.${platform}.toml`,
+  ]),
+];
 
 // A permission whose namespace is one of these hands the WebView a
 // general-purpose capability rather than a named application use case.
@@ -65,11 +96,34 @@ const FORBIDDEN_NAMESPACES = [
 
 // Core permissions that are narrow enough to grant but still worth
 // naming, so an unexpected one fails rather than passes quietly.
+//
+// Everything else a capability may name has to be a grant for one of
+// this application's own commands, which `build.rs` emits as
+// `allow-<command>`. That pairing is the rule below, and it is an
+// allow-list over the whole permission space rather than a second
+// denylist: `FORBIDDEN_NAMESPACES` can only reject a namespace someone
+// thought to write down, so on its own it lets a plugin surface arrive
+// through any namespace it has not heard of — `clipboard-manager` is
+// on the list, `notification` and `nfc` are not, and neither is
+// whatever the next plugin is called.
 const ALLOWED_CORE_PERMISSIONS = ["core:event:allow-listen", "core:event:allow-unlisten"];
 
 // Tauri plugins this application is allowed to depend on. Empty: every
 // capability it needs is a command it defines itself.
 const ALLOWED_PLUGINS = [];
+
+// The manifest tables that make a crate a dependency of this host.
+//
+// All of them are read, not just `[dependencies]`. A plugin in
+// `[build-dependencies]` or `[dev-dependencies]` registers no command
+// in the shipped binary, but it is one line-move away from one that
+// does, and it is a third-party crate in a graph this repository gates
+// on advisories and licences either way. Naming it in `ALLOWED_PLUGINS`
+// is the way to keep one, not hiding it in another table.
+const DEPENDENCY_TABLES = ["dependencies", "dev-dependencies", "build-dependencies"];
+
+// The crate-name prefix every Tauri plugin shares.
+const PLUGIN_PREFIX = "tauri-plugin-";
 
 // The formats `tauri_utils::acl::capability::CapabilityFile::load`
 // parses. `toml` is unconditional; `json5` is behind the `config-json5`
@@ -92,8 +146,10 @@ const PERMISSION_PARSERS = new Map([
   [".toml", (text) => /** @type {unknown} */ (parseToml(text))],
 ]);
 
-// Tauri skips this folder when collecting capabilities: it holds the
-// JSON schemas it generates for editor completion, not policy.
+// Tauri skips the files directly inside this folder when collecting
+// capabilities and permissions: it holds the JSON schemas it generates
+// for editor completion, not policy. It skips those files only, not
+// the subtree — see `walk`.
 const SCHEMA_FOLDER = "schemas";
 
 // Both label lists are compiled to `glob::Pattern`, so each of these
@@ -135,12 +191,93 @@ function asList(value) {
 }
 
 /**
+ * The crate names one dependency table resolves to.
+ *
+ * A table key is the crate name only when the entry does not rename
+ * it. `shell = { package = "tauri-plugin-shell", version = "2" }` is an
+ * ordinary Cargo spelling whose key says nothing about what is being
+ * depended on, so the `package` value wins where there is one.
+ *
+ * @param {unknown} table
+ * @returns {string[]}
+ */
+function tableCrates(table) {
+  if (typeof table !== "object" || table === null) {
+    return [];
+  }
+  return Object.entries(/** @type {Record<string, unknown>} */ (table)).map(([key, value]) => {
+    const renamed =
+      typeof value === "object" && value !== null
+        ? /** @type {{ package?: unknown }} */ (value).package
+        : undefined;
+    return typeof renamed === "string" ? renamed : key;
+  });
+}
+
+/**
+ * Every crate name this manifest depends on, however it is spelled.
+ *
+ * The manifest is parsed rather than pattern-matched. The scan this
+ * replaces was anchored to a line beginning with the crate name, which
+ * two ordinary spellings walked straight past: the dependency-table
+ * form, whose line begins `[dependencies.tauri-plugin-shell]`, and the
+ * renamed form, whose line begins with the local name. With the
+ * allow-list empty the rule is meant to reject every plugin, so either
+ * spelling was a green gate under a summary line that claimed "no
+ * broad plugin" unconditionally.
+ *
+ * `[target.<cfg>.dependencies]` is read too, since a plugin gated to
+ * one platform is still a plugin on that platform.
+ *
+ * @param {unknown} manifest
+ * @returns {string[]}
+ */
+function dependencyCrates(manifest) {
+  if (typeof manifest !== "object" || manifest === null) {
+    return [];
+  }
+  const tables = /** @type {Record<string, unknown>} */ (manifest);
+  const found = DEPENDENCY_TABLES.flatMap((table) => tableCrates(tables[table]));
+
+  // `[workspace.dependencies]` reaches the graph through a member's
+  // `foo = { workspace = true }`, which carries no `package` of its own.
+  const workspace = tables.workspace;
+  if (typeof workspace === "object" && workspace !== null) {
+    found.push(...tableCrates(/** @type {{ dependencies?: unknown }} */ (workspace).dependencies));
+  }
+
+  const targets = tables.target;
+  if (typeof targets === "object" && targets !== null) {
+    for (const spec of Object.values(/** @type {Record<string, unknown>} */ (targets))) {
+      if (typeof spec !== "object" || spec === null) {
+        continue;
+      }
+      const byTable = /** @type {Record<string, unknown>} */ (spec);
+      found.push(...DEPENDENCY_TABLES.flatMap((table) => tableCrates(byTable[table])));
+    }
+  }
+  return found;
+}
+
+/**
  * Every file under `directory`, at any depth, relative to it.
  *
  * Tauri's glob is `capabilities/**` + `/*`, so a capability one
  * directory deeper is loaded exactly like a sibling one. A
  * non-recursive listing made that the cheapest way to put a capability
  * outside every rule below.
+ *
+ * `schemas` is skipped the way Tauri skips it and no more widely.
+ * `parse_capabilities` and `define_permissions` both filter *files*,
+ * on `p.parent().file_name() != "schemas"`, so only a file sitting
+ * directly in a `schemas` directory is dropped; the glob still
+ * descends through it. Refusing to recurse into `schemas` at all was
+ * strictly wider than that, and the gap was a full bypass rather than
+ * a narrowing: `capabilities/schemas/nested/probe.json` has the parent
+ * `nested`, so Tauri loads it and every rule below used to miss it,
+ * and a permission set under `permissions/schemas/nested/` was
+ * resolved by Tauri while this expander never read it, leaving the
+ * capability that referenced it audited as an unresolved leaf.
  *
  * @param {string} directory
  * @param {string} prefix
@@ -153,10 +290,8 @@ function walk(directory, prefix = "") {
     const absolute = join(directory, entry);
     const relative = prefix === "" ? entry : `${prefix}/${entry}`;
     if (statSync(absolute).isDirectory()) {
-      if (entry !== SCHEMA_FOLDER) {
-        found.push(...walk(absolute, relative));
-      }
-    } else {
+      found.push(...walk(absolute, relative));
+    } else if (basename(directory) !== SCHEMA_FOLDER) {
       found.push(relative);
     }
   }
@@ -379,10 +514,11 @@ function auditCapability(where, capability, sets) {
       if (forbidden !== undefined) {
         fail(reached, `no \`${forbidden}\` capability`, permission);
       }
-      if (permission.startsWith("core:") && !ALLOWED_CORE_PERMISSIONS.includes(permission)) {
+      if (!ALLOWED_CORE_PERMISSIONS.includes(permission) && !permission.startsWith("allow-")) {
         fail(
           reached,
-          `a core permission from [${ALLOWED_CORE_PERMISSIONS.join(", ")}]`,
+          `a core permission from [${ALLOWED_CORE_PERMISSIONS.join(", ")}] ` +
+            "or an `allow-<command>` grant for a command this application registers",
           permission,
         );
       }
@@ -411,29 +547,36 @@ for (const name of capabilityFiles) {
 // reference. An inline entry therefore does not merely add to the
 // reviewed set, it can replace it, and reading only the directory left
 // it entirely unaudited.
-const hostConfig = /** @type {unknown} */ (JSON.parse(readFileSync(configPath, "utf8")));
-const inlined = /** @type {{ app?: { security?: { capabilities?: unknown } } }} */ (hostConfig).app
-  ?.security?.capabilities;
-if (inlined !== undefined) {
+const configFiles = CONFIG_FILES.filter((name) => existsSync(join(hostRoot, name)));
+if (configFiles.length === 0) {
+  fail("src-tauri/", `a Tauri configuration file from [${CONFIG_FILES.join(", ")}]`, "none");
+}
+for (const name of configFiles) {
+  const parsed = parsePolicyFile(name, join(hostRoot, name), CAPABILITY_PARSERS);
+  if (typeof parsed !== "object" || parsed === null) {
+    fail(name, "a configuration object", JSON.stringify(parsed));
+    continue;
+  }
+  const inlined = /** @type {{ app?: { security?: { capabilities?: unknown } } }} */ (parsed).app
+    ?.security?.capabilities;
+  if (inlined === undefined) {
+    continue;
+  }
   const entries = asList(inlined);
-  if (entries !== undefined) {
-    for (const [index, entry] of entries.entries()) {
-      // A string is a reference to a capability file, which the walk
-      // above already audited. Anything else is declared here and
-      // nowhere else.
-      if (typeof entry !== "string") {
-        audited.push({
-          where: `tauri.conf.json app.security.capabilities[${index.toString()}]`,
-          capability: /** @type {Capability} */ (entry),
-        });
-      }
+  if (entries === undefined) {
+    fail(`${name} app.security.capabilities`, "a list of capabilities", JSON.stringify(inlined));
+    continue;
+  }
+  for (const [index, entry] of entries.entries()) {
+    // A string is a reference to a capability file, which the walk
+    // above already audited. Anything else is declared here and
+    // nowhere else.
+    if (typeof entry !== "string") {
+      audited.push({
+        where: `${name} app.security.capabilities[${index.toString()}]`,
+        capability: /** @type {Capability} */ (entry),
+      });
     }
-  } else {
-    fail(
-      "tauri.conf.json app.security.capabilities",
-      "a list of capabilities",
-      JSON.stringify(inlined),
-    );
   }
 }
 
@@ -445,10 +588,18 @@ for (const { where, capability } of audited) {
   auditCapability(where, capability, sets);
 }
 
-const manifest = readFileSync(join(hostRoot, "Cargo.toml"), "utf8");
-for (const [, plugin] of manifest.matchAll(/^(tauri-plugin-[a-z0-9-]+)/gm)) {
-  if (!ALLOWED_PLUGINS.includes(plugin)) {
-    fail("src-tauri/Cargo.toml", `a plugin from [${ALLOWED_PLUGINS.join(", ")}]`, plugin);
+const manifest = /** @type {unknown} */ (
+  parseToml(readFileSync(join(hostRoot, "Cargo.toml"), "utf8"))
+);
+for (const crate of dependencyCrates(manifest)) {
+  if (crate.startsWith(PLUGIN_PREFIX) && !ALLOWED_PLUGINS.includes(crate)) {
+    fail(
+      "src-tauri/Cargo.toml",
+      ALLOWED_PLUGINS.length === 0
+        ? `no \`${PLUGIN_PREFIX}*\` dependency`
+        : `a plugin from [${ALLOWED_PLUGINS.join(", ")}]`,
+      crate,
+    );
   }
 }
 
@@ -465,7 +616,9 @@ if (failures.length > 0) {
 console.log(
   `capability audit: ok — ${audited.length.toString()} capability/capabilities audited ` +
     `from ${capabilityFiles.length.toString()} file(s) under capabilities/ and from ` +
-    `tauri.conf.json, ${sets.size.toString()} permission set(s) expanded, ` +
+    `[${configFiles.join(", ")}], ${sets.size.toString()} permission set(s) expanded, ` +
     "no shell, filesystem, network, process, or path grant, " +
+    "every permission either a named core one or a grant for this " +
+    "application's own commands, " +
     "no wildcard window or webview label, no broad plugin",
 );

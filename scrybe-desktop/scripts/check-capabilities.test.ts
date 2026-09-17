@@ -102,6 +102,189 @@ describe("capability audit", () => {
     expect(status).toBe(1);
   });
 
+  it("test_a_capability_below_the_schemas_folder_is_audited_rather_than_skipped", () => {
+    // Tauri filters a capability *file* whose immediate parent is named
+    // `schemas`; it does not stop the glob descending through one. This
+    // audit used to refuse to recurse into `schemas` at all, which was
+    // strictly wider, so `capabilities/schemas/nested/probe.json` — a
+    // file Tauri loads, because its parent is `nested` — was outside
+    // every rule here.
+    const { status, output } = audit(
+      hostRoot({
+        files: {
+          "capabilities/sessions.json": JSON.stringify(SOUND_CAPABILITY),
+          "capabilities/schemas/nested/probe.json": JSON.stringify({
+            identifier: "probe",
+            windows: ["*"],
+            webviews: ["*"],
+            remote: { urls: ["https://example.invalid"] },
+            permissions: ["shell:allow-execute"],
+          }),
+        },
+      }),
+    );
+
+    expect(output).toContain("capabilities/schemas/nested/probe.json");
+    expect(output).toContain("no `remote` grant");
+    expect(output).toContain("no `shell` capability");
+    expect(output).toContain("a literal label, with no glob metacharacter");
+    expect(status).toBe(1);
+  });
+
+  it("test_a_capability_directly_inside_the_schemas_folder_is_skipped_as_tauri_skips_it", () => {
+    // The other half of the same rule: a file whose immediate parent is
+    // `schemas` is a generated editor schema, not policy, and Tauri
+    // does not load it. Auditing it would fail the gate on a build
+    // artefact.
+    const { status, output } = audit(
+      hostRoot({
+        files: {
+          "capabilities/sessions.json": JSON.stringify(SOUND_CAPABILITY),
+          "capabilities/schemas/desktop-schema.json": JSON.stringify({
+            $schema: "http://json-schema.org/draft-07/schema#",
+            title: "not a capability",
+          }),
+        },
+      }),
+    );
+
+    expect(output).toContain("capability audit: ok");
+    expect(status).toBe(0);
+  });
+
+  it("test_a_permission_set_below_the_schemas_folder_is_expanded_rather_than_left_unresolved", () => {
+    // `define_permissions` filters permission files the same way, so a
+    // set under `permissions/schemas/nested/` is loaded by Tauri. When
+    // this expander skipped the whole `schemas` subtree the capability
+    // referencing it audited as an unresolved leaf and the grants it
+    // actually carried were never seen.
+    const { status, output } = audit(
+      hostRoot({
+        files: {
+          "capabilities/sessions.json": JSON.stringify({
+            ...SOUND_CAPABILITY,
+            permissions: ["allow-session-tools"],
+          }),
+          "permissions/schemas/nested/session-tools.toml": [
+            "[[set]]",
+            'identifier = "allow-session-tools"',
+            'description = "A set Tauri loads from below the schemas folder."',
+            'permissions = ["shell:allow-execute"]',
+          ].join("\n"),
+        },
+      }),
+    );
+
+    expect(output).toContain("via allow-session-tools");
+    expect(output).toContain("no `shell` capability");
+    expect(status).toBe(1);
+  });
+
+  it("test_a_permission_in_a_namespace_the_denylist_does_not_name_is_rejected", () => {
+    // The forbidden-namespace list can only reject a namespace someone
+    // thought to write down. `clipboard-manager` is on it; the rule
+    // under test is the allow-list that catches the ones that are not,
+    // so a plugin surface cannot arrive through a namespace this audit
+    // has never heard of.
+    const { status, output } = audit(
+      hostRoot({
+        files: {
+          "capabilities/sessions.json": JSON.stringify({
+            ...SOUND_CAPABILITY,
+            permissions: ["allow-list-sessions", "notification:allow-notify"],
+          }),
+        },
+      }),
+    );
+
+    expect(output).toContain("notification:allow-notify");
+    expect(output).toContain("an `allow-<command>` grant");
+    expect(status).toBe(1);
+  });
+
+  it("test_a_capability_inlined_in_a_platform_config_file_is_audited", () => {
+    // Tauri merges `tauri.macos.conf.json` over the base configuration
+    // as an RFC 7396 patch, which replaces an array outright. A
+    // capability list declared there replaces both the inline list and
+    // the directory, and reading only `tauri.conf.json` left the policy
+    // that actually ships on this application's one target unaudited.
+    const { status, output } = audit(
+      hostRoot({
+        files: {
+          "capabilities/sessions.json": JSON.stringify(SOUND_CAPABILITY),
+          "tauri.macos.conf.json": JSON.stringify({
+            app: {
+              security: {
+                capabilities: [
+                  {
+                    identifier: "probe",
+                    windows: ["main"],
+                    permissions: ["fs:allow-read-text-file"],
+                  },
+                ],
+              },
+            },
+          }),
+        },
+      }),
+    );
+
+    expect(output).toContain("tauri.macos.conf.json app.security.capabilities[0]");
+    expect(output).toContain("no `fs` capability");
+    expect(status).toBe(1);
+  });
+
+  it("test_a_plugin_spelled_as_a_dependency_table_is_rejected", () => {
+    // `[dependencies.tauri-plugin-shell]` begins with `[`, so a scan
+    // anchored to a line starting with the crate name walked past it
+    // while the summary claimed "no broad plugin" unconditionally.
+    const { status, output } = audit(
+      hostRoot({
+        files: {
+          "capabilities/sessions.json": JSON.stringify(SOUND_CAPABILITY),
+          "Cargo.toml": '[dependencies]\ntauri = "2"\n\n[dependencies.tauri-plugin-shell]\nversion = "2"\n',
+        },
+      }),
+    );
+
+    expect(output).toContain("src-tauri/Cargo.toml");
+    expect(output).toContain("tauri-plugin-shell");
+    expect(status).toBe(1);
+  });
+
+  it("test_a_plugin_spelled_as_a_renamed_dependency_is_rejected", () => {
+    // The key says `shell`; what is depended on is the `package` value.
+    const { status, output } = audit(
+      hostRoot({
+        files: {
+          "capabilities/sessions.json": JSON.stringify(SOUND_CAPABILITY),
+          "Cargo.toml":
+            '[dependencies]\ntauri = "2"\nshell = { package = "tauri-plugin-shell", version = "2" }\n',
+        },
+      }),
+    );
+
+    expect(output).toContain("src-tauri/Cargo.toml");
+    expect(output).toContain("tauri-plugin-shell");
+    expect(status).toBe(1);
+  });
+
+  it("test_a_plugin_under_build_dependencies_is_rejected", () => {
+    const { status, output } = audit(
+      hostRoot({
+        files: {
+          "capabilities/sessions.json": JSON.stringify(SOUND_CAPABILITY),
+          "Cargo.toml":
+            '[dependencies]\ntauri = "2"\n\n[build-dependencies.tauri-plugin-shell]\nversion = "2"\n',
+        },
+      }),
+    );
+
+    expect(output).toContain("src-tauri/Cargo.toml");
+    expect(output).toContain("tauri-plugin-shell");
+    expect(status).toBe(1);
+  });
+
   it("test_a_toml_capability_is_audited_rather_than_skipped", () => {
     // `tauri-utils` reads TOML capabilities unconditionally, so an
     // extension filter of `.json` alone was an opt-out.

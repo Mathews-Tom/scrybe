@@ -15,9 +15,10 @@
 //! Every assertion runs over the same capabilities Tauri itself loads:
 //! the whole `capabilities/**/*` tree rather than its top directory,
 //! every format this audit can read rather than one, and the inline
-//! list in `tauri.conf.json`, which replaces the directory when it is
-//! present. A rule applied to a subset of the policy is a rule the next
-//! capability can be written just outside of.
+//! list in every configuration file Tauri reads — the base one and the
+//! `tauri.<platform>.conf.json` merged over it — which replaces the
+//! directory when it is present. A rule applied to a subset of the
+//! policy is a rule the next capability can be written just outside of.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -42,8 +43,49 @@ const CAPABILITY_EXTENSIONS: &[&str] = &["json", "toml"];
 /// these widens a capability past the literal label it appears to name.
 const GLOB_METACHARACTERS: &[char] = &['*', '?', '[', ']'];
 
-/// Tauri skips this folder when collecting capabilities: it holds the
-/// JSON schemas it generates for editor completion, not policy.
+/// The configuration files `tauri_utils::config::parse::read_from`
+/// reads.
+///
+/// It loads one base file and then, when the file for the target
+/// platform is present, merges it in with `json_patch::merge` — RFC
+/// 7396 JSON Merge Patch, which replaces an array outright rather than
+/// concatenating it. `app.security.capabilities` declared in
+/// `tauri.macos.conf.json` would therefore replace the inline list and,
+/// being non-empty, the capability directory with it. Reading only
+/// `tauri.conf.json` left that policy unaudited while the module
+/// documentation above claimed otherwise.
+///
+/// Every recognised name is read rather than the base plus the one
+/// platform in use: the union cannot miss the set that wins the merge,
+/// and a platform file added for a future target is audited the day it
+/// lands. The `json5` and `Tauri.toml` names are behind the
+/// `config-json5` and `config-toml` features, and are covered for the
+/// same reason [`CAPABILITY_EXTENSIONS`] covers TOML.
+const CONFIG_FILES: &[&str] = &[
+    "tauri.conf.json",
+    "tauri.conf.json5",
+    "Tauri.toml",
+    "tauri.macos.conf.json",
+    "tauri.macos.conf.json5",
+    "Tauri.macos.toml",
+    "tauri.windows.conf.json",
+    "tauri.windows.conf.json5",
+    "Tauri.windows.toml",
+    "tauri.linux.conf.json",
+    "tauri.linux.conf.json5",
+    "Tauri.linux.toml",
+    "tauri.android.conf.json",
+    "tauri.android.conf.json5",
+    "Tauri.android.toml",
+    "tauri.ios.conf.json",
+    "tauri.ios.conf.json5",
+    "Tauri.ios.toml",
+];
+
+/// Tauri skips the files directly inside this folder when collecting
+/// capabilities: it holds the JSON schemas it generates for editor
+/// completion, not policy. It skips those files only, not the subtree
+/// — see [`capability_files`].
 const SCHEMA_FOLDER: &str = "schemas";
 
 fn host_root() -> PathBuf {
@@ -56,16 +98,29 @@ fn host_root() -> PathBuf {
 /// loaded exactly like a sibling one. A file in a format this test
 /// cannot read is a failure rather than a skip: an unreadable file in
 /// the policy directory is an unaudited one.
+///
+/// `schemas` is skipped exactly as `parse_capabilities` skips it and
+/// no more widely. That filter is
+/// `p.parent().file_name() != "schemas"`, which drops a file sitting
+/// directly in a `schemas` directory while the glob still descends
+/// through it. Refusing to descend was strictly wider, and the gap was
+/// a bypass rather than a narrowing: `capabilities/schemas/nested/`
+/// has the parent `nested`, so Tauri loads what is in it and this
+/// audit used to see none of it.
 fn capability_files() -> Vec<PathBuf> {
     let mut found = Vec::new();
     let mut pending = vec![host_root().join("capabilities")];
     while let Some(directory) = pending.pop() {
+        let in_schema_folder = directory
+            .file_name()
+            .is_some_and(|name| name == SCHEMA_FOLDER);
         for entry in std::fs::read_dir(&directory).unwrap() {
             let path = entry.unwrap().path();
             if path.is_dir() {
-                if path.file_name().unwrap() != SCHEMA_FOLDER {
-                    pending.push(path);
-                }
+                pending.push(path);
+                continue;
+            }
+            if in_schema_folder {
                 continue;
             }
             let extension = path
@@ -114,11 +169,33 @@ fn capabilities() -> Vec<(String, serde_json::Value)> {
         }
     }
 
-    let config: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(host_root().join("tauri.conf.json")).unwrap(),
-    )
-    .unwrap();
-    if let Some(inlined) = config["app"]["security"]["capabilities"].as_array() {
+    let mut configs_read = 0_usize;
+    for name in CONFIG_FILES {
+        let path = host_root().join(name);
+        if !path.exists() {
+            continue;
+        }
+        configs_read += 1;
+        let text = std::fs::read_to_string(&path).unwrap();
+        let extension = path
+            .extension()
+            .map(|extension| extension.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let config: serde_json::Value = if extension == "toml" {
+            toml::from_str(&text).unwrap()
+        } else {
+            // A `.json5` configuration is rejected rather than skipped,
+            // for the reason [`CAPABILITY_EXTENSIONS`] gives: a file
+            // this audit cannot read is one it has not audited.
+            assert!(
+                extension == "json",
+                "{name}: a configuration file this audit cannot read is an unaudited one",
+            );
+            serde_json::from_str(&text).unwrap()
+        };
+        let Some(inlined) = config["app"]["security"]["capabilities"].as_array() else {
+            continue;
+        };
         // A string entry references a capability file, already
         // collected above. Anything else is declared only here.
         found.extend(
@@ -128,12 +205,16 @@ fn capabilities() -> Vec<(String, serde_json::Value)> {
                 .enumerate()
                 .map(|(index, entry)| {
                     (
-                        format!("tauri.conf.json app.security.capabilities[{index}]"),
+                        format!("{name} app.security.capabilities[{index}]"),
                         entry.clone(),
                     )
                 }),
         );
     }
+    assert!(
+        configs_read > 0,
+        "no Tauri configuration file was found to audit; expected one of {CONFIG_FILES:?}",
+    );
 
     assert!(!found.is_empty(), "no capability was found to audit");
     found
