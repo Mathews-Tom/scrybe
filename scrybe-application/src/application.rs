@@ -58,6 +58,13 @@ impl ScrybeApplication {
     }
 
     /// The one process-wide recording state model.
+    ///
+    /// Also the composition root's observer route:
+    /// [`RecordingController::subscribe`] takes `&self`, so a consumer
+    /// holding this application can attach an observer here. The
+    /// consuming `observing` constructor is unreachable from outside
+    /// the crate by design, because an owned controller would be a
+    /// second instance.
     #[must_use]
     pub const fn recording(&self) -> &Arc<RecordingController> {
         &self.recording
