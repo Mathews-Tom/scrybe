@@ -35,7 +35,7 @@
 #![allow(clippy::needless_pass_by_value)]
 
 use scrybe_application::paging::PageRequest;
-use scrybe_application::recording::{CaptureCapability, CaptureSupport, RecordingOverrides};
+use scrybe_application::recording::RecordingOverrides;
 use scrybe_application::sessions::{ConfiguredNotesGenerator, SearchRequest};
 use scrybe_application::{ApplicationError, ErrorCode, SessionRef};
 use tauri::{Manager, State};
@@ -66,6 +66,8 @@ pub const COMMANDS: &[&str] = &[
     "settings_summary",
     "recording_status",
     "recording_preflight",
+    "start_recording",
+    "stop_recording",
 ];
 
 /// Every command the host registers, reads and setup together.
@@ -423,26 +425,10 @@ pub fn recording_preflight(desktop: State<'_, Desktop>) -> Result<PreflightView,
     scrybe_application::recording::check(
         desktop.application().config(),
         crate::state::home_directory().as_deref(),
-        host_support(),
+        crate::recording::support(),
         None,
         &RecordingOverrides::default(),
     )
     .map(|(_, report)| report.into())
     .map_err(Into::into)
-}
-
-/// What this host linked.
-///
-/// Every field is a statement about this binary, derived from the same
-/// conditions the code that would use them is written under. Capture is
-/// [`CaptureCapability::SyntheticOnly`] because this crate depends on
-/// no capture adapter at all, and the transcription runtime is absent
-/// for the same reason — saying otherwise here would let preflight
-/// clear a recording this host cannot perform.
-const fn host_support() -> CaptureSupport {
-    CaptureSupport {
-        capture: CaptureCapability::SyntheticOnly,
-        transcription_model: false,
-        notes_provider: cfg!(feature = "notes-generation"),
-    }
 }

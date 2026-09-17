@@ -8,7 +8,7 @@
 // bottom and the drift check compares a stable byte sequence rather
 // than whatever order a hash map happened to produce.
 
-export type FailureCode = "invalid_session_id" | "session_not_found" | "ambiguous_session_id" | "storage_root_missing" | "storage_unavailable" | "metadata_unreadable" | "cancelled" | "not_applicable" | "config_unreadable" | "config_invalid" | "config_write_failed" | "diagnostics_unavailable" | "repair_failed" | "notes_generation_failed" | "recording_state_conflict" | "preflight_failed" | "model_manifest_invalid" | "model_unknown" | "model_confirmation_required" | "model_storage_unavailable" | "model_download_unavailable";
+export type FailureCode = "invalid_session_id" | "session_not_found" | "ambiguous_session_id" | "storage_root_missing" | "storage_unavailable" | "metadata_unreadable" | "cancelled" | "not_applicable" | "config_unreadable" | "config_invalid" | "config_write_failed" | "diagnostics_unavailable" | "repair_failed" | "notes_generation_failed" | "recording_state_conflict" | "preflight_failed" | "provider_unavailable" | "capture_unavailable" | "recording_failed" | "model_manifest_invalid" | "model_unknown" | "model_confirmation_required" | "model_storage_unavailable" | "model_download_unavailable";
 
 export type CommandFailure = { code: FailureCode, message: string, };
 
@@ -76,6 +76,20 @@ schema_version: number,
  * Whether every check that can block passed.
  */
 can_record: boolean, findings: Array<PreflightFindingView>, };
+
+export type SavingStep = "finalizing_transcript" | "encoding_audio" | "generating_notes" | "writing_metadata";
+
+export type RecordingProgressView = { 
+/**
+ * The service layer's progress schema version, forwarded
+ * unchanged so a frontend can refuse a payload it was not built
+ * for.
+ */
+schema_version: number, step: SavingStep, 
+/**
+ * From 1.
+ */
+index: number, total: number, };
 
 export type WarningSeverity = "info" | "warning" | "error";
 
@@ -282,3 +296,4 @@ bytes: number, };
 
 export const RECORDING_TRANSITION_EVENT = "recording-transition";
 export const MODEL_PROGRESS_EVENT = "scrybe://model-progress";
+export const RECORDING_PROGRESS_EVENT = "recording-progress";

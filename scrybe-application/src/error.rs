@@ -57,6 +57,17 @@ pub enum ErrorCode {
     RecordingStateConflict,
     /// Recording preflight failed; no session was created.
     PreflightFailed,
+    /// A provider the plan names could not be built. Distinct from
+    /// [`Self::PreflightFailed`]: preflight refuses before anything is
+    /// written, and this is a provider that passed every check and then
+    /// failed to load.
+    ProviderUnavailable,
+    /// A capture device could not be opened.
+    CaptureUnavailable,
+    /// A recording that started did not complete. Durable state may
+    /// exist under the session folder and may be repairable, which is
+    /// what distinguishes it from a preflight refusal.
+    RecordingFailed,
     /// The checked-in model catalog does not describe a usable model.
     ModelManifestInvalid,
     /// No catalog entry carries the requested identity.
@@ -92,6 +103,9 @@ impl ErrorCode {
             Self::NotesGenerationFailed => "notes_generation_failed",
             Self::RecordingStateConflict => "recording_state_conflict",
             Self::PreflightFailed => "preflight_failed",
+            Self::ProviderUnavailable => "provider_unavailable",
+            Self::CaptureUnavailable => "capture_unavailable",
+            Self::RecordingFailed => "recording_failed",
             Self::ModelManifestInvalid => "model_manifest_invalid",
             Self::ModelUnknown => "model_unknown",
             Self::ModelConfirmationRequired => "model_confirmation_required",
@@ -235,6 +249,9 @@ mod tests {
             ErrorCode::NotesGenerationFailed,
             ErrorCode::RecordingStateConflict,
             ErrorCode::PreflightFailed,
+            ErrorCode::ProviderUnavailable,
+            ErrorCode::CaptureUnavailable,
+            ErrorCode::RecordingFailed,
         ] {
             let encoded = serde_json::to_string(&code).unwrap();
 

@@ -16,11 +16,15 @@
 //! transcript text, and no notes content is ever part of a recording
 //! event.
 
+mod capture;
 mod contract;
 mod controller;
 mod orchestration;
 mod plan;
 mod preflight;
+mod progress;
+mod run;
+mod stop;
 
 pub use contract::{
     RecordingEvent, RecordingFailure, RecordingFailureKind, RecordingSnapshot, RecordingState,
@@ -30,6 +34,21 @@ pub use controller::{
     MonotonicClock, RecordingController, RecordingEventObserver, SystemMonotonicClock,
 };
 pub use orchestration::{begin, check, Refusal, PREFLIGHT_FAILURE_SUMMARY};
+pub use progress::{
+    observe, RecordingProgress, RecordingProgressObserver, SavingStep,
+    RECORDING_PROGRESS_SCHEMA_VERSION,
+};
+
+pub use run::{
+    notes, run, synthetic_frames, transcription, Notes, RecordingRun, SettledConsent, StubNotes,
+    StubTranscription, Transcription,
+};
+
+#[cfg(feature = "mic-capture")]
+pub use capture::microphone_frames;
+pub use capture::{CaptureFrames, CaptureRegistry};
+pub use stop::{Stop, StopWatch};
+
 pub use plan::{
     expand_tilde, CaptureSource, NotesBackend, RecordingOverrides, RecordingPlan, SystemBackend,
     TranscriptionModel,

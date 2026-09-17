@@ -47,15 +47,13 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 
-use crate::capture_control::CaptureRegistry;
-use async_trait::async_trait;
 use chrono::Utc;
 use clap::{Args as ClapArgs, ValueEnum};
 use futures::stream::{self, Stream, StreamExt};
 use scrybe_application::recording::{
-    CaptureCapability, CaptureSource, CaptureSupport, NotesBackend, RecordingController,
-    RecordingOverrides, RecordingPlan, RecordingSnapshot, RecordingState, StopAcceptance,
-    StopSource, SystemBackend, TranscriptionModel,
+    CaptureCapability, CaptureRegistry, CaptureSource, CaptureSupport, NotesBackend,
+    RecordingController, RecordingOverrides, RecordingPlan, RecordingSnapshot, RecordingState,
+    StopAcceptance, StopSource, SystemBackend, TranscriptionModel,
 };
 #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
 use scrybe_capture_mac::{input_devices, InputDevice, MacCapture, NativeMicCapture, SckCapture};
@@ -66,30 +64,11 @@ use scrybe_capture_mic::MicCapture;
 #[cfg(feature = "mic-capture")]
 use scrybe_core::capture::AudioCapture;
 
-use scrybe_core::context::MeetingContext;
-use scrybe_core::diarize::Diarizer;
-use scrybe_core::error::{CaptureError, CoreError, LlmError, SttError};
-use scrybe_core::hooks::{Hook, LifecycleEvent};
-use scrybe_core::notes_map_reduce::NotesRuntime;
-use scrybe_core::pipeline::chunker::ChunkerConfig;
-use scrybe_core::pipeline::vad::EnergyVad;
-#[cfg(feature = "llm-openai-compat")]
-use scrybe_core::providers::openai_compat_llm::OpenAiCompatLlmProvider;
-#[cfg(feature = "stt-sherpa")]
-use scrybe_core::providers::sherpa_streaming::{SherpaStreamingConfig, SherpaStreamingProvider};
-use scrybe_core::providers::streaming::StreamingSttProvider;
-#[cfg(feature = "whisper-local")]
-use scrybe_core::providers::whisper_local::{WhisperLocalConfig, WhisperLocalProvider};
-use scrybe_core::providers::{LlmProvider, SttProvider};
-use scrybe_core::session::{
-    run_with_notes as run_session_with_notes, SessionInputs, SessionProgress,
-};
+use scrybe_core::error::CaptureError;
+use scrybe_core::session::SessionProgress;
 #[cfg(any(test, all(feature = "mic-capture", feature = "system-capture-mac")))]
 use scrybe_core::storage::session_folder_name;
-use scrybe_core::types::{
-    AttributedChunk, AudioChunk, AudioFrame, ConsentMode, FrameSource, SessionId, SpeakerLabel,
-    TranscriptChunk,
-};
+use scrybe_core::types::{AudioFrame, ConsentMode, SessionId, SpeakerLabel};
 use tokio::sync::watch;
 
 use crate::prompter::TtyPrompter;
@@ -259,7 +238,7 @@ impl SystemCapture {
 const TAP_STARTUP_ACTIVITY_WINDOW: Duration = Duration::from_millis(1_500);
 
 #[cfg(any(test, feature = "mic-capture"))]
-type CaptureFrameStream = Pin<Box<dyn Stream<Item = Result<AudioFrame, CaptureError>> + Send>>;
+use scrybe_application::recording::CaptureFrames as CaptureFrameStream;
 
 #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
 async fn start_system_capture(
@@ -476,12 +455,17 @@ pub fn begin_recording(controller: &RecordingController, args: &Args) -> Result<
         &overrides_from(args),
     )
     .map_err(|refusal| {
-        let hint = rebuild_hint(&refusal);
-        let error = anyhow::Error::from(refusal.error);
-        match hint {
-            Some(hint) => error.context(hint),
-            None => error,
+        // Both hints, when both checks blocked: a reader missing two
+        // features should learn both in one attempt.
+        let hints: Vec<String> = [rebuild_hint(&refusal), model_rebuild_hint(&refusal)]
+            .into_iter()
+            .flatten()
+            .collect();
+        let mut error = anyhow::Error::from(refusal.error);
+        for hint in hints {
+            error = error.context(hint);
         }
+        error
     })
 }
 
@@ -512,6 +496,35 @@ fn rebuild_hint(refusal: &scrybe_application::recording::Refusal) -> Option<Stri
             "--source mic+system requires the binary to be built with both \
              --features mic-capture and --features system-capture-mac; \
              this binary was built without one or both"
+                .to_string(),
+        ),
+    }
+}
+
+/// How to rebuild this binary so a model it refused would load.
+///
+/// Same division as `rebuild_hint`: the service layer refuses a model
+/// this build carries no runtime for, and the Cargo feature that would
+/// supply one belongs to this package.
+fn model_rebuild_hint(refusal: &scrybe_application::recording::Refusal) -> Option<String> {
+    let blocked_on_model = refusal
+        .report
+        .blocking()
+        .iter()
+        .any(|finding| finding.check == scrybe_application::recording::PreflightCheck::Model);
+    if !blocked_on_model {
+        return None;
+    }
+    match &refusal.plan.as_ref()?.transcription {
+        TranscriptionModel::Stub => None,
+        TranscriptionModel::Whisper(_) => Some(
+            "--whisper-model requires the binary to be built with \
+             --features whisper-local; this binary was built without it"
+                .to_string(),
+        ),
+        TranscriptionModel::Sherpa(_) => Some(
+            "--sherpa-model requires the binary to be built with \
+             --features stt-sherpa; this binary was built without it"
                 .to_string(),
         ),
     }
@@ -647,32 +660,15 @@ pub async fn run_with_stop(
     let auto_accept = args.yes || std::env::var("SCRYBE_CONSENT_AUTO_ACCEPT").as_deref() == Ok("1");
     let prompter = TtyPrompter::new(auto_accept);
     let source = plan.source;
-    let consent_mode = plan.consent;
-
-    let llm = build_llm_provider(plan.notes, &cfg.llm)?;
-    let notes_runtime = match plan.notes {
-        NotesBackend::Stub => None,
-        NotesBackend::OpenAiCompat => Some(NotesRuntime::load(&cfg.notes)?),
-    };
     let system_backend = plan.system_backend;
     #[cfg(not(all(feature = "mic-capture", feature = "system-capture-mac")))]
     let _ = system_backend;
-    let diarizer = BinaryChannelDiarizer;
-    let hooks: Vec<Box<dyn Hook>> = Vec::new();
-
     let id = SessionId::new();
     let user = std::env::var("USER").unwrap_or_else(|_| "scrybe-user".into());
     let started_at = Utc::now();
 
     let capture_registry = CaptureRegistry::default();
 
-    // System frames need their own VAD/chunker for the binary-channel
-    // diarizer to attribute them as `Them:`. Set to `Some(...)` only
-    // when the source carries system frames.
-    let system_vad: Option<EnergyVad> = match source {
-        CaptureSource::MicSystem => Some(EnergyVad::default()),
-        CaptureSource::Synthetic | CaptureSource::Mic => None,
-    };
     #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
     let selected_input = match source {
         CaptureSource::Synthetic => None,
@@ -779,92 +775,35 @@ pub async fn run_with_stop(
     };
     let stream = capture_liveness_watchdog(stream, capture_registry.clone());
 
-    // Start hardware capture before loading the selected STT model. The capture
-    // adapters buffer their frames while the model initializes, so the Tap
-    // liveness probe runs during startup instead of delaying recording.
-    let stt = match build_stt_provider(plan.transcription.clone(), &cfg.stt.language) {
-        Ok(stt) => stt,
-        Err(error) => {
-            if let Err(stop_error) = capture_registry.stop_all() {
-                tracing::error!(error = %stop_error, "stopping capture after STT initialization failure failed");
-            }
-            return Err(error);
-        }
-    };
-    let streaming_stt = stt.streaming();
-
-    // The pipeline already publishes both real boundaries, so the
-    // controller is driven from them rather than from the call site.
-    // `SessionProgress::Recording` is the moment capture exists, which
-    // is where `Preparing` ends; the first finalization event is where
-    // capture ends and `Saving` begins. Without the second, `Saving`
-    // never spanned the finalization window, so a merge, encode,
-    // transcribe, or `meta.toml` failure after a natural capture end
-    // was labelled `Capture` even though audio exists and the session
-    // is repairable.
-    let progress = move |event: SessionProgress| {
-        if let Some(controller) = controller.as_deref() {
-            match event {
-                SessionProgress::Recording => {
-                    if let Err(conflict) = controller.mark_recording() {
-                        tracing::debug!(%conflict, "capture began in a state that cannot record");
-                    }
-                }
-                SessionProgress::FinalizingTranscript { .. }
-                    if controller.snapshot().state == RecordingState::Recording =>
-                {
-                    if let Err(conflict) = controller.begin_saving() {
-                        tracing::debug!(%conflict, "finalization began in a state that cannot save");
-                    }
-                }
-                _ => {}
-            }
-        }
-        print_session_progress(event);
-    };
-    let outputs = run_session_with_notes(
-        SessionInputs {
+    // Capture is already running: the adapters buffer their frames
+    // while a model initializes, so the Tap liveness probe runs during
+    // startup instead of delaying recording. Everything from here —
+    // the providers the plan names, the consent step, the pipeline,
+    // and the controller driving — is `scrybe-application`'s, so this
+    // terminal and a desktop host produce the same session from the
+    // same configuration. Printing each progress event is the only
+    // part that is this frontend's.
+    let outputs = scrybe_application::recording::run(
+        scrybe_application::recording::RecordingRun {
+            plan: &plan,
+            config: &cfg,
             id,
             started_at,
-            root: root.clone(),
-            title: plan.title.clone(),
             user,
-            consent_mode,
-            context: MeetingContext {
-                title: plan.title,
-                ..MeetingContext::default()
-            },
-            mic_vad: EnergyVad::default(),
-            system_vad,
-            streaming_stt,
-            stt: &stt,
-            llm: &llm,
-            diarizer: &diarizer,
             prompter: &prompter,
-            hooks: &hooks,
-            chunker_config: ChunkerConfig {
-                max_chunk: Duration::from_secs(30),
-                min_speech_before_silence_split: Duration::from_secs(5),
-                silence_split_after: Duration::from_secs(5),
-            },
-            // The offline merge's duration assertion is a genuine
-            // safety net for a real capture device, whose frames
-            // arrive at real wall-clock pace. The synthetic source
-            // generates frames in-process with no real-time pacing
-            // (`synthetic_capture_stream`'s doc comment); comparing
-            // its encoded duration against actual elapsed CPU time
-
-            // would fail by construction on every invocation.
-            verify_duration: !matches!(source, CaptureSource::Synthetic),
-            progress: Some(&progress),
+            controller,
+            on_progress: None,
+            on_session_event: Some(Arc::new(print_session_progress)),
         },
         stream,
-        notes_runtime,
     )
     .await
     .context("running session");
+    // One teardown for every outcome. It used to be two — one after a
+    // provider failed to load and one after the session returned —
+    // and a failure between them would have left capture running.
     if let Err(error) = capture_registry.stop_all() {
-        tracing::error!(error = %error, "stopping capture after session completion failed");
+        tracing::error!(error = %error, "stopping capture after the session ended failed");
     }
     let outputs = outputs?;
 
@@ -1057,40 +996,27 @@ where
 /// variable unset and see the original sub-second, instant-emission
 /// behavior.
 #[allow(clippy::cast_precision_loss)]
+/// The shared synthetic source, paced for this binary's tests.
+///
+/// The frames themselves come from `scrybe-application`, so a desktop
+/// host generating the same source generates the same audio. What is
+/// added here is the delay `SCRYBE_TEST_SYNTHETIC_FRAME_DELAY_MS`
+/// asks for: `tests/repair_sigkill.rs` needs a recording that is still
+/// running when it sends the signal, and an in-process generator with
+/// no pacing finishes before the test can. Unset — which is every
+/// invocation a user makes — the stream is unpaced, exactly as it was.
 fn synthetic_capture_stream(
     seconds: u64,
-) -> impl Stream<Item = Result<AudioFrame, scrybe_core::error::CaptureError>> + Send + Unpin {
-    const SAMPLE_RATE: u32 = 16_000;
-    const FRAME_SAMPLES: usize = 1_600;
-    let total_speech = seconds * (u64::from(SAMPLE_RATE) / FRAME_SAMPLES as u64);
-    let total_silence = (u64::from(SAMPLE_RATE) / FRAME_SAMPLES as u64) * 6;
-    let total = total_speech + total_silence;
+) -> impl Stream<Item = Result<AudioFrame, CaptureError>> + Send + Unpin {
     let frame_delay = synthetic_frame_delay();
-
-    Box::pin(stream::iter(0..total).then(move |i| async move {
-        if !frame_delay.is_zero() {
-            tokio::time::sleep(frame_delay).await;
-        }
-        let speech = i < total_speech;
-        let samples: Vec<f32> = (0..FRAME_SAMPLES)
-            .map(|n| {
-                if speech {
-                    let t = (i * FRAME_SAMPLES as u64 + n as u64) as f32 / SAMPLE_RATE as f32;
-                    (t * 440.0 * std::f32::consts::TAU).sin()
-                } else {
-                    0.0
-                }
-            })
-            .collect();
-        let timestamp_ns = (i * FRAME_SAMPLES as u64 * 1_000_000_000) / u64::from(SAMPLE_RATE);
-        Ok(AudioFrame {
-            samples: Arc::from(samples),
-            channels: 1,
-            sample_rate: SAMPLE_RATE,
-            timestamp_ns,
-            source: FrameSource::Mic,
-        })
-    }))
+    Box::pin(
+        scrybe_application::recording::synthetic_frames(seconds).then(move |frame| async move {
+            if !frame_delay.is_zero() {
+                tokio::time::sleep(frame_delay).await;
+            }
+            frame
+        }),
+    )
 }
 
 fn synthetic_frame_delay() -> Duration {
@@ -1104,274 +1030,6 @@ fn synthetic_frame_delay() -> Duration {
 /// pick at runtime. Enum variants stay `Sized` so the existing
 /// `SessionInputs<S: SttProvider>` generic does not need a `?Sized`
 /// relaxation in `scrybe-core` for this v1.0.x patch.
-enum CliStt {
-    Stub(StubLocalStt),
-    #[cfg(feature = "stt-sherpa")]
-    Sherpa(SherpaStreamingProvider),
-    #[cfg(feature = "whisper-local")]
-    Whisper(WhisperLocalProvider),
-}
-
-impl CliStt {
-    /// Streaming capability of the selected provider, when it has one.
-    ///
-    /// Only the Sherpa provider decodes incrementally; the stub and
-    /// whisper.cpp remain batch-only and take the unchanged
-    /// `SttProvider` path.
-    fn streaming(&self) -> Option<&dyn StreamingSttProvider> {
-        match self {
-            #[cfg(feature = "stt-sherpa")]
-            Self::Sherpa(provider) => Some(provider),
-            #[cfg(feature = "whisper-local")]
-            Self::Whisper(_) => None,
-            Self::Stub(_) => None,
-        }
-    }
-}
-
-#[async_trait]
-impl SttProvider for CliStt {
-    async fn transcribe(&self, chunk: AudioChunk) -> Result<TranscriptChunk, SttError> {
-        match self {
-            Self::Stub(s) => s.transcribe(chunk).await,
-            #[cfg(feature = "stt-sherpa")]
-            Self::Sherpa(provider) => provider.transcribe(chunk).await,
-            #[cfg(feature = "whisper-local")]
-            Self::Whisper(provider) => provider.transcribe(chunk).await,
-        }
-    }
-
-    fn name(&self) -> &str {
-        match self {
-            Self::Stub(s) => s.name(),
-            #[cfg(feature = "stt-sherpa")]
-            Self::Sherpa(provider) => SttProvider::name(provider),
-            #[cfg(feature = "whisper-local")]
-            Self::Whisper(provider) => provider.name(),
-        }
-    }
-}
-
-/// Construct the STT provider selected by the model flags.
-///
-/// An explicit model always requires its matching feature. The stub remains
-/// the default only when no model has been requested or configured.
-#[allow(unused_variables)]
-fn build_stt_provider(model: TranscriptionModel, language: &str) -> Result<CliStt> {
-    match model {
-        TranscriptionModel::Stub => Ok(CliStt::Stub(StubLocalStt::new())),
-        TranscriptionModel::Whisper(path) => {
-            #[cfg(feature = "whisper-local")]
-            {
-                let mut config = WhisperLocalConfig::new(path.clone());
-                config.language = language.to_string();
-                let provider = WhisperLocalProvider::new(config)
-                    .with_context(|| format!("loading whisper.cpp model at {}", path.display()))?;
-                Ok(CliStt::Whisper(provider))
-            }
-            #[cfg(not(feature = "whisper-local"))]
-            {
-                anyhow::bail!(
-                    "--whisper-model {} provided but binary built without --features whisper-local; \
-                     rebuild with `cargo install --features whisper-local,...` or remove the flag",
-                    path.display()
-                );
-            }
-        }
-        TranscriptionModel::Sherpa(path) => {
-            #[cfg(feature = "stt-sherpa")]
-            {
-                let provider =
-                    SherpaStreamingProvider::new(SherpaStreamingConfig::new(path.clone()))
-                        .with_context(|| {
-                            format!("loading streaming Sherpa-ONNX model at {}", path.display())
-                        })?;
-                Ok(CliStt::Sherpa(provider))
-            }
-            #[cfg(not(feature = "stt-sherpa"))]
-            {
-                anyhow::bail!(
-                    "--sherpa-model {} provided but binary built without --features stt-sherpa; \
-                     rebuild with `cargo install --features stt-sherpa,...` or remove the flag",
-                    path.display()
-                );
-            }
-        }
-    }
-}
-
-/// CLI-local stub STT provider. Emits a deterministic line so the
-/// rest of the pipeline (transcript append, LLM prompt rendering,
-/// notes write) is exercisable without a real Whisper model. Using a
-/// real model is wired via `--features whisper-local` plus the
-/// `--whisper-model <PATH>` flag — see `build_stt_provider` above.
-struct StubLocalStt;
-
-impl StubLocalStt {
-    const fn new() -> Self {
-        Self
-    }
-}
-
-#[async_trait]
-impl SttProvider for StubLocalStt {
-    async fn transcribe(&self, chunk: AudioChunk) -> Result<TranscriptChunk, SttError> {
-        let speech = chunk.samples.iter().any(|s| s.abs() > 0.01);
-        let text = if speech {
-            "[synthetic speech chunk; build with --features whisper-local for real transcription]"
-        } else {
-            "[silence]"
-        };
-        Ok(TranscriptChunk {
-            text: text.to_string(),
-            source: chunk.source,
-            start_ms: u64::try_from(chunk.start.as_millis()).unwrap_or(0),
-            duration_ms: u64::try_from(chunk.duration.as_millis()).unwrap_or(0),
-            language: None,
-            tokens: Vec::new(),
-        })
-    }
-
-    fn name(&self) -> &'static str {
-        "stub-local-stt"
-    }
-}
-
-/// CLI-local LLM dispatch over the two providers `scrybe record` can
-/// pick at runtime. Same enum-dispatch shape as `CliStt`: variants stay
-/// `Sized` so the existing `SessionInputs<L: LlmProvider>` generic
-/// does not need a `?Sized` relaxation in `scrybe-core`.
-enum CliLlm {
-    Stub(StubLocalLlm),
-    #[cfg(feature = "llm-openai-compat")]
-    OpenAiCompat(OpenAiCompatLlmProvider),
-}
-
-#[async_trait]
-impl LlmProvider for CliLlm {
-    async fn complete(&self, prompt: &str) -> Result<String, LlmError> {
-        match self {
-            Self::Stub(p) => p.complete(prompt).await,
-            #[cfg(feature = "llm-openai-compat")]
-            Self::OpenAiCompat(p) => p.complete(prompt).await,
-        }
-    }
-
-    fn name(&self) -> &str {
-        match self {
-            Self::Stub(p) => p.name(),
-            #[cfg(feature = "llm-openai-compat")]
-            Self::OpenAiCompat(p) => p.name(),
-        }
-    }
-}
-
-/// Construct the LLM provider from the `--llm` flag and the `[llm]`
-/// config block.
-///
-/// - `LlmBackendArg::Stub` → `StubLocalLlm` (CI smoke + air-gapped
-///   default).
-/// - `LlmBackendArg::OpenAiCompat` + `--features llm-openai-compat`
-///   → `OpenAiCompatLlmProvider::from_config(&cfg)` against the
-///   user's `[llm]` block (defaults to Ollama at
-///   `http://localhost:11434/v1`).
-/// - `LlmBackendArg::OpenAiCompat` + no feature → hard error so the
-///   user does not silently get the stub when they asked for real
-///   summaries (mirrors `build_stt_provider`'s behavior at v1.0.1).
-#[allow(unused_variables)]
-fn build_llm_provider(
-    backend: NotesBackend,
-    cfg: &scrybe_core::config::LlmConfig,
-) -> Result<CliLlm> {
-    match backend {
-        NotesBackend::Stub => Ok(CliLlm::Stub(StubLocalLlm::new())),
-        NotesBackend::OpenAiCompat => {
-            #[cfg(feature = "llm-openai-compat")]
-            {
-                let provider = OpenAiCompatLlmProvider::from_config(cfg)
-                    .context("constructing OpenAI-compat LLM provider from [llm] config")?;
-                Ok(CliLlm::OpenAiCompat(provider))
-            }
-            #[cfg(not(feature = "llm-openai-compat"))]
-            {
-                anyhow::bail!(
-                    "--llm openai-compat requires the binary to be built with \
-                     --features llm-openai-compat; rebuild with \
-                     `cargo install --features llm-openai-compat,...` or pass \
-                     --llm stub"
-                );
-            }
-        }
-    }
-}
-
-/// CLI-local stub LLM provider. Returns a fixed structured-notes body
-/// so `notes.md` is well-formed. Real LLM access is via the
-/// `OpenAiCompatLlmProvider` path wired in v1.0.4 (`--llm openai-compat`
-/// + `--features llm-openai-compat`); see `build_llm_provider`.
-struct StubLocalLlm;
-
-impl StubLocalLlm {
-    const fn new() -> Self {
-        Self
-    }
-}
-
-#[async_trait]
-impl LlmProvider for StubLocalLlm {
-    async fn complete(&self, prompt: &str) -> Result<String, LlmError> {
-        if prompt.starts_with("Create a short, factual title") {
-            return Ok("Synthetic Stub Session".to_string());
-        }
-        Ok(
-            "## TL;DR\nSynthetic stub session. Build with a configured LLM \
-            provider to generate real notes.\n## Action items\n- (none)\n\
-            ## Decisions\n- (none)\n## Follow-ups\n- (none)\n"
-                .to_string(),
-        )
-    }
-
-    fn name(&self) -> &'static str {
-        "stub-local-llm"
-    }
-}
-
-/// CLI-local diarizer using the binary-channel heuristic. Mic-only
-/// sessions yield `Me:` everywhere.
-struct BinaryChannelDiarizer;
-
-#[async_trait]
-impl Diarizer for BinaryChannelDiarizer {
-    async fn diarize(
-        &self,
-        mic: &[TranscriptChunk],
-        sys: &[TranscriptChunk],
-        _ctx: &MeetingContext,
-    ) -> Result<Vec<AttributedChunk>, CoreError> {
-        let mut out = Vec::with_capacity(mic.len() + sys.len());
-        for chunk in mic {
-            out.push(AttributedChunk {
-                chunk: chunk.clone(),
-                speaker: SpeakerLabel::Me,
-            });
-        }
-        for chunk in sys {
-            out.push(AttributedChunk {
-                chunk: chunk.clone(),
-                speaker: SpeakerLabel::Them,
-            });
-        }
-        Ok(out)
-    }
-
-    fn name(&self) -> &'static str {
-        "binary-channel"
-    }
-}
-
-#[allow(dead_code)]
-const fn _ensure_event_dispatch_compiles(_event: &LifecycleEvent) {}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
@@ -1421,109 +1079,6 @@ mod tests {
         let mode: ConsentMode = ConsentModeArg::Announce.into();
 
         assert_eq!(mode, ConsentMode::Announce);
-    }
-
-    #[tokio::test]
-    async fn test_synthetic_capture_stream_emits_speech_then_silence_frames() {
-        let stream = synthetic_capture_stream(1);
-        let frames: Vec<_> = stream.collect().await;
-
-        assert!(!frames.is_empty());
-        let speech_count = frames
-            .iter()
-            .filter(|f| {
-                f.as_ref()
-                    .is_ok_and(|frame| frame.samples.iter().any(|s| s.abs() > 0.01))
-            })
-            .count();
-        assert!(
-            speech_count >= 5,
-            "expected speech frames; got {speech_count}"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_stub_local_stt_returns_speech_marker_for_non_silence_chunk() {
-        let pcm: Arc<[f32]> = Arc::from(vec![0.5_f32; 16_000]);
-        let chunk = AudioChunk {
-            samples: pcm,
-            source: FrameSource::Mic,
-            start: Duration::ZERO,
-            duration: Duration::from_secs(1),
-        };
-
-        let result = StubLocalStt::new().transcribe(chunk).await.unwrap();
-
-        assert!(result.text.contains("synthetic speech"));
-    }
-
-    #[tokio::test]
-    async fn test_stub_local_stt_returns_silence_marker_for_zero_buffer() {
-        let pcm: Arc<[f32]> = Arc::from(vec![0.0_f32; 16_000]);
-        let chunk = AudioChunk {
-            samples: pcm,
-            source: FrameSource::Mic,
-            start: Duration::ZERO,
-            duration: Duration::from_secs(1),
-        };
-
-        let result = StubLocalStt::new().transcribe(chunk).await.unwrap();
-
-        assert_eq!(result.text, "[silence]");
-    }
-
-    #[tokio::test]
-    async fn test_stub_local_llm_returns_template_notes_body() {
-        let llm = StubLocalLlm::new();
-
-        let body = llm.complete("any prompt").await.unwrap();
-
-        assert!(body.contains("## TL;DR"));
-        assert!(body.contains("## Action items"));
-    }
-
-    #[tokio::test]
-    async fn test_binary_channel_diarizer_labels_mic_as_me_and_system_as_them() {
-        let mic = vec![TranscriptChunk {
-            text: "hi".into(),
-            source: FrameSource::Mic,
-            start_ms: 0,
-            duration_ms: 1_000,
-            language: None,
-            tokens: Vec::new(),
-        }];
-        let sys = vec![TranscriptChunk {
-            text: "hello".into(),
-            source: FrameSource::System,
-            start_ms: 0,
-            duration_ms: 1_000,
-            language: None,
-            tokens: Vec::new(),
-        }];
-
-        let result = BinaryChannelDiarizer
-            .diarize(&mic, &sys, &MeetingContext::default())
-            .await
-            .unwrap();
-
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0].speaker, SpeakerLabel::Me);
-        assert_eq!(result[1].speaker, SpeakerLabel::Them);
-    }
-
-    #[test]
-    fn test_binary_channel_diarizer_name_returns_binary_channel() {
-        assert_eq!(BinaryChannelDiarizer.name(), "binary-channel");
-    }
-
-    #[test]
-    fn test_stub_local_stt_name_returns_stub_local_stt() {
-        assert_eq!(StubLocalStt::new().name(), "stub-local-stt");
-    }
-
-    #[test]
-    fn test_stub_local_llm_name_returns_stub_local_llm() {
-        assert_eq!(StubLocalLlm::new().name(), "stub-local-llm");
     }
 
     #[tokio::test]
@@ -1784,7 +1339,13 @@ mod tests {
     }
 
     fn system_frame(samples: &[f32], timestamp_ns: u64) -> AudioFrame {
-        AudioFrame::from_slice(samples, 1, 16_000, timestamp_ns, FrameSource::System)
+        AudioFrame::from_slice(
+            samples,
+            1,
+            16_000,
+            timestamp_ns,
+            scrybe_core::types::FrameSource::System,
+        )
     }
 
     #[tokio::test]
@@ -1902,53 +1463,63 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_build_stt_provider_returns_stub_when_no_model_path_supplied() {
-        let stt =
-            build_stt_provider(TranscriptionModel::Stub, "en").expect("stub branch must succeed");
-        assert_eq!(stt.name(), "stub-local-stt");
-    }
-
-    #[test]
-    fn test_stub_provider_exposes_no_streaming_capability() {
-        // The batch path must stay selected for providers that cannot
-        // decode incrementally; only Sherpa answers this call.
-        let stt =
-            build_stt_provider(TranscriptionModel::Stub, "en").expect("stub branch must succeed");
-        assert!(stt.streaming().is_none());
-    }
-
+    /// A model flag on a binary built without the runtime for it is
+    /// refused, and the refusal still names the flag and the feature to
+    /// rebuild with. The refusal itself moved to the shared preflight,
+    /// which cannot name a Cargo feature of this package; the guidance
+    /// is attached here, and this is what proves it still reaches the
+    /// user.
     #[cfg(not(feature = "whisper-local"))]
     #[test]
-    fn test_build_stt_provider_errors_when_whisper_model_supplied_without_feature() {
-        let result = build_stt_provider(
-            TranscriptionModel::Whisper(PathBuf::from("/tmp/no-such-model.bin")),
-            "en",
+    fn test_a_whisper_model_without_the_feature_is_refused_with_the_rebuild_guidance() {
+        let cfg_dir = tempfile::tempdir().unwrap();
+        std::env::set_var("SCRYBE_CONFIG", cfg_dir.path().join("absent.toml"));
+        let directory = tempfile::tempdir().unwrap();
+        let controller = app_controller(directory.path());
+
+        let result = begin_recording(
+            &controller,
+            &Args {
+                root: Some(directory.path().to_path_buf()),
+                whisper_model: Some(directory.path().join("no-such-model.bin")),
+                ..bare_args()
+            },
         );
-        let Err(err) = result else {
-            panic!("flag without feature must error rather than silently stub");
+
+        let Err(error) = result else {
+            panic!("a model without its runtime must be refused rather than silently stubbed");
         };
-        let message = format!("{err:?}");
+        let message = format!("{error:?}");
         assert!(
             message.contains("--whisper-model") && message.contains("--features whisper-local"),
-            "error must name both the flag and the missing feature; got: {message}"
+            "the refusal must name both the flag and the missing feature; got: {message}"
         );
     }
 
     #[cfg(not(feature = "stt-sherpa"))]
     #[test]
-    fn test_build_stt_provider_errors_when_sherpa_model_supplied_without_feature() {
-        let result = build_stt_provider(
-            TranscriptionModel::Sherpa(PathBuf::from("/tmp/no-such-model")),
-            "en",
+    fn test_a_sherpa_model_without_the_feature_is_refused_with_the_rebuild_guidance() {
+        let cfg_dir = tempfile::tempdir().unwrap();
+        std::env::set_var("SCRYBE_CONFIG", cfg_dir.path().join("absent.toml"));
+        let directory = tempfile::tempdir().unwrap();
+        let controller = app_controller(directory.path());
+
+        let result = begin_recording(
+            &controller,
+            &Args {
+                root: Some(directory.path().to_path_buf()),
+                sherpa_model: Some(directory.path().join("no-such-model")),
+                ..bare_args()
+            },
         );
-        let Err(err) = result else {
-            panic!("flag without feature must error rather than silently stub");
+
+        let Err(error) = result else {
+            panic!("a model without its runtime must be refused rather than silently stubbed");
         };
-        let message = format!("{err:?}");
+        let message = format!("{error:?}");
         assert!(
             message.contains("--sherpa-model") && message.contains("--features stt-sherpa"),
-            "error must name both the flag and the missing feature; got: {message}"
+            "the refusal must name both the flag and the missing feature; got: {message}"
         );
     }
 
@@ -1996,47 +1567,66 @@ mod tests {
         }
     }
 
+    /// An unfinished download is a file that exists, so preflight
+    /// passes it and the load is what refuses. Construction moved to
+    /// `scrybe-application`; what this asserts is that this binary
+    /// still surfaces the refusal rather than transcribing with it.
     #[cfg(feature = "whisper-local")]
     #[test]
-    fn test_build_stt_provider_rejects_partial_whisper_model_path() {
+    fn test_a_partially_downloaded_whisper_model_is_refused_at_load() {
         let dir = tempfile::tempdir().unwrap();
         let partial = dir.path().join("ggml-tiny.bin.partial");
         std::fs::write(&partial, b"unfinished download").unwrap();
-        let result = build_stt_provider(TranscriptionModel::Whisper(partial), "en");
-        let Err(err) = result else {
-            panic!("partial paths must be rejected at construction");
+        let plan = RecordingPlan::resolve(
+            &Config::default(),
+            None,
+            &overrides_from(&Args {
+                whisper_model: Some(partial),
+                ..bare_args()
+            }),
+        )
+        .unwrap();
+
+        let result = scrybe_application::recording::transcription(&plan, "en");
+
+        let Err(error) = result else {
+            panic!("an unfinished download must be rejected at construction");
         };
-        let message = format!("{err:?}");
+        let message = format!("{error:?}");
         assert!(
-            message.contains("loading whisper.cpp model"),
-            "context chain must mention the loading step; got: {message}"
+            message.contains("could not be loaded"),
+            "the refusal must name the loading step; got: {message}"
         );
     }
 
-    #[test]
-    fn test_build_llm_provider_returns_stub_when_backend_is_stub() {
-        let cfg = scrybe_core::config::LlmConfig::default();
-
-        let llm = build_llm_provider(NotesBackend::Stub, &cfg)
-            .expect("stub branch must succeed regardless of features");
-
-        assert_eq!(llm.name(), "stub-local-llm");
-    }
-
+    /// `--llm openai-compat` on a binary with no notes provider is
+    /// refused rather than silently stubbed. The refusal is the shared
+    /// preflight's `Provider` check now; what this asserts is that the
+    /// user still learns it from the flag they typed.
     #[cfg(not(feature = "llm-openai-compat"))]
     #[test]
-    fn test_build_llm_provider_errors_when_openai_compat_requested_without_feature() {
-        let cfg = scrybe_core::config::LlmConfig::default();
+    fn test_openai_compat_without_the_feature_is_refused_rather_than_silently_stubbed() {
+        let cfg_dir = tempfile::tempdir().unwrap();
+        std::env::set_var("SCRYBE_CONFIG", cfg_dir.path().join("absent.toml"));
+        let directory = tempfile::tempdir().unwrap();
+        let controller = app_controller(directory.path());
 
-        let result = build_llm_provider(NotesBackend::OpenAiCompat, &cfg);
+        let result = begin_recording(
+            &controller,
+            &Args {
+                root: Some(directory.path().to_path_buf()),
+                llm: Some(LlmBackendArg::OpenAiCompat),
+                ..bare_args()
+            },
+        );
 
-        let Err(err) = result else {
-            panic!("openai-compat without feature must error rather than silently stub");
+        let Err(error) = result else {
+            panic!("openai-compat without the feature must be refused, not stubbed");
         };
-        let msg = format!("{err:?}");
+        let message = format!("{error:?}");
         assert!(
-            msg.contains("--llm openai-compat") && msg.contains("--features llm-openai-compat"),
-            "error must name both the flag and the missing feature; got: {msg}"
+            message.contains("openai-compat") && message.contains("no notes provider"),
+            "the refusal must name the backend and say the build carries none; got: {message}"
         );
     }
 
@@ -2053,10 +1643,23 @@ mod tests {
             ..scrybe_core::config::LlmConfig::default()
         };
 
-        let llm = build_llm_provider(NotesBackend::OpenAiCompat, &cfg)
+        let plan = RecordingPlan::resolve(
+            &Config::default(),
+            None,
+            &overrides_from(&Args {
+                llm: Some(LlmBackendArg::OpenAiCompat),
+                ..bare_args()
+            }),
+        )
+        .unwrap();
+
+        let llm = scrybe_application::recording::notes(&plan, &cfg)
             .expect("openai-compat branch must succeed when feature is on");
 
-        assert_eq!(llm.name(), "ollama:llama3.1:8b");
+        assert_eq!(
+            scrybe_core::providers::LlmProvider::name(&llm),
+            "ollama:llama3.1:8b"
+        );
     }
 
     #[test]

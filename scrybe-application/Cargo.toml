@@ -40,17 +40,55 @@ model-download = ["dep:reqwest"]
 # off the generator still compiles and still refuses, so a frontend
 # gets a stated reason rather than a missing command.
 notes-generation = ["scrybe-core/openai-compat"]
+# The `whisper.cpp` runtime a configured model is loaded through. Off by
+# default because it links a C++ toolchain, exactly as `scrybe-core`'s
+# feature of the same name is; a build without it refuses a configured
+# model in preflight rather than quietly transcribing with the stub.
+whisper-local = ["scrybe-core/whisper-local"]
+# The streaming Sherpa-ONNX runtime. Off by default and opt-in only:
+# the workspace `.cargo/config.toml` requires a pre-provisioned native
+# runtime and fails before `sherpa-onnx` can download one.
+stt-sherpa = ["scrybe-core/stt-sherpa"]
+# The cross-platform microphone adapter, through `cpal`. Off by default
+# so a build that records nothing links no audio device binding at all;
+# a frontend that offers recording turns it on, and `CaptureSupport`
+# reports it to preflight under the same condition, so a preflight can
+# never clear a microphone source a build cannot open.
+mic-capture = ["dep:scrybe-capture-mic", "scrybe-capture-mic/live-mic"]
 
 [dependencies]
 async-trait.workspace = true
 chrono.workspace = true
+# Already resolved in both graphs that build this crate, through
+# `scrybe-core`, so naming them here unifies onto the same versions and
+# adds no crate to either egress baseline. `futures` is the `Stream` a
+# capture source is handed to the session as; `tracing` records a
+# controller transition that arrived in a state that cannot take it — a
+# normal race when another surface stopped first, which an observer
+# cannot propagate and which must not be dropped in silence.
+futures.workspace = true
 reqwest = { workspace = true, optional = true }
+scrybe-capture-mic = { package = "scrybe-meeting-capture-mic", path = "../scrybe-capture-mic", version = "=1.6.0", optional = true }
 scrybe-core = { package = "scrybe-meeting-core", path = "../scrybe-core", version = "=1.6.0" }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 toml.workspace = true
+# Already resolved in both graphs that build this crate — `scrybe-core`
+# depends on the workspace `tracing`, so naming it here unifies onto the
+# same version and adds no crate to either egress baseline. It is what
+# records a controller transition that arrived in a state that cannot
+# take it: a normal race when another surface has already stopped the
+# recording, which an observer has no way to propagate and which must
+# not be dropped in silence.
+tracing.workspace = true
 toml_edit.workspace = true
+# `sync` only — the accepted-stop signal every recording surface shares.
+# `tokio` is already resolved in both graphs that build this crate,
+# through `scrybe-core`, so naming it adds no crate to either egress
+# baseline; the feature set here is a strict subset of what that
+# dependency already turns on.
+tokio = { version = "1.42", default-features = false, features = ["sync"] }
 url.workspace = true
 
 [dev-dependencies]

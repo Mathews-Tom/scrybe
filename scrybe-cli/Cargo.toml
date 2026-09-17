@@ -29,8 +29,12 @@ default = [
     "llm-openai-compat",
 ]
 hook-git = ["scrybe-core/hook-git"]
-whisper-local = ["scrybe-core/whisper-local"]
-stt-sherpa = ["scrybe-core/stt-sherpa"]
+# Both forward to `scrybe-application` as well as to `scrybe-core`:
+# the provider construction moved there, so a binary that enabled only
+# the `scrybe-core` half would link the runtime and still be told by the
+# shared preflight that this build carries none.
+whisper-local = ["scrybe-core/whisper-local", "scrybe-application/whisper-local"]
+stt-sherpa = ["scrybe-core/stt-sherpa", "scrybe-application/stt-sherpa"]
 # `scrybe mcp`: read-only local-agent access over `~/scrybe/`.
 # Off by default; forwards to `scrybe-application`'s feature of the
 # same name. The read-only boundary is the `SessionReader` trait the
@@ -48,7 +52,9 @@ agent-access = ["scrybe-application/agent-access", "tokio/io-std"]
 # development and CI builds disable all defaults explicitly. Without
 # this feature, `--mic` returns
 # `CaptureError::PermissionDenied("live-mic feature disabled ...")`.
-mic-capture = ["scrybe-capture-mic/live-mic"]
+# Forwards to `scrybe-application`, which owns the adapter and the
+# registry that holds it open, as well as to the adapter crate itself.
+mic-capture = ["scrybe-capture-mic/live-mic", "scrybe-application/mic-capture"]
 # Enables both macOS system-audio adapters. `sck` is the default,
 # using ScreenCaptureKit on macOS 13+; `tap` remains selectable on
 # macOS 14.4+ for recovery and comparison. `tokio/process` supports

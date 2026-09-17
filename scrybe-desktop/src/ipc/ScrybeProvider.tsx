@@ -7,6 +7,7 @@ import type {
   ModelOutcome,
   ModelProgress,
   PreflightView,
+  RecordingProgressView,
   RecordingTransition,
   ReadinessReport,
   RecordingStatus,
@@ -28,11 +29,14 @@ import {
   getSession,
   listSessions,
   readNotes,
+  onRecordingProgress,
   onRecordingTransition,
   readTranscriptPage,
   recordingPreflight,
   recordingStatus,
   regenerateNotes,
+  startRecording,
+  stopRecording,
   repairSession,
   revealSession,
   searchSessions,
@@ -112,6 +116,14 @@ export interface Scrybe {
   onRecordingTransition: (
     onTransition: (transition: RecordingTransition) => void,
   ) => Promise<() => void>;
+  /** Calls `onProgress` each time saving moves a step. */
+  onRecordingProgress: (
+    onProgress: (progress: RecordingProgressView) => void,
+  ) => Promise<() => void>;
+  /** Starts a recording, returning as soon as it is under way. */
+  startRecording: (title: string | null) => Promise<RecordingStatus>;
+  /** Asks the recording in flight to stop and save. */
+  stopRecording: () => Promise<RecordingStatus>;
   settingsForm: () => Promise<SettingsForm>;
   applySettings: (changes: SettingsChange[]) => Promise<SettingsForm>;
   /** Reads. A view may call this on mount; it mutates nothing. */
@@ -153,6 +165,9 @@ const REAL: Scrybe = {
   recordingStatus,
   recordingPreflight,
   onRecordingTransition,
+  onRecordingProgress,
+  startRecording,
+  stopRecording,
   settingsForm,
   applySettings,
   diagnosticsReport,

@@ -1,5 +1,6 @@
 import type { ReactElement } from "react";
 
+import { RecordingView } from "./recording/RecordingView";
 import { SetupView } from "./views/SetupView";
 import { SearchView } from "./views/SearchView";
 import { SessionsView } from "./views/SessionsView";
@@ -23,6 +24,7 @@ export interface Route {
  */
 export const ROUTES: readonly Route[] = [
   { id: "sessions", label: "Sessions", render: () => <SessionsView /> },
+  { id: "record", label: "Record", render: () => <RecordingView /> },
   { id: "search", label: "Search", render: () => <SearchView /> },
   { id: "settings", label: "Settings", render: () => <SettingsView /> },
   { id: "setup", label: "Setup", render: () => <SetupView /> },
