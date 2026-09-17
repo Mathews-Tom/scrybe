@@ -46,7 +46,7 @@ pub use cancellation::CancellationToken;
 pub use config::ConfigService;
 pub use diagnostics::DiagnosticsService;
 pub use error::{ApplicationError, ErrorCode, ErrorPayload};
-pub use identity::{IdentityRejection, SessionRef, StorageRoot};
+pub use identity::{IdentityRejection, PartialFileRef, SessionRef, StorageRoot};
 pub use paging::{Page, PageRequest, DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT};
 pub use sessions::SessionRepository;
 
