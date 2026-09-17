@@ -26,6 +26,15 @@
 //! a hosted provider to see whether it answers would be an egress this
 //! layer has no mandate for, and the egress classification already
 //! reports that the endpoint is remote.
+//!
+//! "Loopback" is decided twice, and deliberately so. The URL's host
+//! must be *written* as a loopback host, which is what keeps a hosted
+//! endpoint from being resolved at all; and the address it resolves to
+//! must *be* loopback, which is what keeps the guarantee from reducing
+//! to a claim about spelling. A name is loopback only by convention —
+//! `localhost` is whatever the hosts file, the resolver, and the search
+//! domain between them say it is — so a configuration that looks local
+//! and answers routable is refused rather than dialled.
 
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::time::Duration;
@@ -178,12 +187,33 @@ fn diagnose_notes_endpoint(config: &Config, findings: &mut Vec<DiagnosticFinding
     ));
 }
 
-/// The socket address behind `value`, when it names a loopback host.
+/// The socket address behind `value`, when both its spelling and the
+/// address it resolves to are loopback.
 ///
 /// `None` for anything else, including a URL that does not parse: a
 /// remote endpoint is not dialled, and a malformed one is already
 /// reported by the configuration diagnosis.
+///
+/// Two checks, not one, because the spelling is not the address. A
+/// name is loopback only by convention — `localhost` is whatever the
+/// hosts file, the resolver, and the search domain between them say it
+/// is, and any of those can be made to answer with a routable address
+/// on a machine this code does not control. Checking only the spelling
+/// and then dialling whatever came back would turn the guarantee in
+/// this module's header into a statement about how a string is written.
 fn loopback_address(value: &str) -> Option<SocketAddr> {
+    let (host, port) = spelled_loopback(value)?;
+    resolved_loopback((host.as_str(), port).to_socket_addrs().ok()?)
+}
+
+/// The host and port of `value`, when the host is *written* as a
+/// loopback host.
+///
+/// The cheap half of the test, and the one that decides whether a
+/// resolution happens at all: a hosted endpoint is neither resolved
+/// nor dialled, because reaching out to see whether it answers is an
+/// egress this layer has no mandate for.
+fn spelled_loopback(value: &str) -> Option<(String, u16)> {
     let url = Url::parse(value).ok()?;
     let is_loopback = match url.host()? {
         Host::Domain(host) => host.eq_ignore_ascii_case("localhost"),
@@ -193,8 +223,20 @@ fn loopback_address(value: &str) -> Option<SocketAddr> {
     if !is_loopback {
         return None;
     }
-    let port = url.port_or_known_default()?;
-    (url.host_str()?, port).to_socket_addrs().ok()?.next()
+    Some((url.host_str()?.to_owned(), url.port_or_known_default()?))
+}
+
+/// The address `resolved` would be dialled at, but only when that
+/// address is itself loopback.
+///
+/// The first entry and no other, because the first is the one a
+/// connection would use. Refusing outright when it is not loopback,
+/// rather than searching the rest for one that is, means a resolver
+/// answering with a routable address is a refusal instead of a
+/// connection that happened to land somewhere acceptable.
+fn resolved_loopback(mut resolved: impl Iterator<Item = SocketAddr>) -> Option<SocketAddr> {
+    let address = resolved.next()?;
+    address.ip().is_loopback().then_some(address)
 }
 
 fn describe(reason: &crate::models::ModelFailure) -> String {
@@ -213,5 +255,69 @@ fn describe(reason: &crate::models::ModelFailure) -> String {
             required,
             available,
         } => format!("installing it needs {required} bytes and {available} are free"),
+    }
+}
+
+// Inline because both halves are private and neither is reachable
+// through `diagnose`: deciding what a hostname resolves to is the
+// resolver's job, and a behavioural test in `tests/` could only assert
+// it by depending on what this machine's resolver happens to answer.
+// Splitting the decision from the resolution is what makes the
+// property assertable at all.
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use std::net::{Ipv4Addr, Ipv6Addr};
+
+    #[test]
+    fn test_a_hostname_that_merely_looks_local_is_not_treated_as_loopback() {
+        // Spelled to be mistaken for the real thing at a glance. It is
+        // an ordinary domain, and its owner chooses what it resolves to.
+        assert!(spelled_loopback("http://localhost.example.com:11434/v1").is_none());
+        assert!(spelled_loopback("http://notlocalhost:11434/v1").is_none());
+        assert!(spelled_loopback("http://localhost.attacker.test:11434/v1").is_none());
+    }
+
+    #[test]
+    fn test_a_loopback_spelling_is_accepted_for_resolution() {
+        assert_eq!(
+            spelled_loopback("http://localhost:11434/v1"),
+            Some(("localhost".to_owned(), 11434))
+        );
+        assert_eq!(
+            spelled_loopback("http://127.0.0.1:11434/v1"),
+            Some(("127.0.0.1".to_owned(), 11434))
+        );
+        assert_eq!(
+            spelled_loopback("http://[::1]:11434/v1"),
+            Some(("[::1]".to_owned(), 11434))
+        );
+    }
+
+    #[test]
+    fn test_a_loopback_spelling_that_resolves_outward_is_refused_rather_than_dialled() {
+        // What a hosts-file entry, a search domain, or a resolver
+        // answering for `localhost` produces. The spelling passed; the
+        // address must not.
+        let outward = SocketAddr::from((Ipv4Addr::new(93, 184, 216, 34), 11434));
+        assert_eq!(resolved_loopback(std::iter::once(outward)), None);
+    }
+
+    #[test]
+    fn test_a_resolution_whose_first_answer_is_routable_is_refused_outright() {
+        // Not searched past. A resolver that puts a routable address
+        // first is a resolver this code refuses to trust for the rest.
+        let outward = SocketAddr::from((Ipv4Addr::new(93, 184, 216, 34), 11434));
+        let inward = SocketAddr::from((Ipv4Addr::LOCALHOST, 11434));
+        assert_eq!(resolved_loopback([outward, inward].into_iter()), None);
+    }
+
+    #[test]
+    fn test_an_address_that_is_loopback_is_returned_for_dialling() {
+        let v4 = SocketAddr::from((Ipv4Addr::LOCALHOST, 11434));
+        assert_eq!(resolved_loopback(std::iter::once(v4)), Some(v4));
+        let v6 = SocketAddr::from((Ipv6Addr::LOCALHOST, 11434));
+        assert_eq!(resolved_loopback(std::iter::once(v6)), Some(v6));
     }
 }
