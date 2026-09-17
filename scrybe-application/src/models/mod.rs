@@ -19,6 +19,7 @@
 //! environment variable invented for the purpose.
 
 mod contract;
+mod identity;
 mod manager;
 mod manifest;
 mod source;

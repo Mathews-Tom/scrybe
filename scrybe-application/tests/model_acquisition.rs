@@ -643,20 +643,33 @@ fn test_replacing_the_installed_artifact_is_noticed_rather_than_answered_from_th
         ModelState::Ready
     );
 
-    // Same length, different bytes — the case a memo keyed on the path
-    // alone would answer with the previous verdict. The modification
-    // time is moved forward explicitly, because a filesystem whose
-    // timestamps are coarse could otherwise record the rewrite at the
-    // same instant as the first write.
+    // Same length, different bytes, and the modification time put back
+    // exactly where it was. Moving the timestamp forward would prove
+    // only that the memo notices a changed timestamp, which is not the
+    // property: `rsync -t`, `cp -p`, `tar -x`, `unzip`, and a bare
+    // `utimes` all preserve it, so a substitution that leaves the
+    // length and the modification time alone is the ordinary case
+    // rather than an adversarial one.
+    let original = std::fs::metadata(fixture.destination())
+        .unwrap()
+        .modified()
+        .unwrap();
     let substituted: Vec<u8> = ARTIFACT.iter().map(|byte| byte ^ 0x20).collect();
     fixture.seed_destination(&substituted);
-    let later = std::time::SystemTime::now() + std::time::Duration::from_secs(2);
     std::fs::OpenOptions::new()
         .write(true)
         .open(fixture.destination())
         .unwrap()
-        .set_modified(later)
+        .set_modified(original)
         .unwrap();
+    assert_eq!(
+        std::fs::metadata(fixture.destination())
+            .unwrap()
+            .modified()
+            .unwrap(),
+        original,
+        "the substitution was meant to leave the modification time untouched"
+    );
 
     assert!(
         matches!(
