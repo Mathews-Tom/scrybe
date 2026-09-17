@@ -72,7 +72,10 @@ const CONTENT_TYPE: &str = "audio/ogg";
 /// registered. The two arguments arrive by value because that is the
 /// shape Tauri's handler signature has, consumed or not.
 #[allow(clippy::needless_pass_by_value)]
-pub fn serve(context: UriSchemeContext<'_, tauri::Wry>, request: Request<Vec<u8>>) -> Response<Vec<u8>> {
+pub fn serve(
+    context: UriSchemeContext<'_, tauri::Wry>,
+    request: Request<Vec<u8>>,
+) -> Response<Vec<u8>> {
     let app = context.app_handle();
     let desktop = app.state::<Desktop>();
     let response = respond(&desktop, &request);
