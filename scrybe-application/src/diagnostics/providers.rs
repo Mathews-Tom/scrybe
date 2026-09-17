@@ -298,17 +298,22 @@ fn loopback_address(value: &str) -> Option<SocketAddr> {
 /// resolution happens at all: a hosted endpoint is neither resolved
 /// nor dialled, because reaching out to see whether it answers is an
 /// egress this layer has no mandate for.
+///
+/// The returned host is unbracketed even for IPv6: `url.host_str()`
+/// carries the bracketed form (`[::1]`) that a URL authority requires,
+/// but neither `Ipv6Addr::from_str` nor the platform resolver accepts
+/// brackets, so passing that form straight into `to_socket_addrs`
+/// fails resolution outright and the caller never learns whether the
+/// notes provider it names is reachable.
 fn spelled_loopback(value: &str) -> Option<(String, u16)> {
     let url = Url::parse(value).ok()?;
-    let is_loopback = match url.host()? {
-        Host::Domain(host) => host.eq_ignore_ascii_case("localhost"),
-        Host::Ipv4(address) => address.is_loopback(),
-        Host::Ipv6(address) => address.is_loopback(),
+    let host = match url.host()? {
+        Host::Domain(host) if host.eq_ignore_ascii_case("localhost") => host.to_owned(),
+        Host::Ipv4(address) if address.is_loopback() => address.to_string(),
+        Host::Ipv6(address) if address.is_loopback() => address.to_string(),
+        _ => return None,
     };
-    if !is_loopback {
-        return None;
-    }
-    Some((url.host_str()?.to_owned(), url.port_or_known_default()?))
+    Some((host, url.port_or_known_default()?))
 }
 
 /// The address `resolved` would be dialled at, but only when that
@@ -374,9 +379,24 @@ mod tests {
             spelled_loopback("http://127.0.0.1:11434/v1"),
             Some(("127.0.0.1".to_owned(), 11434))
         );
+        // Unbracketed: the bracketed form a URL authority requires is
+        // not one `to_socket_addrs` accepts, so carrying it through
+        // would resolve nothing.
         assert_eq!(
             spelled_loopback("http://[::1]:11434/v1"),
-            Some(("[::1]".to_owned(), 11434))
+            Some(("::1".to_owned(), 11434))
+        );
+    }
+
+    #[test]
+    fn test_an_ipv6_loopback_endpoint_is_resolved_and_probed() {
+        // The end-to-end proof: a bracketed IPv6 host must still reach
+        // `to_socket_addrs` successfully rather than merely spelling
+        // correctly. Before the fix this resolved to `None` and the
+        // notes probe silently never ran.
+        assert_eq!(
+            loopback_address("http://[::1]:11434/v1"),
+            Some(SocketAddr::from((Ipv6Addr::LOCALHOST, 11434)))
         );
     }
 

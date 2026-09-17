@@ -217,6 +217,17 @@ fn test_removing_a_model_partial_is_a_separate_explicit_call() {
 fn test_a_partial_name_that_escapes_the_models_directory_is_refused() {
     let install = Install::new();
     let root = StorageRoot::new(install.dir.path().join("sessions"));
+    // The models directory must exist for this test to exercise what
+    // it claims. Unix resolves `..` through the filesystem, so against
+    // a models directory that does not exist, `../outside.partial`
+    // does not exist either and the pre-confinement `.exists()` check
+    // that used to run first would already return early on its own —
+    // hiding the escape rather than refusing it. Windows normalizes
+    // `..` lexically and resolves the join regardless, which is what
+    // exposed the defect there. Creating the directory makes the join
+    // resolve on every platform, so the refusal below is confinement,
+    // not a directory that merely does not exist yet.
+    std::fs::create_dir_all(install.models_dir()).unwrap();
     let outside = install.dir.path().join("outside.partial");
     std::fs::write(&outside, b"not yours").unwrap();
 

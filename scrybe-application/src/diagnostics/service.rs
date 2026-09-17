@@ -159,25 +159,47 @@ impl DiagnosticsService {
         }
     }
 
+    /// Confinement is decided before any filesystem call. `name`
+    /// arrives as a plain `&str` rather than a [`PartialFileRef`] (the
+    /// [`RecoveryAction::RemoveModelPartial`] contract predates that
+    /// type), so this method is the one place that must parse it
+    /// before joining it onto `models_dir`: a join performed first and
+    /// tested with `.exists()` is an oracle over paths outside the
+    /// models directory, and on Windows a `..` component resolves
+    /// lexically rather than through the filesystem, so an escaping
+    /// name can test as existing even with nothing there. A name that
+    /// cannot be parsed into a [`PartialFileRef`] cannot address
+    /// anything inside the models directory, so it is reported the
+    /// same way an absent file is: there is nothing here for this
+    /// repair to do.
     fn remove_model_partial(
         action: &RecoveryAction,
         models: &ModelManager,
         name: &str,
     ) -> Result<RepairApplication> {
-        if !models.models_dir().join(name).exists() {
+        let Ok(confined) = PartialFileRef::parse(name) else {
             return Ok(RepairApplication {
                 action: action.clone(),
                 status: RepairStatus::AlreadyResolved,
-                summary: format!("partial download {name} is already gone"),
+                summary: format!(
+                    "{name:?} does not name a partial download in the models directory"
+                ),
+            });
+        };
+        if !models.models_dir().join(confined.as_str()).exists() {
+            return Ok(RepairApplication {
+                action: action.clone(),
+                status: RepairStatus::AlreadyResolved,
+                summary: format!("partial download {confined} is already gone"),
             });
         }
-        models.remove_partial(name).map_err(|error| {
+        models.remove_partial(confined.as_str()).map_err(|error| {
             ApplicationError::new(ErrorCode::RepairFailed, error.message().to_string())
         })?;
         Ok(RepairApplication {
             action: action.clone(),
             status: RepairStatus::Applied,
-            summary: format!("removed partial download {name}"),
+            summary: format!("removed partial download {confined}"),
         })
     }
 
