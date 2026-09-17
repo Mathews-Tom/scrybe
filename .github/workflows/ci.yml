@@ -304,6 +304,7 @@ jobs:
         run: >-
           cargo package
           -p scrybe-meeting-core
+          -p scrybe-meeting-application
           -p scrybe-meeting-capture-mac
           -p scrybe-meeting-capture-mic
           -p scrybe
