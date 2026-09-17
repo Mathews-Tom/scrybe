@@ -1559,7 +1559,17 @@ def is_loopback_host(host: str) -> bool:
 # the range arithmetic visible where a real recording would not.
 PLAYABLE = "2026-04-29-1430-acme-01HXYZ"
 NO_PLAYBACK = "2026-04-28-0900-onevoice-01AAAAA"
-UNFINISHED = "2026-04-27-1100-abandoned-01BBBBB"
+# `audio.opus` present, no `meta.toml`: `classify()` (in
+# scrybe-application/src/sessions/scan.rs) reads this as Repairable,
+# not Unfinished, before it ever reaches the Unfinished branches —
+# proven against this exact fixture shape by
+# `test_audio_without_metadata_is_repairable_because_metadata_can_be_reconstructed`.
+REPAIRABLE = "2026-04-27-1100-abandoned-01BBBBB"
+# No `audio.opus` and no `journal/`: `classify()` reaches Unfinished
+# here only because a surviving `transcript.md` is evidence something
+# was recorded — proven against this exact fixture shape by
+# `test_a_surviving_transcript_without_audio_or_journal_is_unfinished`.
+UNFINISHED = "2026-04-26-0800-orphaned-01CCCCC"
 PLAYBACK_BYTES = bytes(range(256)) * 16
 
 # Paths on the scheme that the player never builds, and that a run must
@@ -1592,12 +1602,14 @@ def session_meta(title: str, session_id: str) -> str:
 def seed_library(candidate: Candidate) -> None:
     """Writes the sessions a library run reads.
 
-    Four of them, because the interesting answers are the ones that
+    Five of them, because the interesting answers are the ones that
     differ: one complete session with playback audio, one complete
     session with audio and no playback artifact — which is what a mono
-    capture actually leaves behind — one that never finished, and a
-    transcript long enough that a view reading it whole would be
-    visible.
+    capture actually leaves behind — one that is repairable because its
+    audio survived but its metadata never got written, one that never
+    finished recording at all — no audio, no journal, only a durable
+    transcript — and a transcript long enough that a view reading it
+    whole would be visible.
     """
     playable = candidate.root / PLAYABLE
     playable.mkdir(parents=True)
@@ -1616,12 +1628,24 @@ def seed_library(candidate: Candidate) -> None:
     (mono / "audio.opus").write_bytes(b"")
     (mono / "transcript.md").write_text("# One voice\nhello\n")
 
-    abandoned = candidate.root / UNFINISHED
-    abandoned.mkdir(parents=True)
-    (abandoned / "audio.opus").write_bytes(b"")
-    # The artifact is there and the session is not complete. Refusing
-    # this one is a decision about the session, not about the file.
-    (abandoned / "playback.opus").write_bytes(PLAYBACK_BYTES)
+    repairable = candidate.root / REPAIRABLE
+    repairable.mkdir(parents=True)
+    (repairable / "audio.opus").write_bytes(b"")
+    # No `meta.toml`: `classify()` never reaches the Unfinished
+    # branches for this one. The artifact is there and the session is
+    # not complete either way — refusing it is a decision about the
+    # session, not about the file.
+    (repairable / "playback.opus").write_bytes(PLAYBACK_BYTES)
+
+    orphaned = candidate.root / UNFINISHED
+    orphaned.mkdir(parents=True)
+    # No `audio.opus`, no `journal/`: `classify()` lands on Unfinished
+    # only because the transcript below is durable evidence something
+    # was recorded. `playback.opus` is present anyway, for the same
+    # reason as the repairable fixture above: refusing this one is a
+    # decision about the session, not about the file.
+    (orphaned / "transcript.md").write_text("# orphaned\nnever got to notes\n")
+    (orphaned / "playback.opus").write_bytes(PLAYBACK_BYTES)
 
 
 def served(candidate: Candidate) -> list[tuple[str, int, int]]:
@@ -1750,17 +1774,28 @@ def _library_checks(candidate: Candidate, run: Run) -> None:
         sorted({status for _, status, _ in refusal}),
     )
 
-    # (c) A session that never finished. Its artifact is there; what it
-    # has no established duration or channel attribution for is the
-    # recording as a whole.
-    refusal = drive(candidate, run, f"/{UNFINISHED}/playback")
+    # (c) A session whose audio survived but whose metadata never got
+    # written. `classify()` reads this as Repairable, not Unfinished,
+    # and `playable()` refuses it the same way it refuses Unfinished:
+    # neither state is Complete.
+    refusal = drive(candidate, run, f"/{REPAIRABLE}/playback")
     run.record(
-        "playback: an unfinished session is refused as unfinished",
+        "playback: a repairable session (audio without metadata) is refused as not finished",
         [409],
         sorted({status for _, status, _ in refusal}),
     )
 
-    # (d) Every path the player never builds, each aimed at something
+    # (d) A session that never finished recording at all: no audio, no
+    # journal, only a surviving transcript. This is the state (c) only
+    # sounded like it was covering.
+    refusal = drive(candidate, run, f"/{UNFINISHED}/playback")
+    run.record(
+        "playback: a session with no audio and no journal is refused as not finished",
+        [409],
+        sorted({status for _, status, _ in refusal}),
+    )
+
+    # (e) Every path the player never builds, each aimed at something
     # that really exists.
     for path in FORBIDDEN_PATHS:
         refusal = drive(candidate, run, path)
@@ -1775,7 +1810,7 @@ def _library_checks(candidate: Candidate, run: Run) -> None:
             sorted({size for _, _, size in refusal if size >= 256}),
         )
 
-    # (e) Nothing on this path reaches the network. Reading a session
+    # (f) Nothing on this path reaches the network. Reading a session
     # and playing it are filesystem work; a socket opened during either
     # would be a capability this surface has no mandate for.
     run.record("no network: every destination the application reached", [], sockets.stop())
@@ -1815,10 +1850,11 @@ SCENARIO_COVERAGE: dict[str, str] = {
     ),
     "library": (
         "the webview reaching the playback scheme at all, the bytes served for a "
-        "session that has playback audio, the refusals for one that has none and "
-        "for one that never finished, every path the player never builds aimed at "
-        "a file that is really there, a disposable storage root, the shipped "
-        "content security policy, and every socket the process opened"
+        "session that has playback audio, the refusals for one that has none, for "
+        "one that is repairable, and for one that never finished recording at "
+        "all, every path the player never builds aimed at a file that is really "
+        "there, a disposable storage root, the shipped content security policy, "
+        "and every socket the process opened"
     ),
 }
 
