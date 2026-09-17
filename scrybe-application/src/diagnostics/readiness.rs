@@ -142,7 +142,7 @@ fn facet(
 /// *prompt* for a permission. It does not extend to never *detecting*
 /// a refusal and reporting readiness anyway. Detecting one without
 /// prompting needs `AVCaptureDevice.authorizationStatus`, which is an
-/// AVFoundation call this layer has no binding for; the command-line
+/// `AVFoundation` call this layer has no binding for; the command-line
 /// Doctor's probes are not that, because they capture live audio and
 /// ask the user first, which is precisely what a read-only diagnosis
 /// must not do.

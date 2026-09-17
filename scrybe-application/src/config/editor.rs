@@ -78,7 +78,7 @@ pub fn apply(text: &str, update: &ConfigUpdate) -> Result<String> {
 /// it. That is the one case where this module does not preserve what
 /// surrounded a value, and it is unavoidable: there is no key left to
 /// hang the decor on.
-fn means_unset(field: ConfigField, value: &ConfigValue) -> bool {
+const fn means_unset(field: ConfigField, value: &ConfigValue) -> bool {
     matches!(
         (field, value),
         (ConfigField::CaptureHotkey, ConfigValue::Text(text)) if text.is_empty()
