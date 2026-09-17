@@ -149,6 +149,16 @@ jobs:
         run: cargo test -p scrybe --all-targets
       - name: cargo test (Sherpa streaming provider)
         run: cargo test --workspace --all-targets --no-default-features --features stt-sherpa
+      # The model transport is default-off, so the hermetic run above
+      # compiles neither it nor the local-fixture tests that corroborate
+      # the zero-request property against a real HTTP client. Those are
+      # a corroboration, not the property — `tests/model_acquisition.rs`
+      # asserts the property itself in the hermetic build — but a leg
+      # CI never compiles is a leg that rots.
+      - name: cargo clippy (model transport)
+        run: cargo clippy -p scrybe-meeting-application --all-targets --features model-download -- -D warnings
+      - name: cargo test (model transport, local fixture server)
+        run: cargo test -p scrybe-meeting-application --all-targets --features model-download
       - name: cargo test (mac core-audio-tap feature, ignored hardware tests skipped)
         if: matrix.os == 'macos-26'
         run: cargo test -p scrybe-meeting-capture-mac --features core-audio-tap --all-targets
@@ -402,6 +412,18 @@ jobs:
       # would leave half of it unbuilt — and the half that ships.
       - name: cargo check (desktop host, release profile)
         run: cargo check --manifest-path scrybe-desktop/src-tauri/Cargo.toml --release --bin scrybe-desktop --locked
+      # The model transport is behind a default-off feature, so every
+      # step above compiles the host without it. This is the one step
+      # that builds the shape the setup qualification runs.
+      - name: cargo clippy (desktop host, model transport enabled)
+        run: cargo clippy --manifest-path scrybe-desktop/src-tauri/Cargo.toml --all-targets --locked --features model-download -- -D warnings
+      # Asserts the default host graph carries no networking crate, the
+      # feature-on graph carries exactly the approved transport, and the
+      # model catalog names only the approved destination. Runs here
+      # because it resolves the desktop workspace, which the root
+      # `egress-audit` job cannot see.
+      - name: app egress baseline
+        run: python3 scripts/check-app-egress-baseline.py
       # Regenerates the TypeScript contract from the Rust one and fails
       # when the checked-in file differs, so it needs the Rust host and
       # therefore runs here rather than on the frontend leg.
