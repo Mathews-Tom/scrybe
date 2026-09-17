@@ -351,20 +351,20 @@ class Candidate:
         # An absolute `[stt].model` is what redirects managed model
         # storage: the application resolves the models directory from
         # it through the same resolver the recorder loads a model
-        # through, so pointing it here makes model storage disposable
-        # with no environment variable of its own. Without it a run
-        # would read — and the setup scenario would write into — the
-        # platform directory holding this developer's own install.
+        # through. Without it a run reads the platform directory
+        # holding this developer's own install — and deciding whether
+        # what is there is the catalog's artifact means hashing half a
+        # gigabyte of it, on the thread a window is waiting on.
         #
         # Both provider endpoints are remote, and deliberately at
         # `.invalid`, which is reserved and resolves nowhere. The
         # application dials a *loopback* notes endpoint to report
         # whether local notes are available, and the built-in default
         # is one; under the defaults a run's socket observations would
-        # therefore depend on whether this machine happens to be running
-        # a local provider. A remote endpoint is reported from its URL
-        # and never dialled, so what the sockets show is what the run
-        # did rather than what the machine was doing.
+        # therefore depend on whether this machine happens to be
+        # running a local provider. A remote endpoint is reported from
+        # its URL and never dialled, so what the sockets show is what
+        # the run did rather than what the machine was doing.
         self.config.write_text(
             f'[storage]\nroot = "{self.root}"\n\n'
             f'[stt]\nprovider = "openai-compat"\n'
