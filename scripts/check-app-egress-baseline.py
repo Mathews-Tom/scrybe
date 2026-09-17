@@ -15,24 +15,36 @@ client at all.
 
 Three things are asserted.
 
-1. The host's **default** graph carries none of the denylisted HTTP,
-   TLS, DNS, QUIC, or WebSocket crates. That is the graph the shipped
-   application and `scripts/qualify-desktop-app.py --scenario lifecycle`
-   both build, and it is what makes that scenario's own no-network
-   assertion mean something.
+1. The **shipped** graph — the host built with default features, which
+   is what `tauri build` produces and what a user installs — carries
+   **exactly** the approved set below. Equal to it, not merely
+   contained in it. Equality is the point, and it is the primary check
+   here. A subset check passes a build that has quietly lost its TLS
+   implementation; a non-empty check passes a build that has quietly
+   gained a WebSocket transport. The approved set is what one HTTPS
+   client costs, and a change to it is a change a reviewer has to agree
+   to here.
 
-2. The host's graph with `model-download` enabled carries **exactly**
-   the approved set below — equal to it, not merely contained in it.
-   Equality is the point. A subset check passes a build that has
-   quietly lost its TLS implementation; a non-empty check passes a
-   build that has quietly gained a WebSocket transport. The approved
-   set is what one HTTPS client costs, and a change to it is a change
-   a reviewer has to agree to here.
+   This is also the assertion `scripts/qualify-desktop-app.py
+   --scenario lifecycle` makes about the running application, for the
+   same reason: the shipped application offers an in-app model
+   download, so "no HTTP client anywhere in the graph" is not a
+   property it can have, and asserting it over a configuration nobody
+   ships would read as a guarantee while covering nothing.
+
+2. The host built with `--no-default-features` carries none of the
+   denylisted crates at all. Nobody ships that configuration and this
+   gate does not pretend otherwise. It is checked because it is what
+   proves the gating is real: `model-download` genuinely controls
+   whether a transport is linked, rather than naming a dependency that
+   arrives through some other edge regardless. If that stops being
+   true, the feature is a label and the first check above is no longer
+   measuring what it claims.
 
 3. The checked-in model catalog names exactly one destination, over
    HTTPS, at the approved host, pinned to a revision its own URL
-   carries. The feature buys the capability to reach one place; this is
-   the check that the catalog only ever points there.
+   carries. The transport buys the capability to reach one place; this
+   is the check that the catalog only ever points there.
 
 Run locally:
 
@@ -58,8 +70,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 HOST_MANIFEST = REPO_ROOT / "scrybe-desktop" / "src-tauri" / "Cargo.toml"
 CATALOG = REPO_ROOT / "scrybe-application" / "models.toml"
 
-# The feature that buys the host an HTTP client. Off by default; this
-# is the only build in the tree that turns it on.
+# The feature that buys the host an HTTP client. On by default, because
+# the shipped application performs an in-app model download; still a
+# named feature so that turning it off resolves a graph with no
+# transport, which is what check 2 reads.
 DOWNLOAD_FEATURE = "model-download"
 
 # Mirrors the denylist the library gate and the lifecycle qualification
@@ -99,8 +113,11 @@ APPROVED_MODEL_HOST = "huggingface.co"
 PACKAGE_LINE = re.compile(r"^([A-Za-z0-9_.-]+) v[0-9]")
 
 
-def host_graph(features: list[str]) -> set[str]:
-    """Every crate the desktop host links, with `features` enabled.
+def host_graph(features: list[str] | None = None, *, no_default_features: bool = False) -> set[str]:
+    """Every crate the desktop host links, under one feature selection.
+
+    Called with neither argument this resolves the shipped graph, which
+    is the default feature set and therefore includes the transport.
 
     Raises `RuntimeError` rather than returning an empty set on
     failure: an audit that silently saw nothing is worse than no audit.
@@ -112,7 +129,9 @@ def host_graph(features: list[str]) -> set[str]:
         "--prefix", "none",
         "--format", "{p}",
     ]
-    for feature in features:
+    if no_default_features:
+        command.append("--no-default-features")
+    for feature in features or []:
         command += ["--features", feature]
     result = subprocess.run(command, capture_output=True, text=True, check=False)
     if result.returncode != 0:
@@ -129,16 +148,19 @@ def host_graph(features: list[str]) -> set[str]:
     return packages
 
 
-def declares_download_feature() -> bool:
-    """Whether the host still gates its transport behind a feature.
+def ships_the_transport_behind_a_named_feature() -> bool:
+    """Whether the host ships the transport, and still names it.
 
-    A host that made the transport unconditional would resolve one
-    graph, and both checks below would be asking the same question of
-    it. The gating is the property; this is what notices its removal.
+    Two properties in one answer, because neither is sufficient alone.
+    The transport must be in the default feature set, or the shipped
+    application cannot download a model and the documentation that says
+    it can is wrong. And it must still be a named feature, or the two
+    graphs below are the same graph and the second check stops asking
+    anything.
     """
     manifest = tomllib.loads(HOST_MANIFEST.read_text())
     features = manifest.get("features", {})
-    return DOWNLOAD_FEATURE in features and features.get("default") == []
+    return DOWNLOAD_FEATURE in features and DOWNLOAD_FEATURE in features.get("default", [])
 
 
 def catalog_destinations() -> list[tuple[str, str, str]]:
@@ -168,27 +190,27 @@ def main() -> int:
         return 2
 
     try:
-        default_graph = host_graph([])
-        download_graph = host_graph([DOWNLOAD_FEATURE])
+        shipped_graph = host_graph([])
+        transportless_graph = host_graph(no_default_features=True)
     except RuntimeError as error:
         print(f"app egress audit: {error}", file=sys.stderr)
         return 2
 
     held = [
         report(
-            f"the transport is still gated behind a default-off `{DOWNLOAD_FEATURE}`",
+            f"the host ships the transport and still names it `{DOWNLOAD_FEATURE}`",
             True,
-            declares_download_feature(),
+            ships_the_transport_behind_a_named_feature(),
         ),
         report(
-            "the default host graph carries no HTTP, TLS, DNS, QUIC, or WebSocket crate",
-            [],
-            sorted(NETWORK_DENYLIST & default_graph),
-        ),
-        report(
-            f"the `{DOWNLOAD_FEATURE}` host graph carries exactly the approved transport",
+            "the shipped host graph carries exactly the approved transport and nothing more",
             sorted(APPROVED_WITH_DOWNLOAD),
-            sorted(NETWORK_DENYLIST & download_graph),
+            sorted(NETWORK_DENYLIST & shipped_graph),
+        ),
+        report(
+            f"the host built without `{DOWNLOAD_FEATURE}` carries no transport at all",
+            [],
+            sorted(NETWORK_DENYLIST & transportless_graph),
         ),
     ]
 
@@ -211,8 +233,8 @@ def main() -> int:
     print()
     if all(held):
         print(
-            f"app egress audit: ok — {len(default_graph)} crates by default, "
-            f"{len(download_graph)} with `{DOWNLOAD_FEATURE}`, "
+            f"app egress audit: ok — {len(shipped_graph)} crates in the shipped graph, "
+            f"{len(transportless_graph)} without `{DOWNLOAD_FEATURE}`, "
             f"{len(catalog_destinations())} approved model destination(s)"
         )
         return 0

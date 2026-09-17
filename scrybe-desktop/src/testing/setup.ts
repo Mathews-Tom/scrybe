@@ -25,7 +25,15 @@ export function readinessFacet(overrides: Partial<ReadinessFacet> = {}): Readine
 
 export function readiness(overrides: Partial<ReadinessReport> = {}): ReadinessReport {
   return {
-    capture: readinessFacet(),
+    // What the service actually reports for capture: nothing here
+    // probes a macOS permission. A fixture that defaulted it to `ready`
+    // would let a surface be tested against a state the service cannot
+    // produce.
+    capture: readinessFacet({
+      state: "unverified",
+      summary:
+        "whether macOS has granted microphone and system-audio recording is not checked here; macOS asks the first time a recording needs it",
+    }),
     transcription: readinessFacet(),
     notes: readinessFacet(),
     storage: readinessFacet(),

@@ -8,10 +8,10 @@
 //! result, and say where any of it goes.
 //!
 //! Five answers, never one. A wizard that reduced them to a single
-//! "ready" would have to pick a policy for the case the product
+//! "ready" would have to pick a policy for the cases the product
 //! deliberately allows — recording and transcription working while
-//! notes are unavailable — and whichever it picked would be wrong for
-//! someone. So each facet carries its own state, and the rule that
+//! notes are unavailable, and capture being unmeasured rather than
+//! known good — and whichever it picked would be wrong for someone. So each facet carries its own state, and the rule that
 //! recording may begin is stated once, in [`Readiness::can_record`],
 //! rather than reassembled by every surface that asks.
 //!
@@ -34,6 +34,11 @@ pub enum FacetState {
     Blocked,
     /// Not configured to be used at all, so nothing is wrong.
     NotConfigured,
+    /// Nothing here can say whether it works. Distinct from `Ready`,
+    /// which is a claim, and from `Blocked`, which is a different
+    /// claim: this is the absence of one, and a surface that renders it
+    /// must say what was not checked rather than imply either.
+    Unverified,
 }
 
 /// One facet, and why it is where it is.
@@ -54,8 +59,9 @@ pub struct Facet {
 pub struct Readiness {
     pub capture: Facet,
     pub transcription: Facet,
-    /// Optional by design. A blocked notes facet does not block
-    /// recording; the session records a `notes_missing` outcome.
+    /// Optional by design: a blocked notes facet does not block
+    /// recording. What a recording without notes produces is the
+    /// recording surface's to state, not this one's.
     pub notes: Facet,
     pub storage: Facet,
     /// Never blocking. Egress is a fact to disclose, not a fault.
@@ -67,15 +73,18 @@ impl Readiness {
     ///
     /// Capture, transcription, and storage, and the test is that none
     /// of them is *blocked* rather than that all of them are ready.
-    /// The difference is `NotConfigured`, which for transcription means
-    /// a hosted provider is configured — a legitimate choice whose
+    /// The difference is `NotConfigured` and `Unverified`, neither of
+    /// which is a fault. `NotConfigured` for transcription means a
+    /// hosted provider is configured — a legitimate choice whose
     /// readiness depends on a credential this application never
-    /// handles, so this layer cannot assert it and must not treat its
-    /// own inability to assert it as a fault.
+    /// handles. `Unverified` is capture, which nothing here measures;
+    /// refusing to record on the strength of an unmeasured permission
+    /// would be as wrong as asserting one, and macOS raises its own
+    /// dialog where a recording actually needs the grant.
     ///
-    /// Notes deliberately do not appear at all: the product records
-    /// with notes unavailable and records a `notes_missing` outcome
-    /// afterwards. Egress is disclosure rather than a gate.
+    /// Notes deliberately do not appear at all: notes being
+    /// unavailable does not stop a recording from being started.
+    /// Egress is disclosure rather than a gate.
     #[must_use]
     pub fn can_record(&self) -> bool {
         self.capture.state != FacetState::Blocked
@@ -120,28 +129,34 @@ fn facet(
     }
 }
 
-/// Capture is reported from the permission findings, and is `Ready`
-/// when none of them says otherwise.
+/// Capture is reported as unverified, because nothing in this layer
+/// checks it.
 ///
-/// There is no positive "the microphone works" probe that does not
-/// prompt, and prompting is exactly what a read-only diagnosis must
-/// not do. So the honest statement is the absence of a known blocker,
-/// and the wizard's own permission step is where a grant is actually
-/// requested.
-fn capture(report: &DiagnosticReport) -> Facet {
-    let blockers = matching(
-        report,
-        &[
-            DiagnosticCode::MicrophonePermissionDenied,
-            DiagnosticCode::SystemAudioPermissionDenied,
-        ],
-    );
-    if let Some(first) = blockers.first() {
-        return facet(FacetState::Blocked, first.summary.clone(), &blockers);
-    }
+/// It used to be reported as `Ready` whenever no permission-denied
+/// finding was present — but no probe produces such a finding, so the
+/// branch that consumed them was unreachable and the facet was the
+/// constant `Ready`. An installation whose microphone permission had
+/// been refused was told it was ready to record.
+///
+/// The declared deviation for this release is that the wizard does not
+/// *prompt* for a permission. It does not extend to never *detecting*
+/// a refusal and reporting readiness anyway. Detecting one without
+/// prompting needs `AVCaptureDevice.authorizationStatus`, which is an
+/// `AVFoundation` call this layer has no binding for; the command-line
+/// Doctor's probes are not that, because they capture live audio and
+/// ask the user first, which is precisely what a read-only diagnosis
+/// must not do.
+///
+/// So this states what it knows, which is nothing, and the surfaces
+/// that render it say what was not checked. `can_record` treats it as
+/// not-blocking, exactly as before: refusing to start a recording on
+/// the strength of an unmeasured permission would replace one wrong
+/// claim with another, and macOS raises its own dialog at the point a
+/// recording actually needs the grant.
+fn capture(_report: &DiagnosticReport) -> Facet {
     facet(
-        FacetState::Ready,
-        "no capture permission is known to be denied",
+        FacetState::Unverified,
+        "whether macOS has granted microphone and system-audio recording is not checked here;          macOS asks the first time a recording needs it",
         &[],
     )
 }

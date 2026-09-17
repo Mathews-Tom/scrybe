@@ -39,16 +39,25 @@ What this cannot establish, stated plainly:
   interface does the latter without an Accessibility grant. The tray
   item's existence and its items' enabled state are read from the
   record the application writes while building it;
-- the no-network assertion has three parts, and each covers something
-  the others do not. The crate-graph check covers the Rust host only: a
-  host graph with no HTTP, TLS, DNS, QUIC, or WebSocket client cannot
-  open a connection from Rust. It says nothing about the webview, which
-  carries the platform's own networking stack, so a single remote image,
-  font, stylesheet, or `fetch()` added to a future view would egress
-  with no denylisted crate anywhere in the graph. What governs that is
-  the content security policy, which is read out of the built bundle and
-  compared against the expected value, and the navigation guard, which
-  is driven from the frontend and observed rather than assumed. The
+- the egress assertion has three parts, and each covers something the
+  others do not. The crate-graph check covers the Rust host only, and
+  it is an equality rather than an absence: the shipped application
+  offers an in-app model download, so it carries one rustls-backed
+  HTTPS client by design, and what is asserted is that the denylisted
+  crates in its graph are exactly that client — a gained crate and a
+  lost one both fail. A graph with no client at all is not a shape the
+  application can have, and asserting one over a configuration nobody
+  ships would read as a guarantee while covering nothing. The socket
+  leg below is what says the compiled-in client stays unused unless
+  somebody asks it to do something.
+
+  It says nothing about the webview, which carries the platform's own
+  networking stack, so a single remote image, font, stylesheet, or
+  `fetch()` added to a future view would egress without changing the
+  graph at all. What governs that is the content security policy, which
+  is read out of the built bundle and compared against the expected
+  value, and the navigation guard, which is driven from the frontend
+  and observed rather than assumed. The
   socket sampler runs on a cadence from launch until exit and records
   the union of everything it saw, so a connection opened and closed
   between two samples is still likely to be caught — but sampling is
@@ -213,6 +222,17 @@ NETWORK_DENYLIST = frozenset(
         "openssl-sys", "boring", "boring-sys", "trust-dns-resolver", "trust-dns-proto",
         "hickory-resolver", "hickory-proto", "quinn", "quinn-proto", "quinn-udp",
     }
+)
+
+# Exactly which of those the shipped host is allowed to carry: one
+# rustls-backed HTTPS client, and nothing else. Mirrors the set
+# `scripts/check-app-egress-baseline.py` approves, and is compared for
+# equality rather than containment — a subset passes a build that lost
+# its TLS implementation, a non-empty check passes a build that gained
+# a WebSocket transport, and both are changes a reviewer must agree to
+# rather than notice later.
+APPROVED_TRANSPORT = frozenset(
+    {"reqwest", "hyper", "hyper-util", "rustls", "rustls-webpki", "tokio-rustls"}
 )
 
 SETTLE_SECONDS = 2.0
@@ -1007,14 +1027,21 @@ def lifecycle(candidate: Candidate, run: Run) -> None:
         candidate.detail_of("menu-ready"),
     )
 
-    # (h) No network from the Rust host, structurally. This covers the
-    # host graph and nothing else: the webview carries the platform's
-    # own networking stack, so the policy and the navigation guard
-    # checked above are what govern it.
+    # (h) What the Rust host can speak, structurally. Not "nothing":
+    # the shipped application offers an in-app model download, so a
+    # graph with no HTTP client is not a shape it can have, and
+    # asserting one over a configuration nobody ships would read as a
+    # guarantee while covering nothing. What is asserted instead is
+    # that the denylisted crates it carries are exactly the approved
+    # transport — so a gained crate and a lost one both fail.
+    #
+    # This covers the host graph and nothing else: the webview carries
+    # the platform's own networking stack, so the policy and the
+    # navigation guard checked above are what govern it.
     graph = host_dependency_graph()
     run.record(
-        "no network: HTTP, TLS, DNS, QUIC, or WebSocket clients in the host graph",
-        [],
+        "egress surface: denylisted crates in the shipped host graph",
+        sorted(APPROVED_TRANSPORT),
         sorted(NETWORK_DENYLIST & graph),
     )
     run.record(

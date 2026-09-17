@@ -20,7 +20,7 @@ function readable(bytes: string): string {
   return `${rounded} ${units[unit] ?? "bytes"}`;
 }
 
-type Phase =
+type Stage =
   | { readonly kind: "offer" }
   | { readonly kind: "downloading"; readonly received: string; readonly total: string }
   | { readonly kind: "done"; readonly outcome: ModelOutcome }
@@ -50,16 +50,16 @@ export function ModelOfferPanel({
   onInstalled: () => void;
 }) {
   const scrybe = useScrybe();
-  const [phase, setPhase] = useState<Phase>({ kind: "offer" });
+  const [stage, setStage] = useState<Stage>({ kind: "offer" });
 
   useEffect(() => {
-    if (phase.kind !== "downloading") {
+    if (stage.kind !== "downloading") {
       return undefined;
     }
     let live = true;
     const subscription = scrybe.onModelProgress((progress) => {
       if (live && progress.id === offer.id) {
-        setPhase({
+        setStage({
           kind: "downloading",
           received: progress.received_bytes,
           total: progress.total_bytes,
@@ -72,22 +72,22 @@ export function ModelOfferPanel({
         stop();
       });
     };
-    // Keyed on the phase's kind rather than its payload, so the
+    // Keyed on the stage's kind rather than its payload, so the
     // subscription is established once per download rather than once
     // per progress report.
-  }, [phase.kind, offer.id, scrybe]);
+  }, [stage.kind, offer.id, scrybe]);
 
   function confirm() {
-    setPhase({ kind: "downloading", received: "0", total: offer.size_bytes });
+    setStage({ kind: "downloading", received: "0", total: offer.size_bytes });
     scrybe.installModel(offer.id, offer.sha256).then(
       (outcome) => {
-        setPhase({ kind: "done", outcome });
+        setStage({ kind: "done", outcome });
         if (outcome.state === "ready") {
           onInstalled();
         }
       },
       (error: unknown) => {
-        setPhase({ kind: "failed", message: describe(error) });
+        setStage({ kind: "failed", message: describe(error) });
       },
     );
   }
@@ -159,25 +159,25 @@ export function ModelOfferPanel({
           There is not enough room on this volume to install it. Free some space and check again.
         </p>
       )}
-      {phase.kind === "offer" && (
+      {stage.kind === "offer" && (
         <button type="button" className="model__confirm" onClick={confirm} disabled={!offer.sufficient_space}>
           Download and verify this model
         </button>
       )}
-      {phase.kind === "downloading" && (
+      {stage.kind === "downloading" && (
         <Downloading
-          received={phase.received}
-          total={phase.total}
+          received={stage.received}
+          total={stage.total}
           onCancel={() => {
             void scrybe.cancelModelInstall();
           }}
         />
       )}
-      {phase.kind === "done" && <Outcome outcome={phase.outcome} onRetry={confirm} />}
-      {phase.kind === "failed" && (
+      {stage.kind === "done" && <Outcome outcome={stage.outcome} onRetry={confirm} />}
+      {stage.kind === "failed" && (
         <>
           <p className="model__warning" role="alert">
-            {phase.message}
+            {stage.message}
           </p>
           <button type="button" onClick={confirm}>
             Try again

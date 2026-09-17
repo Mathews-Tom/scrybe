@@ -437,7 +437,8 @@ body {
   color: var(--danger);
 }
 
-.readiness__state[data-state="not_configured"] {
+.readiness__state[data-state="not_configured"],
+.readiness__state[data-state="unverified"] {
   color: var(--text-muted);
 }
 

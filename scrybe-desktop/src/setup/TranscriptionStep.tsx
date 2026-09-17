@@ -18,8 +18,11 @@ const MANAGED_MODEL = "whisper-small-en";
  * the interface.
  *
  * Notes being unavailable is stated as acceptable rather than as a
- * failure, because it is: a recording completes without them and says
- * so afterwards.
+ * failure, because setup can be finished without a local provider and
+ * one can be configured later. What a recording made without notes
+ * produces is deliberately not claimed here: the recording surface is
+ * not built yet, and a wizard that promised an outcome the product
+ * does not have would be advising a user into losing one.
  */
 export function TranscriptionStep({
   settings,
@@ -60,9 +63,8 @@ export function TranscriptionStep({
       </p>
       {readiness.notes.state !== "ready" && (
         <p className="setup__note">
-          You can finish setup without this. Recordings will still be captured and transcribed;
-          each one records that notes were unavailable, and you can generate them later once a
-          local provider is running.
+          Notes need a language model running on this Mac. You can finish setup without one, and
+          configure it later from Settings.
         </p>
       )}
       <button type="button" onClick={onChanged}>
