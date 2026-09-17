@@ -112,6 +112,9 @@ pub struct SessionEligibility {
 pub struct SessionSummary {
     pub id: SessionRef,
     pub state: SessionState,
+    /// The session ULID recorded in `meta.toml`, when metadata exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

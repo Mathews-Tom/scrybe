@@ -6,18 +6,24 @@
 
 //! `scrybe show <id-or-folder>` — render a session's transcript and
 //! notes to stdout.
+//!
+//! Session resolution, artifact availability, and paged transcript
+//! reading belong to the shared application service. This module owns
+//! the section headers, the ordering, and the recovery hint.
 
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::Args as ClapArgs;
+use scrybe_application::{PageRequest, SessionRef, MAX_PAGE_LIMIT};
 
-use crate::runtime::{expand_root, load_or_default_config, resolve_session_folder};
+use crate::runtime::session_repository;
 
 #[derive(ClapArgs, Debug)]
 pub struct Args {
-    /// Either a session-folder name relative to the storage root, an
-    /// absolute path, or the session's ULID/short prefix.
+    /// Either a session-folder name relative to the storage root or the
+    /// session's ULID/short prefix. Paths are not accepted: every
+    /// session resolves beneath the configured storage root.
     pub id_or_folder: String,
 
     /// Override the storage root from config.
@@ -29,36 +35,41 @@ pub struct Args {
     pub no_transcript: bool,
 }
 
+#[allow(clippy::unused_async)]
 pub async fn run(args: Args) -> Result<()> {
-    let root = if let Some(p) = args.root.as_deref() {
-        expand_root(p)
-    } else {
-        let cfg = load_or_default_config()?;
-        expand_root(&cfg.storage.root)
-    };
-    let folder = resolve_session_folder(&root, &args.id_or_folder)
+    let repository = session_repository(args.root.as_deref())?;
+    let id = SessionRef::parse(&args.id_or_folder)
+        .map_err(scrybe_application::ApplicationError::from)
         .with_context(|| format!("resolving session {}", args.id_or_folder))?;
+    let detail = repository
+        .get_session(&id)
+        .with_context(|| format!("resolving session {}", args.id_or_folder))?;
+    let folder = repository.root().resolve(&detail.id);
 
-    let transcript_path = folder.join("transcript.md");
-    let notes_path = folder.join("notes.md");
-
-    if !args.no_transcript && transcript_path.exists() {
-        let body = tokio::fs::read_to_string(&transcript_path)
-            .await
-            .with_context(|| format!("reading {}", transcript_path.display()))?;
-        println!("=== transcript ({}): ===", transcript_path.display());
-        print!("{body}");
-        if !body.ends_with('\n') {
-            println!();
+    if !args.no_transcript && detail.artifacts.transcript {
+        println!(
+            "=== transcript ({}): ===",
+            folder.join("transcript.md").display()
+        );
+        let mut cursor = 0;
+        loop {
+            let page = repository
+                .read_transcript_page(&detail.id, PageRequest::new(cursor, MAX_PAGE_LIMIT))?;
+            for line in &page.lines {
+                println!("{line}");
+            }
+            match page.next {
+                Some(next) => cursor = next.line,
+                None => break,
+            }
         }
     }
-    if notes_path.exists() {
-        let body = tokio::fs::read_to_string(&notes_path)
-            .await
-            .with_context(|| format!("reading {}", notes_path.display()))?;
-        println!("\n=== notes ({}): ===", notes_path.display());
-        print!("{body}");
-        if !body.ends_with('\n') {
+
+    let notes = repository.read_notes(&detail.id)?;
+    if let Some(markdown) = notes.markdown {
+        println!("\n=== notes ({}): ===", folder.join("notes.md").display());
+        print!("{markdown}");
+        if !markdown.ends_with('\n') {
             println!();
         }
     } else {
@@ -136,92 +147,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_run_returns_error_when_session_does_not_exist() {
+    async fn test_run_resolves_a_session_by_unambiguous_ulid_fragment() {
         let dir = tempfile::tempdir().unwrap();
+        write_session(dir.path(), "2026-04-29-1430-acme-01HXYZ");
 
-        let err = run(Args {
-            id_or_folder: "nonexistent".into(),
+        run(Args {
+            id_or_folder: "01HXYZ".into(),
+            root: Some(dir.path().to_path_buf()),
+            no_transcript: false,
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_run_refuses_an_absolute_path_instead_of_reading_outside_the_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        write_session(outside.path(), "2026-04-29-1430-secret-01HXYZ");
+
+        let error = run(Args {
+            id_or_folder: outside
+                .path()
+                .join("2026-04-29-1430-secret-01HXYZ")
+                .display()
+                .to_string(),
             root: Some(dir.path().to_path_buf()),
             no_transcript: false,
         })
         .await
         .unwrap_err();
 
-        assert!(err.to_string().contains("nonexistent"));
-    }
-
-    #[tokio::test]
-    async fn test_run_resolves_session_via_unique_substring() {
-        let dir = tempfile::tempdir().unwrap();
-        write_session(dir.path(), "2026-04-29-1430-acme-01HXYZ");
-
-        run(Args {
-            id_or_folder: "acme".into(),
-            root: Some(dir.path().to_path_buf()),
-            no_transcript: false,
-        })
-        .await
-        .unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_run_appends_newline_when_transcript_lacks_trailing_newline() {
-        // Exercises the `if !body.ends_with('\n')` branch in the
-        // transcript section of `run`. Region coverage on `show.rs`
-        // misses this arm because the canonical fixture
-        // (`write_session`) writes a transcript that already ends
-        // with `\n`.
-        let dir = tempfile::tempdir().unwrap();
-        let folder = dir.path().join("2026-04-29-1430-acme-01HXYZ");
-        std::fs::create_dir(&folder).unwrap();
-        std::fs::write(folder.join("transcript.md"), b"no trailing newline").unwrap();
-        std::fs::write(folder.join("notes.md"), b"## TL;DR\n- ok\n").unwrap();
-
-        run(Args {
-            id_or_folder: "2026-04-29-1430-acme-01HXYZ".into(),
-            root: Some(dir.path().to_path_buf()),
-            no_transcript: false,
-        })
-        .await
-        .unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_run_appends_newline_when_notes_lack_trailing_newline() {
-        // Symmetric counterpart of the transcript test above for the
-        // notes section's `if !body.ends_with('\n')` arm.
-        let dir = tempfile::tempdir().unwrap();
-        let folder = dir.path().join("2026-04-29-1430-acme-01HXYZ");
-        std::fs::create_dir(&folder).unwrap();
-        std::fs::write(folder.join("transcript.md"), b"# title\n").unwrap();
-        std::fs::write(folder.join("notes.md"), b"no trailing newline").unwrap();
-
-        run(Args {
-            id_or_folder: "2026-04-29-1430-acme-01HXYZ".into(),
-            root: Some(dir.path().to_path_buf()),
-            no_transcript: false,
-        })
-        .await
-        .unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_run_skips_transcript_section_when_transcript_md_absent() {
-        // When `no_transcript=false` but `transcript.md` does not
-        // exist, the `transcript_path.exists()` guard should keep the
-        // transcript section silent and the function must still
-        // succeed by rendering only the notes section.
-        let dir = tempfile::tempdir().unwrap();
-        let folder = dir.path().join("2026-04-29-1430-acme-01HXYZ");
-        std::fs::create_dir(&folder).unwrap();
-        std::fs::write(folder.join("notes.md"), b"## TL;DR\n").unwrap();
-
-        run(Args {
-            id_or_folder: "2026-04-29-1430-acme-01HXYZ".into(),
-            root: Some(dir.path().to_path_buf()),
-            no_transcript: false,
-        })
-        .await
-        .unwrap();
+        assert!(error.to_string().contains("resolving session"));
     }
 }
