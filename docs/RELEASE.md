@@ -7,11 +7,12 @@ This runbook publishes the Scrybe application to crates.io and GitHub from one r
 Publish v1.6.0 packages in this order:
 
 1. `scrybe-meeting-core`
-2. `scrybe-meeting-capture-mac`
-3. `scrybe-meeting-capture-mic`
-4. `scrybe`
+2. `scrybe-meeting-application`
+3. `scrybe-meeting-capture-mac`
+4. `scrybe-meeting-capture-mic`
+5. `scrybe`
 
-The two capture packages are independent after core is visible. The application must remain last.
+`scrybe-meeting-application` depends on core and must follow it. The two capture packages are independent after core is visible. The application must remain last, and it pins `scrybe-meeting-application = "=1.6.0"`, so `cargo publish -p scrybe --locked` cannot resolve until that package is on the registry.
 
 ## Preflight
 
@@ -36,6 +37,7 @@ Confirm the crates.io credential file exists without printing its contents:
 test -f ~/.cargo/credentials.toml
 cargo owner --list scrybe
 cargo owner --list scrybe-meeting-core
+cargo owner --list scrybe-meeting-application
 cargo owner --list scrybe-meeting-capture-mac
 cargo owner --list scrybe-meeting-capture-mic
 ```
@@ -54,6 +56,7 @@ Confirm that the target version is still absent from every published package imm
 
 ```sh
 cargo info scrybe-meeting-core@1.6.0 --registry crates-io
+cargo info scrybe-meeting-application@1.6.0 --registry crates-io
 cargo info scrybe-meeting-capture-mac@1.6.0 --registry crates-io
 cargo info scrybe-meeting-capture-mic@1.6.0 --registry crates-io
 cargo info scrybe@1.6.0 --registry crates-io
@@ -63,11 +66,12 @@ The expected result for each exact version is “could not find”. Stop if any 
 
 ## Package Inspection
 
-Assemble the four packages together so Cargo can resolve their unpublished workspace dependencies:
+Assemble the five packages together so Cargo can resolve their unpublished workspace dependencies:
 
 ```sh
 cargo package \
   -p scrybe-meeting-core \
+  -p scrybe-meeting-application \
   -p scrybe-meeting-capture-mac \
   -p scrybe-meeting-capture-mic \
   -p scrybe \
@@ -105,6 +109,19 @@ Wait until the exact version resolves:
 
 ```sh
 cargo info scrybe-meeting-core@1.6.0 --registry crates-io
+```
+
+Then dry-run and publish the shared application services, which depend on core:
+
+```sh
+cargo publish -p scrybe-meeting-application --dry-run --locked
+cargo publish -p scrybe-meeting-application --locked
+```
+
+Wait until the exact version resolves:
+
+```sh
+cargo info scrybe-meeting-application@1.6.0 --registry crates-io
 ```
 
 Then dry-run and publish the capture packages:

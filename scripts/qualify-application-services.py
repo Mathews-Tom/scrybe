@@ -59,6 +59,12 @@ REPAIRABLE = "2026-04-28-0900-interrupted-call-01QUALIFYBBBBBBBBBBBBBBBB"
 UNFINISHED = "2026-04-27-1100-abandoned-start-01QUALIFYCCCCCCCCCCCCCCCC"
 FAILED = "2026-04-26-1600-corrupt-metadata-01QUALIFYDDDDDDDDDDDDDDDD"
 NOT_A_SESSION = "not-a-session"
+# A recorder killed at startup: `scrybe-core` takes the lock straight
+# after `create_dir_all`, so the folder holds nothing else and does not
+# classify as a session.
+LOCK_ONLY = "2026-04-25-1000-killed-at-startup-01QUALIFYEEEEEEEEEEEEEEEE"
+# A lock whose contents cannot be interpreted as a process id.
+UNREADABLE_LOCK = "2026-04-24-1000-unreadable-lock-01QUALIFYFFFFFFFFFFFFFFFF"
 
 COMPLETE_META = """session_id = "01QUALIFYAAAAAAAAAAAAAAAA"
 title = "Quarterly review"
@@ -188,6 +194,14 @@ def write_fixture_tree(root: Path) -> None:
     stray = root / NOT_A_SESSION
     stray.mkdir(parents=True)
     (stray / "README.md").write_text("not a meeting\n")
+
+    lock_only = root / LOCK_ONLY
+    lock_only.mkdir(parents=True)
+    (lock_only / "pid.lock").write_text("4294967294\n")
+
+    unreadable_lock = root / UNREADABLE_LOCK
+    unreadable_lock.mkdir(parents=True)
+    (unreadable_lock / "pid.lock").write_text("not-a-pid\n")
 
     (root / "model.gguf.partial").write_bytes(b"abc")
 
@@ -353,6 +367,26 @@ def parity(binary: Path, root: Path, config: Path) -> Run:
         "doctor.does_not_delete_the_partial",
         (root / "model.gguf.partial").exists(),
         "diagnosis left the partial download in place",
+    )
+    run.assert_that(
+        "doctor.reports_lock_in_a_folder_that_is_not_a_session",
+        LOCK_ONLY in doctor.stdout,
+        "an orphaned lock is reported even where the folder is not a session",
+    )
+    run.assert_that(
+        "doctor.does_not_delete_the_orphaned_lock",
+        (root / LOCK_ONLY / "pid.lock").exists(),
+        "diagnosis left the orphaned lock in place",
+    )
+    run.assert_that(
+        "doctor.reports_an_unreadable_lock_as_its_own_finding",
+        "no readable process id" in doctor.stdout,
+        "a lock carrying no process id is not reported as merely stale",
+    )
+    run.assert_that(
+        "doctor.does_not_delete_the_unreadable_lock",
+        (root / UNREADABLE_LOCK / "pid.lock").exists(),
+        "diagnosis left the uninterpretable lock in place",
     )
     run.assert_that(
         "doctor.reports_local_egress",

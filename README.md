@@ -135,6 +135,7 @@ scrybe is a Rust workspace with a small core and platform adapters:
 |---|---|
 | `scrybe` | Published application and `scrybe` binary (`scrybe-cli/`) |
 | `scrybe-meeting-core` | Published session, storage, config, provider, hook, diarization, and pipeline library |
+| `scrybe-meeting-application` | Published session, configuration, diagnostics, and recording services shared by every frontend (`scrybe-application/`) |
 | `scrybe-meeting-capture-mac` | Published macOS microphone and system-audio adapter |
 | `scrybe-meeting-capture-mic` | Published microphone adapter via `cpal` |
 | `scrybe-capture-linux` | Private PipeWire/Pulse adapter surface |
