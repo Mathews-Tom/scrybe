@@ -118,6 +118,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             commands::copy_transcript,
             commands::settings_summary,
             commands::recording_status,
+            commands::recording_preflight,
             setup::settings_form,
             setup::apply_settings,
             setup::diagnostics_report,

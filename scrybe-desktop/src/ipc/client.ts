@@ -5,6 +5,7 @@ import { SETUP_COMMANDS } from "./setup";
 import {
   RECORDING_TRANSITION_EVENT,
   type NotesRegeneration,
+  type PreflightView,
   type RecordingStatus,
   type RecordingTransition,
   type SessionDetail,
@@ -37,6 +38,7 @@ export const COMMANDS = [
   "copy_transcript",
   "settings_summary",
   "recording_status",
+  "recording_preflight",
   ...SETUP_COMMANDS,
 ] as const;
 
@@ -142,6 +144,15 @@ export function settingsSummary(): Promise<SettingsSummary> {
 /** Where recording stands right now. */
 export function recordingStatus(): Promise<RecordingStatus> {
   return invoke<RecordingStatus>("recording_status");
+}
+
+/**
+ * Whether this installation could record right now, check by check.
+ *
+ * Reads and starts nothing, so a view may call it whenever it renders.
+ */
+export function recordingPreflight(): Promise<PreflightView> {
+  return invoke<PreflightView>("recording_preflight");
 }
 
 /**

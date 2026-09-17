@@ -1,6 +1,7 @@
 import type {
   FailureCode,
   NotesRegeneration,
+  PreflightView,
   RecordingStatus,
   SessionDetail,
   SessionNotes,
@@ -44,6 +45,8 @@ export function servicesReturning(overrides: Partial<Scrybe> = {}): Scrybe {
     copyTranscript: () => Promise.resolve(),
     settingsSummary: () => Promise.resolve(settings()),
     recordingStatus: () => Promise.resolve(idle()),
+    recordingPreflight: () => Promise.resolve(clearedPreflight()),
+    onRecordingTransition: () => Promise.resolve(() => undefined),
     settingsForm: () => Promise.resolve(settingsFormFixture()),
     applySettings: () => Promise.resolve(settingsFormFixture()),
     diagnosticsReport: () => Promise.resolve(diagnostics()),
@@ -197,4 +200,61 @@ export function idle(overrides: Partial<RecordingStatus> = {}): RecordingStatus 
 export function commandFailure(code: FailureCode, message: string): Promise<never> {
   // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- see above
   return Promise.reject({ code, message });
+}
+
+/**
+ * A preflight in which nothing blocks.
+ *
+ * The permission check is `unverified` rather than `passed`, because
+ * that is what the service layer actually reports: nothing in this
+ * release measures the capture grant, and a fixture that claimed
+ * otherwise would let a view be written against an answer the
+ * application never gives.
+ */
+export function clearedPreflight(
+  overrides: Partial<PreflightView> = {},
+): PreflightView {
+  return {
+    schema_version: 1,
+    can_record: true,
+    findings: [
+      {
+        check: "configuration",
+        outcome: "passed",
+        summary: "source synthetic, notes stub, consent quick",
+      },
+      {
+        check: "permissions",
+        outcome: "unverified",
+        summary:
+          "not checked — this release measures no permission grant; macOS raises its own Microphone prompt where the recording needs it",
+      },
+      {
+        check: "device",
+        outcome: "passed",
+        summary: "the synthetic source opens no input device",
+      },
+      {
+        check: "provider",
+        outcome: "passed",
+        summary: "notes come from the built-in stub; no provider is contacted",
+      },
+      {
+        check: "model",
+        outcome: "passed",
+        summary: "transcription uses the built-in stub; no model is loaded",
+      },
+      {
+        check: "storage",
+        outcome: "passed",
+        summary: "the storage root /tmp/scrybe is writable, under /tmp",
+      },
+      {
+        check: "capture",
+        outcome: "passed",
+        summary: "this build can open source synthetic",
+      },
+    ],
+    ...overrides,
+  };
 }

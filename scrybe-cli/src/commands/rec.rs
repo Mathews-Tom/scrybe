@@ -53,7 +53,9 @@ use chrono::Utc;
 use clap::{Args as ClapArgs, ValueEnum};
 use futures::stream::{self, Stream, StreamExt};
 use scrybe_application::recording::{
-    RecordingController, RecordingSnapshot, RecordingState, StopAcceptance, StopSource,
+    CaptureCapability, CaptureSource, CaptureSupport, NotesBackend, RecordingController,
+    RecordingOverrides, RecordingPlan, RecordingSnapshot, RecordingState, StopAcceptance,
+    StopSource, SystemBackend, TranscriptionModel,
 };
 #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
 use scrybe_capture_mac::{input_devices, InputDevice, MacCapture, NativeMicCapture, SckCapture};
@@ -63,11 +65,7 @@ use scrybe_capture_mic::MicCapture;
 // compiled into the binary.
 #[cfg(feature = "mic-capture")]
 use scrybe_core::capture::AudioCapture;
-use scrybe_core::config::{
-    RecordConfig, SttConfig, RECORD_LLM_OPENAI_COMPAT, RECORD_LLM_STUB, RECORD_SOURCE_MIC,
-    RECORD_SOURCE_MIC_SYSTEM, RECORD_SOURCE_SYNTHETIC, RECORD_SYSTEM_BACKEND_SCK,
-    RECORD_SYSTEM_BACKEND_TAP,
-};
+
 use scrybe_core::context::MeetingContext;
 use scrybe_core::diarize::Diarizer;
 use scrybe_core::error::{CaptureError, CoreError, LlmError, SttError};
@@ -95,8 +93,7 @@ use scrybe_core::types::{
 use tokio::sync::watch;
 
 use crate::prompter::TtyPrompter;
-use crate::runtime::{application, config_service, expand_root};
-use scrybe_core::record_defaults;
+use crate::runtime::{application, config_service};
 
 #[derive(ClapArgs, Clone, Debug)]
 pub struct Args {
@@ -229,10 +226,10 @@ enum SystemCapture {
 
 #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
 impl SystemCapture {
-    fn new(backend: SystemBackendArg) -> Self {
+    fn new(backend: SystemBackend) -> Self {
         match backend {
-            SystemBackendArg::Sck => Self::Sck(SckCapture::new()),
-            SystemBackendArg::Tap => Self::Tap(MacCapture::new()),
+            SystemBackend::Sck => Self::Sck(SckCapture::new()),
+            SystemBackend::Tap => Self::Tap(MacCapture::new()),
         }
     }
 
@@ -266,7 +263,7 @@ type CaptureFrameStream = Pin<Box<dyn Stream<Item = Result<AudioFrame, CaptureEr
 
 #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
 async fn start_system_capture(
-    selected: SystemBackendArg,
+    selected: SystemBackend,
 ) -> Result<(SystemCapture, CaptureFrameStream, Option<&'static str>)> {
     let mut capture = SystemCapture::new(selected);
     if let Err(error) = capture.start() {
@@ -291,7 +288,7 @@ async fn start_system_capture(
             capture
                 .stop()
                 .context("stopping silent Core Audio Tap before fallback")?;
-            let mut fallback = SystemCapture::new(SystemBackendArg::Sck);
+            let mut fallback = SystemCapture::new(SystemBackend::Sck);
             fallback.start().context(
                 "Core Audio Tap had no startup activity and ScreenCaptureKit could not start",
             )?;
@@ -335,10 +332,38 @@ async fn tap_produces_nonzero_frames(mut frames: CaptureFrameStream) -> (bool, C
 }
 
 #[cfg(any(test, all(feature = "mic-capture", feature = "system-capture-mac")))]
-const fn fallback_backend(selected: SystemBackendArg) -> Option<SystemBackendArg> {
+const fn fallback_backend(selected: SystemBackend) -> Option<SystemBackend> {
     match selected {
-        SystemBackendArg::Tap => Some(SystemBackendArg::Sck),
-        SystemBackendArg::Sck => None,
+        SystemBackend::Tap => Some(SystemBackend::Sck),
+        SystemBackend::Sck => None,
+    }
+}
+
+impl From<CaptureSourceArg> for CaptureSource {
+    fn from(value: CaptureSourceArg) -> Self {
+        match value {
+            CaptureSourceArg::Synthetic => Self::Synthetic,
+            CaptureSourceArg::Mic => Self::Mic,
+            CaptureSourceArg::MicSystem => Self::MicSystem,
+        }
+    }
+}
+
+impl From<SystemBackendArg> for SystemBackend {
+    fn from(value: SystemBackendArg) -> Self {
+        match value {
+            SystemBackendArg::Sck => Self::Sck,
+            SystemBackendArg::Tap => Self::Tap,
+        }
+    }
+}
+
+impl From<LlmBackendArg> for NotesBackend {
+    fn from(value: LlmBackendArg) -> Self {
+        match value {
+            LlmBackendArg::Stub => Self::Stub,
+            LlmBackendArg::OpenAiCompat => Self::OpenAiCompat,
+        }
     }
 }
 
@@ -362,6 +387,140 @@ impl From<ConsentModeArg> for ConsentMode {
 ///
 /// Propagates configuration, capture, provider, and storage failures
 /// from the recording session.
+/// What this invocation asks for, over the configuration file.
+///
+/// The CLI's flags are overrides and nothing else: resolution itself
+/// belongs to `scrybe-application`, so a terminal and a desktop host
+/// read the same file to the same answers.
+#[must_use]
+pub fn overrides_from(args: &Args) -> RecordingOverrides {
+    RecordingOverrides {
+        title: args.title.clone(),
+        root: args.root.clone(),
+        source: args.source.map(Into::into),
+        system_backend: args.system_backend.map(Into::into),
+        input_device: args.input_device.clone(),
+        whisper_model: args.whisper_model.clone(),
+        sherpa_model: args.sherpa_model.clone(),
+        notes: args.llm.map(Into::into),
+        consent: args.consent.map(Into::into),
+    }
+}
+
+/// What this binary was compiled to be able to open.
+///
+/// Derived from the same `cfg!` conditions the capture construction in
+/// `run_with_stop` is written under, so preflight cannot report a
+/// capability the code below then refuses to provide.
+#[must_use]
+pub const fn build_support() -> CaptureSupport {
+    CaptureSupport {
+        capture: if cfg!(all(feature = "mic-capture", feature = "system-capture-mac")) {
+            CaptureCapability::MicrophoneAndSystemAudio
+        } else if cfg!(feature = "mic-capture") {
+            CaptureCapability::Microphone
+        } else {
+            CaptureCapability::SyntheticOnly
+        },
+        transcription_model: cfg!(any(feature = "whisper-local", feature = "stt-sherpa")),
+        notes_provider: cfg!(feature = "llm-openai-compat"),
+    }
+}
+
+/// The input-device UIDs this platform offers, or `None` when this
+/// build cannot enumerate them.
+///
+/// `None` is not an empty list: a build with no Core Audio binding
+/// knows nothing about the machine's devices, and preflight reports
+/// that as unverified rather than as a device that is missing.
+#[must_use]
+#[allow(
+    clippy::missing_const_for_fn,
+    reason = "const under one feature selection only; the enumerating build allocates"
+)]
+pub fn available_devices() -> Option<Vec<String>> {
+    #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
+    {
+        input_devices().ok().map(|devices| {
+            devices
+                .into_iter()
+                .map(|device| device.uid)
+                .collect::<Vec<_>>()
+        })
+    }
+    #[cfg(not(all(feature = "mic-capture", feature = "system-capture-mac")))]
+    {
+        None
+    }
+}
+
+/// Resolves and checks this invocation, leaving the controller
+/// preparing.
+///
+/// The one preflight, shared with every other surface. Six of its seven
+/// checks used to be written inline further down this file, where no
+/// other frontend could reach them and where a failure was labelled as
+/// a capture failure rather than a preflight one.
+///
+/// # Errors
+///
+/// The preflight refusal, with every blocking check named.
+pub fn begin_recording(controller: &RecordingController, args: &Args) -> Result<RecordingPlan> {
+    let devices = available_devices();
+    scrybe_application::recording::begin(
+        controller,
+        &config_service()?,
+        home_directory().as_deref(),
+        build_support(),
+        devices.as_deref(),
+        &overrides_from(args),
+    )
+    .map_err(|refusal| {
+        let hint = rebuild_hint(&refusal);
+        let error = anyhow::Error::from(refusal.error);
+        match hint {
+            Some(hint) => error.context(hint),
+            None => error,
+        }
+    })
+}
+
+/// How to rebuild this binary so a capture it refused would work.
+///
+/// The preflight refuses a source this build cannot open, but it cannot
+/// say what to do about it: the Cargo features that decide it belong to
+/// this package, and `scrybe-application` is shared with a desktop host
+/// whose answer is a different build entirely. So the generic refusal
+/// travels, and the package-specific remedy is attached here.
+fn rebuild_hint(refusal: &scrybe_application::recording::Refusal) -> Option<String> {
+    let blocked_on_capture = refusal
+        .report
+        .blocking()
+        .iter()
+        .any(|finding| finding.check == scrybe_application::recording::PreflightCheck::Capture);
+    if !blocked_on_capture {
+        return None;
+    }
+    match refusal.plan.as_ref()?.source {
+        CaptureSource::Synthetic => None,
+        CaptureSource::Mic => Some(
+            "--source mic requires the binary to be built with --features mic-capture; \
+             this binary was built without it"
+                .to_string(),
+        ),
+        CaptureSource::MicSystem => Some(
+            "--source mic+system requires the binary to be built with both \
+             --features mic-capture and --features system-capture-mac; \
+             this binary was built without one or both"
+                .to_string(),
+        ),
+    }
+}
+
+fn home_directory() -> Option<PathBuf> {
+    directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf())
+}
+
 pub async fn run(args: Args) -> Result<()> {
     let (stop_tx, stop_rx) = watch::channel(false);
     // The controller comes from the composition root, never from a
@@ -370,18 +529,18 @@ pub async fn run(args: Args) -> Result<()> {
     // a second instance would let two consumers give two different
     // answers to "is a recording running".
     let controller = Arc::clone(application(args.root.as_deref())?.recording());
-    // Only `begin_preparing` here. Every preflight step — config load,
-    // storage-root creation, capture-source and provider resolution,
-    // the notes model load, device enumeration, and capture start —
-    // runs inside `run_with_stop`, and the controller must still be
-    // `Preparing` while it does. Marking recording here made
-    // `RecordingFailureKind::Preflight` structurally unreachable, so
-    // every preflight failure was labelled `Capture` — which the
-    // contract defines as possibly leaving a recoverable journal, when
-    // in fact nothing has been written — and it started the single
-    // monotonic origin before capture existed, counting permission
-    // prompts and model load as recorded time.
-    controller.begin_preparing().map_err(anyhow::Error::from)?;
+    // Resolution and the seven checks, then `Preparing` — all of it in
+    // `scrybe-application`, so this terminal and the desktop host reach
+    // the same answers from the same file. A refusal here has written
+    // nothing, which is why `RecordingFailureKind::Preflight` means
+    // what it says: no journal exists to recover.
+    //
+    // The controller stays `Preparing` from here until the pipeline
+    // publishes `SessionProgress::Recording`, which is the real capture
+    // boundary. Marking recording earlier started the single monotonic
+    // origin before capture existed, counting permission prompts and a
+    // model load as recorded time.
+    let plan = begin_recording(&controller, &args)?;
 
     let signal_controller = Arc::clone(&controller);
     let signal_handle = tokio::spawn(monitor_signals(move || {
@@ -389,7 +548,7 @@ pub async fn run(args: Args) -> Result<()> {
             let _ = stop_tx.send(true);
         }
     }));
-    let result = run_with_stop(args, stop_rx, Some(Arc::clone(&controller))).await;
+    let result = run_with_stop(args, plan, stop_rx, Some(Arc::clone(&controller))).await;
     signal_handle.abort();
     settle(&controller, result.as_ref().err());
     result
@@ -470,37 +629,32 @@ where
 #[allow(clippy::too_many_lines)]
 pub async fn run_with_stop(
     args: Args,
+    plan: RecordingPlan,
     stop_rx: watch::Receiver<bool>,
     controller: Option<Arc<RecordingController>>,
 ) -> Result<()> {
     let cfg = config_service()?.load()?;
-    let root = match &args.root {
-        Some(p) => expand_root(p),
-        None => expand_root(&cfg.storage.root),
-    };
+    // Every value this function used to resolve for itself now arrives
+    // in `plan`, resolved once by the shared orchestration. What is
+    // still read from `cfg` here are the blocks the plan does not
+    // decide: the language a model is loaded with, the notes runtime's
+    // own settings, and the endpoint the notes provider talks to.
+    let root = plan.root.clone();
     tokio::fs::create_dir_all(&root)
         .await
         .with_context(|| format!("creating storage root {}", root.display()))?;
 
     let auto_accept = args.yes || std::env::var("SCRYBE_CONSENT_AUTO_ACCEPT").as_deref() == Ok("1");
     let prompter = TtyPrompter::new(auto_accept);
-    let source = resolve_capture_source(args.source, &cfg.record)?;
-    let stt_model = resolve_stt_model(
-        args.whisper_model.as_ref(),
-        args.sherpa_model.as_ref(),
-        &cfg.record,
-        &cfg.stt,
-        source,
-    );
-    let llm_backend = resolve_llm_backend(args.llm, &cfg.record)?;
-    let consent_mode = args.consent.map_or(cfg.consent.default_mode, Into::into);
+    let source = plan.source;
+    let consent_mode = plan.consent;
 
-    let llm = build_llm_provider(llm_backend, &cfg.llm)?;
-    let notes_runtime = match llm_backend {
-        LlmBackendArg::Stub => None,
-        LlmBackendArg::OpenAiCompat => Some(NotesRuntime::load(&cfg.notes)?),
+    let llm = build_llm_provider(plan.notes, &cfg.llm)?;
+    let notes_runtime = match plan.notes {
+        NotesBackend::Stub => None,
+        NotesBackend::OpenAiCompat => Some(NotesRuntime::load(&cfg.notes)?),
     };
-    let system_backend = resolve_system_backend(args.system_backend, &cfg.record)?;
+    let system_backend = plan.system_backend;
     #[cfg(not(all(feature = "mic-capture", feature = "system-capture-mac")))]
     let _ = system_backend;
     let diarizer = BinaryChannelDiarizer;
@@ -516,18 +670,14 @@ pub async fn run_with_stop(
     // diarizer to attribute them as `Them:`. Set to `Some(...)` only
     // when the source carries system frames.
     let system_vad: Option<EnergyVad> = match source {
-        CaptureSourceArg::MicSystem => Some(EnergyVad::default()),
-        CaptureSourceArg::Synthetic | CaptureSourceArg::Mic => None,
+        CaptureSource::MicSystem => Some(EnergyVad::default()),
+        CaptureSource::Synthetic | CaptureSource::Mic => None,
     };
     #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
     let selected_input = match source {
-        CaptureSourceArg::Synthetic => None,
-        CaptureSourceArg::Mic | CaptureSourceArg::MicSystem => {
-            let requested = args
-                .input_device
-                .as_deref()
-                .or(cfg.record.input_device.as_deref());
-            let device = resolve_macos_input_device(requested)?;
+        CaptureSource::Synthetic => None,
+        CaptureSource::Mic | CaptureSource::MicSystem => {
+            let device = resolve_macos_input_device(plan.input_device.as_deref())?;
             eprintln!("scrybe: input: {} ({})", device.name, device.uid);
             Some(device)
         }
@@ -542,10 +692,10 @@ pub async fn run_with_stop(
     });
     let stream: Pin<Box<dyn Stream<Item = Result<AudioFrame, CaptureError>> + Send>> = match source
     {
-        CaptureSourceArg::Synthetic => {
+        CaptureSource::Synthetic => {
             Box::pin(synthetic_capture_stream(args.synthetic_secs).take_until(stop_future))
         }
-        CaptureSourceArg::Mic => {
+        CaptureSource::Mic => {
             #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
             {
                 let device = selected_input
@@ -553,7 +703,7 @@ pub async fn run_with_stop(
                     .context("resolved microphone missing for mic capture")?;
                 let stream = start_registered_capture(
                     &capture_registry,
-                    NativeMicCapture::new(device.uid.clone(), cfg.record.aec),
+                    NativeMicCapture::new(device.uid.clone(), plan.aec),
                 )
                 .with_context(|| {
                     format!(
@@ -565,7 +715,7 @@ pub async fn run_with_stop(
             }
             #[cfg(all(feature = "mic-capture", not(feature = "system-capture-mac")))]
             {
-                if args.input_device.is_some() || cfg.record.input_device.is_some() {
+                if plan.input_device.is_some() {
                     anyhow::bail!(
                         "--input-device requires a macOS build with --features \
                          mic-capture,system-capture-mac"
@@ -586,7 +736,7 @@ pub async fn run_with_stop(
                 );
             }
         }
-        CaptureSourceArg::MicSystem => {
+        CaptureSource::MicSystem => {
             #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
             {
                 use futures::stream;
@@ -607,7 +757,7 @@ pub async fn run_with_stop(
                     .context("resolved microphone missing for mic+system capture")?;
                 let mic_frames = start_registered_capture(
                     &capture_registry,
-                    NativeMicCapture::new(device.uid.clone(), cfg.record.aec),
+                    NativeMicCapture::new(device.uid.clone(), plan.aec),
                 )
                 .with_context(|| {
                     format!(
@@ -632,7 +782,7 @@ pub async fn run_with_stop(
     // Start hardware capture before loading the selected STT model. The capture
     // adapters buffer their frames while the model initializes, so the Tap
     // liveness probe runs during startup instead of delaying recording.
-    let stt = match build_stt_provider(stt_model, &cfg.stt.language) {
+    let stt = match build_stt_provider(plan.transcription.clone(), &cfg.stt.language) {
         Ok(stt) => stt,
         Err(error) => {
             if let Err(stop_error) = capture_registry.stop_all() {
@@ -677,11 +827,11 @@ pub async fn run_with_stop(
             id,
             started_at,
             root: root.clone(),
-            title: args.title.clone(),
+            title: plan.title.clone(),
             user,
             consent_mode,
             context: MeetingContext {
-                title: args.title,
+                title: plan.title,
                 ..MeetingContext::default()
             },
             mic_vad: EnergyVad::default(),
@@ -705,7 +855,7 @@ pub async fn run_with_stop(
             // its encoded duration against actual elapsed CPU time
 
             // would fail by construction on every invocation.
-            verify_duration: !matches!(source, CaptureSourceArg::Synthetic),
+            verify_duration: !matches!(source, CaptureSource::Synthetic),
             progress: Some(&progress),
         },
         stream,
@@ -832,87 +982,6 @@ fn write_capture_diagnostic(
         .with_context(|| format!("creating capture diagnostic folder {}", folder.display()))?;
     std::fs::write(folder.join("capture.log"), format!("{note}\n"))
         .context("writing system-capture fallback diagnostic")
-}
-
-fn resolve_capture_source(
-    explicit: Option<CaptureSourceArg>,
-    cfg: &RecordConfig,
-) -> Result<CaptureSourceArg> {
-    if let Some(source) = explicit {
-        return Ok(source);
-    }
-    match cfg.validated_source() {
-        Some(RECORD_SOURCE_SYNTHETIC) => Ok(CaptureSourceArg::Synthetic),
-        Some(RECORD_SOURCE_MIC) => Ok(CaptureSourceArg::Mic),
-        Some(RECORD_SOURCE_MIC_SYSTEM) => Ok(CaptureSourceArg::MicSystem),
-        Some(_) | None => anyhow::bail!(
-            "invalid [record].source {}; expected one of: synthetic, mic, mic+system",
-            cfg.source
-        ),
-    }
-}
-
-fn resolve_system_backend(
-    explicit: Option<SystemBackendArg>,
-    cfg: &RecordConfig,
-) -> Result<SystemBackendArg> {
-    if let Some(backend) = explicit {
-        return Ok(backend);
-    }
-    match cfg.validated_system_backend() {
-        Some(RECORD_SYSTEM_BACKEND_SCK) => Ok(SystemBackendArg::Sck),
-        Some(RECORD_SYSTEM_BACKEND_TAP) => Ok(SystemBackendArg::Tap),
-        Some(_) | None => anyhow::bail!(
-            "invalid [record].system_backend {}; expected one of: sck, tap",
-            cfg.system_backend
-        ),
-    }
-}
-
-fn resolve_llm_backend(
-    explicit: Option<LlmBackendArg>,
-    cfg: &RecordConfig,
-) -> Result<LlmBackendArg> {
-    if let Some(backend) = explicit {
-        return Ok(backend);
-    }
-    match cfg.validated_llm() {
-        Some(RECORD_LLM_STUB) => Ok(LlmBackendArg::Stub),
-        Some(RECORD_LLM_OPENAI_COMPAT) => Ok(LlmBackendArg::OpenAiCompat),
-        Some(_) | None => anyhow::bail!(
-            "invalid [record].llm {}; expected one of: stub, openai-compat",
-            cfg.llm
-        ),
-    }
-}
-
-enum SttModel {
-    Stub,
-    Whisper(PathBuf),
-    Sherpa(PathBuf),
-}
-
-fn resolve_stt_model(
-    whisper_model: Option<&PathBuf>,
-    sherpa_model: Option<&PathBuf>,
-    record: &RecordConfig,
-    stt: &SttConfig,
-    source: CaptureSourceArg,
-) -> SttModel {
-    if let Some(path) = sherpa_model {
-        return SttModel::Sherpa(path.clone());
-    }
-    if let Some(path) = whisper_model {
-        return SttModel::Whisper(path.clone());
-    }
-    if let Some(path) = &record.whisper_model {
-        return SttModel::Whisper(expand_root(path));
-    }
-    if !matches!(source, CaptureSourceArg::Synthetic) && stt.provider == "whisper-local" {
-        return record_defaults::whisper_model_path(&stt.model)
-            .map_or(SttModel::Stub, SttModel::Whisper);
-    }
-    SttModel::Stub
 }
 
 #[cfg(all(feature = "mic-capture", feature = "system-capture-mac"))]
@@ -1088,10 +1157,10 @@ impl SttProvider for CliStt {
 /// An explicit model always requires its matching feature. The stub remains
 /// the default only when no model has been requested or configured.
 #[allow(unused_variables)]
-fn build_stt_provider(model: SttModel, language: &str) -> Result<CliStt> {
+fn build_stt_provider(model: TranscriptionModel, language: &str) -> Result<CliStt> {
     match model {
-        SttModel::Stub => Ok(CliStt::Stub(StubLocalStt::new())),
-        SttModel::Whisper(path) => {
+        TranscriptionModel::Stub => Ok(CliStt::Stub(StubLocalStt::new())),
+        TranscriptionModel::Whisper(path) => {
             #[cfg(feature = "whisper-local")]
             {
                 let mut config = WhisperLocalConfig::new(path.clone());
@@ -1109,7 +1178,7 @@ fn build_stt_provider(model: SttModel, language: &str) -> Result<CliStt> {
                 );
             }
         }
-        SttModel::Sherpa(path) => {
+        TranscriptionModel::Sherpa(path) => {
             #[cfg(feature = "stt-sherpa")]
             {
                 let provider =
@@ -1211,12 +1280,12 @@ impl LlmProvider for CliLlm {
 ///   summaries (mirrors `build_stt_provider`'s behavior at v1.0.1).
 #[allow(unused_variables)]
 fn build_llm_provider(
-    backend: LlmBackendArg,
+    backend: NotesBackend,
     cfg: &scrybe_core::config::LlmConfig,
 ) -> Result<CliLlm> {
     match backend {
-        LlmBackendArg::Stub => Ok(CliLlm::Stub(StubLocalLlm::new())),
-        LlmBackendArg::OpenAiCompat => {
+        NotesBackend::Stub => Ok(CliLlm::Stub(StubLocalLlm::new())),
+        NotesBackend::OpenAiCompat => {
             #[cfg(feature = "llm-openai-compat")]
             {
                 let provider = OpenAiCompatLlmProvider::from_config(cfg)
@@ -1308,6 +1377,7 @@ const fn _ensure_event_dispatch_compiles(_event: &LifecycleEvent) {}
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+    use scrybe_core::config::{Config, RecordConfig, RECORD_SOURCE_MIC, RECORD_SYSTEM_BACKEND_TAP};
     #[tokio::test]
     async fn test_capture_liveness_watchdog_stops_adapters_and_reports_timeout() {
         let registry = CaptureRegistry::default();
@@ -1656,41 +1726,61 @@ mod tests {
         }
     }
 
+    /// Resolution moved to `scrybe-application`, but the CLI's own
+    /// claim — that `--system-backend` beats the file — is about this
+    /// binary's flags, so it stays asserted here, through the path the
+    /// binary now takes.
     #[test]
     fn test_system_backend_flag_overrides_record_config() {
-        let cfg = RecordConfig {
-            system_backend: RECORD_SYSTEM_BACKEND_TAP.to_string(),
-            ..RecordConfig::default()
+        let config = Config {
+            record: RecordConfig {
+                system_backend: RECORD_SYSTEM_BACKEND_TAP.to_string(),
+                ..RecordConfig::default()
+            },
+            ..Config::default()
         };
-        assert_eq!(
-            resolve_system_backend(Some(SystemBackendArg::Sck), &cfg).unwrap(),
-            SystemBackendArg::Sck
-        );
+        let args = Args {
+            system_backend: Some(SystemBackendArg::Sck),
+            ..bare_args()
+        };
+
+        let plan = RecordingPlan::resolve(&config, None, &overrides_from(&args)).unwrap();
+
+        assert_eq!(plan.system_backend, SystemBackend::Sck);
     }
 
     #[test]
     fn test_system_backend_uses_valid_record_config_then_default() {
-        let tap_cfg = RecordConfig {
-            system_backend: RECORD_SYSTEM_BACKEND_TAP.to_string(),
-            ..RecordConfig::default()
+        let tap = Config {
+            record: RecordConfig {
+                system_backend: RECORD_SYSTEM_BACKEND_TAP.to_string(),
+                ..RecordConfig::default()
+            },
+            ..Config::default()
         };
+        let overrides = overrides_from(&bare_args());
+
         assert_eq!(
-            resolve_system_backend(None, &tap_cfg).unwrap(),
-            SystemBackendArg::Tap
+            RecordingPlan::resolve(&tap, None, &overrides)
+                .unwrap()
+                .system_backend,
+            SystemBackend::Tap
         );
         assert_eq!(
-            resolve_system_backend(None, &RecordConfig::default()).unwrap(),
-            SystemBackendArg::Sck
+            RecordingPlan::resolve(&Config::default(), None, &overrides)
+                .unwrap()
+                .system_backend,
+            SystemBackend::Sck
         );
     }
 
     #[test]
     fn test_tap_fallback_is_single_hop_to_sck() {
         assert_eq!(
-            fallback_backend(SystemBackendArg::Tap),
-            Some(SystemBackendArg::Sck)
+            fallback_backend(SystemBackend::Tap),
+            Some(SystemBackend::Sck)
         );
-        assert_eq!(fallback_backend(SystemBackendArg::Sck), None);
+        assert_eq!(fallback_backend(SystemBackend::Sck), None);
     }
 
     fn system_frame(samples: &[f32], timestamp_ns: u64) -> AudioFrame {
@@ -1814,7 +1904,8 @@ mod tests {
 
     #[test]
     fn test_build_stt_provider_returns_stub_when_no_model_path_supplied() {
-        let stt = build_stt_provider(SttModel::Stub, "en").expect("stub branch must succeed");
+        let stt =
+            build_stt_provider(TranscriptionModel::Stub, "en").expect("stub branch must succeed");
         assert_eq!(stt.name(), "stub-local-stt");
     }
 
@@ -1822,7 +1913,8 @@ mod tests {
     fn test_stub_provider_exposes_no_streaming_capability() {
         // The batch path must stay selected for providers that cannot
         // decode incrementally; only Sherpa answers this call.
-        let stt = build_stt_provider(SttModel::Stub, "en").expect("stub branch must succeed");
+        let stt =
+            build_stt_provider(TranscriptionModel::Stub, "en").expect("stub branch must succeed");
         assert!(stt.streaming().is_none());
     }
 
@@ -1830,7 +1922,7 @@ mod tests {
     #[test]
     fn test_build_stt_provider_errors_when_whisper_model_supplied_without_feature() {
         let result = build_stt_provider(
-            SttModel::Whisper(PathBuf::from("/tmp/no-such-model.bin")),
+            TranscriptionModel::Whisper(PathBuf::from("/tmp/no-such-model.bin")),
             "en",
         );
         let Err(err) = result else {
@@ -1846,8 +1938,10 @@ mod tests {
     #[cfg(not(feature = "stt-sherpa"))]
     #[test]
     fn test_build_stt_provider_errors_when_sherpa_model_supplied_without_feature() {
-        let result =
-            build_stt_provider(SttModel::Sherpa(PathBuf::from("/tmp/no-such-model")), "en");
+        let result = build_stt_provider(
+            TranscriptionModel::Sherpa(PathBuf::from("/tmp/no-such-model")),
+            "en",
+        );
         let Err(err) = result else {
             panic!("flag without feature must error rather than silently stub");
         };
@@ -1858,23 +1952,48 @@ mod tests {
         );
     }
 
+    /// `--sherpa-model` beating a configured whisper path is a claim
+    /// about this binary's flags, so it stays asserted here even though
+    /// the ordering rule itself now lives in `scrybe-application`.
     #[test]
     fn test_explicit_sherpa_model_overrides_configured_whisper_model() {
-        let config = RecordConfig {
-            whisper_model: Some(PathBuf::from("/models/whisper.bin")),
-            ..RecordConfig::default()
+        let config = Config {
+            record: RecordConfig {
+                source: RECORD_SOURCE_MIC.to_string(),
+                whisper_model: Some(PathBuf::from("/models/whisper.bin")),
+                ..RecordConfig::default()
+            },
+            ..Config::default()
         };
-        let model = resolve_stt_model(
-            None,
-            Some(&PathBuf::from("/models/sherpa")),
-            &config,
-            &SttConfig::default(),
-            CaptureSourceArg::Mic,
-        );
+        let args = Args {
+            sherpa_model: Some(PathBuf::from("/models/sherpa")),
+            ..bare_args()
+        };
 
-        assert!(
-            matches!(model, SttModel::Sherpa(path) if path.as_path() == std::path::Path::new("/models/sherpa"))
+        let plan = RecordingPlan::resolve(&config, None, &overrides_from(&args)).unwrap();
+
+        assert_eq!(
+            plan.transcription,
+            TranscriptionModel::Sherpa(PathBuf::from("/models/sherpa"))
         );
+    }
+
+    /// The flags a test builds a plan from, with every override absent.
+    fn bare_args() -> Args {
+        Args {
+            title: None,
+            root: None,
+            yes: false,
+            consent: None,
+            synthetic_secs: 5,
+            source: None,
+            input_device: None,
+            system_backend: None,
+            whisper_model: None,
+            sherpa_model: None,
+            llm: None,
+            shell: false,
+        }
     }
 
     #[cfg(feature = "whisper-local")]
@@ -1883,7 +2002,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let partial = dir.path().join("ggml-tiny.bin.partial");
         std::fs::write(&partial, b"unfinished download").unwrap();
-        let result = build_stt_provider(SttModel::Whisper(partial), "en");
+        let result = build_stt_provider(TranscriptionModel::Whisper(partial), "en");
         let Err(err) = result else {
             panic!("partial paths must be rejected at construction");
         };
@@ -1898,7 +2017,7 @@ mod tests {
     fn test_build_llm_provider_returns_stub_when_backend_is_stub() {
         let cfg = scrybe_core::config::LlmConfig::default();
 
-        let llm = build_llm_provider(LlmBackendArg::Stub, &cfg)
+        let llm = build_llm_provider(NotesBackend::Stub, &cfg)
             .expect("stub branch must succeed regardless of features");
 
         assert_eq!(llm.name(), "stub-local-llm");
@@ -1909,7 +2028,7 @@ mod tests {
     fn test_build_llm_provider_errors_when_openai_compat_requested_without_feature() {
         let cfg = scrybe_core::config::LlmConfig::default();
 
-        let result = build_llm_provider(LlmBackendArg::OpenAiCompat, &cfg);
+        let result = build_llm_provider(NotesBackend::OpenAiCompat, &cfg);
 
         let Err(err) = result else {
             panic!("openai-compat without feature must error rather than silently stub");
@@ -1934,7 +2053,7 @@ mod tests {
             ..scrybe_core::config::LlmConfig::default()
         };
 
-        let llm = build_llm_provider(LlmBackendArg::OpenAiCompat, &cfg)
+        let llm = build_llm_provider(NotesBackend::OpenAiCompat, &cfg)
             .expect("openai-compat branch must succeed when feature is on");
 
         assert_eq!(llm.name(), "ollama:llama3.1:8b");
@@ -1968,40 +2087,44 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_a_preflight_failure_is_labelled_preflight_and_leaves_nothing_on_disk() {
+    /// The preflight runs before anything is written, so a refusal is
+    /// labelled `Preflight` — the kind whose documented meaning is that
+    /// no journal exists to recover — and leaves the filesystem as it
+    /// found it. Asserted on the filesystem, not on the returned error.
+    #[test]
+    fn test_a_preflight_failure_is_labelled_preflight_and_leaves_nothing_on_disk() {
         let cfg_dir = tempfile::tempdir().unwrap();
         std::env::set_var("SCRYBE_CONFIG", cfg_dir.path().join("no-such-config.toml"));
         let dir = tempfile::tempdir().unwrap();
-        // A file where the storage root's parent must be a directory,
-        // so `create_dir_all` fails during preflight.
+        // A regular file where the storage root's parent would have to
+        // be a directory.
         let blocker = dir.path().join("not-a-directory");
         std::fs::write(&blocker, b"").unwrap();
         let root = blocker.join("sessions");
 
         let controller = app_controller(dir.path());
-        controller.begin_preparing().unwrap();
-        let (_stop_tx, stop_rx) = watch::channel(false);
-        let result = run_with_stop(
-            synthetic_args(root.clone()),
-            stop_rx,
-            Some(Arc::clone(&controller)),
-        )
-        .await;
+        let kinds = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&kinds);
+        controller.subscribe(Arc::new(move |event| {
+            if let Some(failure) = &event.failure {
+                recorded.lock().unwrap().push(failure.kind);
+            }
+        }));
+
+        let result = begin_recording(&controller, &synthetic_args(root.clone()));
 
         assert!(result.is_err());
-        // The whole preflight must run in `Preparing`. Marking
-        // recording at the call site made this `Recording`, so the
-        // failure below was labelled `Capture` — which the contract
-        // defines as possibly leaving a recoverable journal, when
-        // nothing has been written at all.
-        assert_eq!(controller.snapshot().state, RecordingState::Preparing);
-        let failed = controller.fail(RECORDING_FAILURE_SUMMARY).unwrap();
         assert_eq!(
-            failed.failure.map(|failure| failure.kind),
-            Some(scrybe_application::recording::RecordingFailureKind::Preflight)
+            *kinds.lock().unwrap(),
+            vec![scrybe_application::recording::RecordingFailureKind::Preflight]
         );
+        // Settled, so the next recording can start.
+        assert_eq!(controller.snapshot().state, RecordingState::Idle);
         assert!(!root.exists(), "a failed preflight must write nothing");
+        assert!(
+            !blocker.is_dir(),
+            "a failed preflight must not have replaced the blocker"
+        );
     }
 
     #[tokio::test]
@@ -2011,7 +2134,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
 
         let controller = app_controller(dir.path());
-        controller.begin_preparing().unwrap();
+        let args = synthetic_args(dir.path().to_path_buf());
+        let plan = begin_recording(&controller, &args).unwrap();
         let (_stop_tx, stop_rx) = watch::channel(false);
         // `--synthetic-secs` ends capture on its own, so nothing ever
         // requests a stop. The controller must still have entered
@@ -2019,13 +2143,9 @@ mod tests {
         // while merging, encoding, transcribing, or writing
         // `meta.toml` would be labelled `Capture` even though audio
         // exists and the session is repairable.
-        run_with_stop(
-            synthetic_args(dir.path().to_path_buf()),
-            stop_rx,
-            Some(Arc::clone(&controller)),
-        )
-        .await
-        .unwrap();
+        run_with_stop(args, plan, stop_rx, Some(Arc::clone(&controller)))
+            .await
+            .unwrap();
 
         // Capture ended on its own — nothing requested a stop — yet
         // finalization must still have run in `Saving`. Otherwise a

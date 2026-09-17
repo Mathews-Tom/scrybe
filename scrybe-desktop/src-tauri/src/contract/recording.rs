@@ -12,6 +12,7 @@
 //! and a subscription, and nothing else.
 
 use scrybe_application::recording::{
+    CheckOutcome as ServiceCheckOutcome, PreflightCheck as ServicePreflightCheck, PreflightReport,
     RecordingEvent, RecordingSnapshot, RecordingState as ServiceRecordingState,
 };
 use serde::Serialize;
@@ -105,6 +106,100 @@ impl From<&RecordingEvent> for RecordingTransition {
                 .failure
                 .as_ref()
                 .map(|failure| failure.summary.clone()),
+        }
+    }
+}
+
+/// Whether this installation can record, check by check.
+///
+/// The service layer's report, narrowed to what a reader sees. Every
+/// check is forwarded — including the one that says it checked nothing
+/// — because a surface that dropped the unverified findings would
+/// present seven answers as though all of them were measured.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, TS)]
+pub struct PreflightView {
+    /// The service layer's preflight schema version, forwarded
+    /// unchanged so a frontend can refuse a payload it was not built
+    /// for.
+    pub schema_version: u32,
+    /// Whether every check that can block passed.
+    pub can_record: bool,
+    pub findings: Vec<PreflightFindingView>,
+}
+
+/// One check, as a reader sees it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, TS)]
+pub struct PreflightFindingView {
+    pub check: PreflightCheckView,
+    pub outcome: CheckOutcomeView,
+    pub summary: String,
+}
+
+/// Mirrors `scrybe_application::recording::PreflightCheck` through an
+/// exhaustive match.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum PreflightCheckView {
+    Configuration,
+    Permissions,
+    Device,
+    Provider,
+    Model,
+    Storage,
+    Capture,
+}
+
+/// Mirrors `scrybe_application::recording::CheckOutcome` through an
+/// exhaustive match.
+///
+/// `Unverified` is a state in its own right and not a shade of
+/// `Passed`: the surface that renders it must say what was not checked.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckOutcomeView {
+    Passed,
+    Unverified,
+    Failed,
+}
+
+impl From<ServicePreflightCheck> for PreflightCheckView {
+    fn from(check: ServicePreflightCheck) -> Self {
+        match check {
+            ServicePreflightCheck::Configuration => Self::Configuration,
+            ServicePreflightCheck::Permissions => Self::Permissions,
+            ServicePreflightCheck::Device => Self::Device,
+            ServicePreflightCheck::Provider => Self::Provider,
+            ServicePreflightCheck::Model => Self::Model,
+            ServicePreflightCheck::Storage => Self::Storage,
+            ServicePreflightCheck::Capture => Self::Capture,
+        }
+    }
+}
+
+impl From<ServiceCheckOutcome> for CheckOutcomeView {
+    fn from(outcome: ServiceCheckOutcome) -> Self {
+        match outcome {
+            ServiceCheckOutcome::Passed => Self::Passed,
+            ServiceCheckOutcome::Unverified => Self::Unverified,
+            ServiceCheckOutcome::Failed => Self::Failed,
+        }
+    }
+}
+
+impl From<PreflightReport> for PreflightView {
+    fn from(report: PreflightReport) -> Self {
+        Self {
+            schema_version: report.schema_version,
+            can_record: report.can_record(),
+            findings: report
+                .findings
+                .into_iter()
+                .map(|finding| PreflightFindingView {
+                    check: finding.check.into(),
+                    outcome: finding.outcome.into(),
+                    summary: finding.summary,
+                })
+                .collect(),
         }
     }
 }

@@ -6,6 +6,8 @@ import type {
   ModelOffer,
   ModelOutcome,
   ModelProgress,
+  PreflightView,
+  RecordingTransition,
   ReadinessReport,
   RecordingStatus,
   RecoveryActionView,
@@ -26,7 +28,9 @@ import {
   getSession,
   listSessions,
   readNotes,
+  onRecordingTransition,
   readTranscriptPage,
+  recordingPreflight,
   recordingStatus,
   regenerateNotes,
   repairSession,
@@ -89,6 +93,25 @@ export interface Scrybe {
   copyTranscript: (id: string) => Promise<void>;
   settingsSummary: () => Promise<SettingsSummary>;
   recordingStatus: () => Promise<RecordingStatus>;
+  /**
+   * Whether this installation could record right now, check by check.
+   *
+   * Separate from `readinessReport`, which describes the install as a
+   * setup wizard sees it. This one answers the narrower question a
+   * recording control asks: would pressing record work, against the
+   * configuration as it stands and the adapters this build carries.
+   */
+  recordingPreflight: () => Promise<PreflightView>;
+  /**
+   * Calls `onTransition` for every recording state change until the
+   * returned function is called.
+   *
+   * On the interface rather than imported straight from `client.ts` so
+   * a test can drive a transition without a `WebView` to emit one.
+   */
+  onRecordingTransition: (
+    onTransition: (transition: RecordingTransition) => void,
+  ) => Promise<() => void>;
   settingsForm: () => Promise<SettingsForm>;
   applySettings: (changes: SettingsChange[]) => Promise<SettingsForm>;
   /** Reads. A view may call this on mount; it mutates nothing. */
@@ -128,6 +151,8 @@ const REAL: Scrybe = {
   copyTranscript,
   settingsSummary,
   recordingStatus,
+  recordingPreflight,
+  onRecordingTransition,
   settingsForm,
   applySettings,
   diagnosticsReport,

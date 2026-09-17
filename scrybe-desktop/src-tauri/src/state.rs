@@ -93,18 +93,16 @@ impl Desktop {
 /// writes produces one, and silently treating it as the current user's
 /// home would resolve to the wrong person's files.
 fn expand_home(root: &Path) -> PathBuf {
-    let text = root.to_string_lossy();
-    let Some(home) = home_directory() else {
-        return root.to_path_buf();
-    };
-    if text == "~" {
-        return home;
-    }
-    text.strip_prefix("~/")
-        .map_or_else(|| root.to_path_buf(), |rest| home.join(rest))
+    scrybe_application::recording::expand_tilde(root, home_directory().as_deref())
 }
 
-fn home_directory() -> Option<PathBuf> {
+/// This process's home directory, or `None` when it has none.
+///
+/// Public because the recording preflight resolves a `~`-prefixed
+/// storage root through the same expansion the services use, and it
+/// needs the same answer this module gives.
+#[must_use]
+pub fn home_directory() -> Option<PathBuf> {
     directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf())
 }
 

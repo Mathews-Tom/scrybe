@@ -34,6 +34,7 @@ const COMMANDS: &[&str] = &[
     "copy_transcript",
     "settings_summary",
     "recording_status",
+    "recording_preflight",
     "settings_form",
     "apply_settings",
     "diagnostics_report",

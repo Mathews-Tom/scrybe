@@ -18,6 +18,9 @@
 
 mod contract;
 mod controller;
+mod orchestration;
+mod plan;
+mod preflight;
 
 pub use contract::{
     RecordingEvent, RecordingFailure, RecordingFailureKind, RecordingSnapshot, RecordingState,
@@ -26,3 +29,19 @@ pub use contract::{
 pub use controller::{
     MonotonicClock, RecordingController, RecordingEventObserver, SystemMonotonicClock,
 };
+pub use orchestration::{begin, check, Refusal, PREFLIGHT_FAILURE_SUMMARY};
+pub use plan::{
+    expand_tilde, CaptureSource, NotesBackend, RecordingOverrides, RecordingPlan, SystemBackend,
+    TranscriptionModel,
+};
+pub use preflight::{
+    CaptureCapability, CaptureSupport, CheckOutcome, PreflightCheck, PreflightFinding,
+    PreflightReport, PREFLIGHT_SCHEMA_VERSION,
+};
+
+/// Runs every preflight check against a resolved plan.
+///
+/// Re-exported at the module root rather than left behind a `preflight`
+/// path segment, so a frontend names one entry point — the plan, then
+/// this — instead of reaching into a submodule.
+pub use preflight::run as preflight;
