@@ -25,6 +25,24 @@ crate-type = ["lib"]
 name = "scrybe-desktop"
 path = "src/main.rs"
 
+[features]
+default = []
+# The managed model transport, off by default.
+#
+# Enabling it is the only thing in this tree that turns on
+# `scrybe-application`'s own default-off `model-download`, and it is
+# deliberately not on by default: the lifecycle qualification asserts
+# this host's *default* graph carries no HTTP, TLS, DNS, QUIC, or
+# WebSocket crate, and a real download needs exactly such a crate. The
+# setup qualification is the one build that enables this, and proves
+# its own no-network property by observing sockets rather than by
+# reading the crate graph.
+#
+# `scripts/check-app-egress-baseline.py` pins both shapes: the default
+# graph must carry none of those crates, and the feature-on graph must
+# carry exactly the approved set and no more.
+model-download = ["scrybe-application/model-download"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
