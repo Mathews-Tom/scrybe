@@ -352,10 +352,15 @@ pub fn open_advanced_configuration(app: tauri::AppHandle) -> Result<(), CommandF
 /// scoped by a URL allowlist the frontend's capability file would have
 /// to carry, and this host deliberately grants the frontend nothing
 /// that names a path or a URL. Every target reaching here was built in
-/// Rust from a closed enumeration or from the configuration service's
-/// own path.
+/// Rust from a closed enumeration, from the configuration service's own
+/// path, or from a session folder the repository resolved beneath the
+/// configured root.
+///
+/// Visible to the crate because the session surface reveals a folder
+/// through it. A second opener would be a second place the rule above
+/// has to hold.
 #[cfg(target_os = "macos")]
-fn open(_app: &tauri::AppHandle, target: &str) -> Result<(), CommandFailure> {
+pub(crate) fn open(_app: &tauri::AppHandle, target: &str) -> Result<(), CommandFailure> {
     std::process::Command::new("/usr/bin/open")
         .arg(target)
         .status()
@@ -379,7 +384,7 @@ fn open(_app: &tauri::AppHandle, target: &str) -> Result<(), CommandFailure> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn open(_app: &tauri::AppHandle, _target: &str) -> Result<(), CommandFailure> {
+pub(crate) fn open(_app: &tauri::AppHandle, _target: &str) -> Result<(), CommandFailure> {
     Err(ApplicationError::new(
         ErrorCode::NotApplicable,
         "this platform has no recovery surface to open yet",

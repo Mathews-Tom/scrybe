@@ -3,6 +3,7 @@ import { useRef, useState, type SubmitEvent } from "react";
 import type { SessionRows } from "../../generated/bindings";
 import { useScrybe } from "../../ipc/ScrybeProvider";
 import { nextRequestId, useStorageRootRevision } from "../library";
+import { SessionDetail } from "../session/SessionDetail";
 import { SessionList } from "../SessionList";
 import { useQuery } from "../useQuery";
 
@@ -15,6 +16,7 @@ export function SearchView() {
   const revision = useStorageRootRevision();
   const [query, setQuery] = useState("");
   const [submitted, setSubmitted] = useState("");
+  const [opened, setOpened] = useState<string | null>(null);
   // The identifier the search still in flight carries, so the next
   // search can abandon it by name.
   const live = useRef<string | null>(null);
@@ -52,6 +54,20 @@ export function SearchView() {
     setSubmitted(query);
   }
 
+  // A result opens the same session surface the list does, and leaving
+  // it returns to the results rather than to the top of the view.
+  if (opened !== null) {
+    return (
+      <SessionDetail
+        key={opened}
+        id={opened}
+        onBack={() => {
+          setOpened(null);
+        }}
+      />
+    );
+  }
+
   return (
     <>
       <h1 id="view-heading">Search</h1>
@@ -73,7 +89,11 @@ export function SearchView() {
       {submitted === "" ? (
         <p>Search runs over the transcripts and notes already on this machine.</p>
       ) : (
-        <SessionList query={results} empty={`Nothing matches “${submitted}”.`} />
+        <SessionList
+          query={results}
+          empty={`Nothing matches “${submitted}”.`}
+          onOpen={setOpened}
+        />
       )}
     </>
   );

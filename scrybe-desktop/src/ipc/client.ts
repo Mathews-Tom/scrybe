@@ -4,10 +4,15 @@ import { listen } from "@tauri-apps/api/event";
 import { SETUP_COMMANDS } from "./setup";
 import {
   RECORDING_TRANSITION_EVENT,
+  type NotesRegeneration,
   type RecordingStatus,
   type RecordingTransition,
+  type SessionDetail,
+  type SessionNotes,
+  type SessionRepair,
   type SessionRows,
   type SettingsSummary,
+  type TranscriptWindow,
 } from "../generated/bindings";
 
 /**
@@ -22,6 +27,14 @@ export const COMMANDS = [
   "list_sessions",
   "search_sessions",
   "cancel_query",
+  "get_session",
+  "read_notes",
+  "read_transcript_page",
+  "repair_session",
+  "regenerate_notes",
+  "reveal_session",
+  "copy_notes",
+  "copy_transcript",
   "settings_summary",
   "recording_status",
   ...SETUP_COMMANDS,
@@ -59,6 +72,66 @@ export function searchSessions(
  */
 export function cancelQuery(requestId: string): Promise<boolean> {
   return invoke<boolean>("cancel_query", { requestId });
+}
+
+/** Everything the detail view renders about one session. */
+export function getSession(id: string): Promise<SessionDetail> {
+  return invoke<SessionDetail>("get_session", { id });
+}
+
+/** A session's durable notes, or `null` when it has none. */
+export function readNotes(id: string): Promise<SessionNotes> {
+  return invoke<SessionNotes>("read_notes", { id });
+}
+
+/**
+ * One window of a session's transcript, counted in lines.
+ *
+ * The whole document never crosses this boundary: a view asks for the
+ * window it is showing and nothing else.
+ */
+export function readTranscriptPage(
+  id: string,
+  offset: number,
+  limit: number,
+): Promise<TranscriptWindow> {
+  return invoke<TranscriptWindow>("read_transcript_page", { id, offset, limit });
+}
+
+/** Recovers an interrupted session. */
+export function repairSession(id: string): Promise<SessionRepair> {
+  return invoke<SessionRepair>("repair_session", { id });
+}
+
+/** Replaces a session's notes from its durable transcript. */
+export function regenerateNotes(id: string): Promise<NotesRegeneration> {
+  return invoke<NotesRegeneration>("regenerate_notes", { id });
+}
+
+/**
+ * Shows the session's folder in the platform's file manager.
+ *
+ * A command that succeeds or fails and carries nothing back, so the
+ * return is narrowed here rather than leaving a caller with a value to
+ * read that says nothing.
+ */
+export async function revealSession(id: string): Promise<void> {
+  await invoke<null>("reveal_session", { id });
+}
+
+/** Puts a session's durable notes on the system clipboard. */
+export async function copyNotes(id: string): Promise<void> {
+  await invoke<null>("copy_notes", { id });
+}
+
+/**
+ * Puts a session's durable transcript on the system clipboard.
+ *
+ * Read and copied in Rust, so the document the view deliberately never
+ * holds is not assembled here either.
+ */
+export async function copyTranscript(id: string): Promise<void> {
+  await invoke<null>("copy_transcript", { id });
 }
 
 /** The configuration, narrowed to what the settings view renders. */

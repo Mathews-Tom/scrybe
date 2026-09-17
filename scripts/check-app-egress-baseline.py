@@ -28,18 +28,19 @@ Three things are asserted.
    This is also the assertion `scripts/qualify-desktop-app.py
    --scenario lifecycle` makes about the running application, for the
    same reason: the shipped application offers an in-app model
-   download, so "no HTTP client anywhere in the graph" is not a
-   property it can have, and asserting it over a configuration nobody
+   download and regenerates notes through a configured provider, so
+   "no HTTP client anywhere in the graph" is not a property it can
+   have, and asserting it over a configuration nobody
    ships would read as a guarantee while covering nothing.
 
 2. The host built with `--no-default-features` carries none of the
    denylisted crates at all. Nobody ships that configuration and this
    gate does not pretend otherwise. It is checked because it is what
-   proves the gating is real: `model-download` genuinely controls
-   whether a transport is linked, rather than naming a dependency that
-   arrives through some other edge regardless. If that stops being
-   true, the feature is a label and the first check above is no longer
-   measuring what it claims.
+   proves the gating is real: `model-download` and `notes-generation`
+   genuinely control whether a transport is linked, rather than naming
+   a dependency that arrives through some other edge regardless. If
+   that stops being true, the features are labels and the first check
+   above is no longer measuring what it claims.
 
 3. The checked-in model catalog names exactly one destination, over
    HTTPS, at the approved host, pinned to a revision its own URL
@@ -70,11 +71,17 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 HOST_MANIFEST = REPO_ROOT / "scrybe-desktop" / "src-tauri" / "Cargo.toml"
 CATALOG = REPO_ROOT / "scrybe-application" / "models.toml"
 
-# The feature that buys the host an HTTP client. On by default, because
-# the shipped application performs an in-app model download; still a
-# named feature so that turning it off resolves a graph with no
-# transport, which is what check 2 reads.
-DOWNLOAD_FEATURE = "model-download"
+# Every feature that buys the host an HTTP client. Both are on by
+# default, because the shipped application performs an in-app model
+# download and regenerates notes through a configured provider; both are
+# still named features, so that turning them off resolves a graph with
+# no transport at all, which is what check 2 reads.
+#
+# Listed rather than singular because a second feature arriving here and
+# not in this tuple is the failure mode that would matter: check 2 would
+# keep passing on a graph that still linked a client, and its claim
+# would quietly become "no transport except the one nobody listed".
+TRANSPORT_FEATURES = ("model-download", "notes-generation")
 
 # Mirrors the denylist the library gate and the lifecycle qualification
 # apply. Kept as a literal here rather than imported, because a gate
@@ -148,19 +155,20 @@ def host_graph(features: list[str] | None = None, *, no_default_features: bool =
     return packages
 
 
-def ships_the_transport_behind_a_named_feature() -> bool:
-    """Whether the host ships the transport, and still names it.
+def transport_features_shipped_and_still_named() -> list[str]:
+    """Which transport-bearing features are both declared and default.
 
-    Two properties in one answer, because neither is sufficient alone.
-    The transport must be in the default feature set, or the shipped
-    application cannot download a model and the documentation that says
-    it can is wrong. And it must still be a named feature, or the two
-    graphs below are the same graph and the second check stops asking
-    anything.
+    Two properties per feature, because neither is sufficient alone. It
+    must be in the default feature set, or the shipped application
+    cannot do the thing the feature exists for and the documentation
+    saying it can is wrong. And it must still be a named feature, or the
+    two graphs below are the same graph and the second check stops
+    asking anything.
     """
     manifest = tomllib.loads(HOST_MANIFEST.read_text())
     features = manifest.get("features", {})
-    return DOWNLOAD_FEATURE in features and DOWNLOAD_FEATURE in features.get("default", [])
+    default = features.get("default", [])
+    return [name for name in TRANSPORT_FEATURES if name in features and name in default]
 
 
 def catalog_destinations() -> list[tuple[str, str, str]]:
@@ -198,9 +206,9 @@ def main() -> int:
 
     held = [
         report(
-            f"the host ships the transport and still names it `{DOWNLOAD_FEATURE}`",
-            True,
-            ships_the_transport_behind_a_named_feature(),
+            "the host ships the transport and still names every feature that buys it",
+            list(TRANSPORT_FEATURES),
+            transport_features_shipped_and_still_named(),
         ),
         report(
             "the shipped host graph carries exactly the approved transport and nothing more",
@@ -208,7 +216,7 @@ def main() -> int:
             sorted(NETWORK_DENYLIST & shipped_graph),
         ),
         report(
-            f"the host built without `{DOWNLOAD_FEATURE}` carries no transport at all",
+            "the host built with no transport-bearing feature carries no transport at all",
             [],
             sorted(NETWORK_DENYLIST & transportless_graph),
         ),
@@ -234,7 +242,7 @@ def main() -> int:
     if all(held):
         print(
             f"app egress audit: ok — {len(shipped_graph)} crates in the shipped graph, "
-            f"{len(transportless_graph)} without `{DOWNLOAD_FEATURE}`, "
+            f"{len(transportless_graph)} with no transport-bearing feature, "
             f"{len(catalog_destinations())} approved model destination(s)"
         )
         return 0

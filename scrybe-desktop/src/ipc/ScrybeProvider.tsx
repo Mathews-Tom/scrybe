@@ -2,6 +2,7 @@ import { createContext, use, type ReactNode } from "react";
 
 import type {
   DiagnosticRows,
+  NotesRegeneration,
   ModelOffer,
   ModelOutcome,
   ModelProgress,
@@ -9,15 +10,27 @@ import type {
   RecordingStatus,
   RecoveryActionView,
   RepairOutcome,
+  SessionDetail,
+  SessionNotes,
+  SessionRepair,
   SessionRows,
   SettingsChange,
   SettingsForm,
   SettingsSummary,
+  TranscriptWindow,
 } from "../generated/bindings";
 import {
   cancelQuery,
+  copyNotes,
+  copyTranscript,
+  getSession,
   listSessions,
+  readNotes,
+  readTranscriptPage,
   recordingStatus,
+  regenerateNotes,
+  repairSession,
+  revealSession,
   searchSessions,
   settingsSummary,
 } from "./client";
@@ -58,6 +71,22 @@ export interface Scrybe {
   ) => Promise<SessionRows>;
   /** Whether a query was running under `requestId`. */
   cancelQuery: (requestId: string) => Promise<boolean>;
+  getSession: (id: string) => Promise<SessionDetail>;
+  readNotes: (id: string) => Promise<SessionNotes>;
+  /** One window of a transcript. The whole document is never read. */
+  readTranscriptPage: (
+    id: string,
+    offset: number,
+    limit: number,
+  ) => Promise<TranscriptWindow>;
+  /** Mutates, and only by completing a recording already made. */
+  repairSession: (id: string) => Promise<SessionRepair>;
+  /** Mutates, and only `notes.md`. */
+  regenerateNotes: (id: string) => Promise<NotesRegeneration>;
+  revealSession: (id: string) => Promise<void>;
+  copyNotes: (id: string) => Promise<void>;
+  /** Read and copied in Rust, so the document never reaches this side. */
+  copyTranscript: (id: string) => Promise<void>;
   settingsSummary: () => Promise<SettingsSummary>;
   recordingStatus: () => Promise<RecordingStatus>;
   settingsForm: () => Promise<SettingsForm>;
@@ -89,6 +118,14 @@ const REAL: Scrybe = {
   listSessions,
   searchSessions,
   cancelQuery,
+  getSession,
+  readNotes,
+  readTranscriptPage,
+  repairSession,
+  regenerateNotes,
+  revealSession,
+  copyNotes,
+  copyTranscript,
   settingsSummary,
   recordingStatus,
   settingsForm,

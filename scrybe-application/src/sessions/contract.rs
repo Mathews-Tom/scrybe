@@ -62,9 +62,16 @@ pub struct ArtifactAvailability {
     pub transcript: bool,
     /// `audio.opus` exists.
     pub audio: bool,
-    /// Audio exists on a completed session, so it is safe to play back.
-    /// Audio belonging to a session that never finished is not, because
-    /// its duration and channel attribution are not yet established.
+    /// `playback.opus` exists on a completed session, so it is safe to
+    /// play back.
+    ///
+    /// Two separate conditions, and both are load-bearing. The artifact
+    /// is its own file, not a view of `audio.opus`: `pipeline::merge`
+    /// writes it only for a two-channel capture, so a mono session
+    /// reaches completion with audio and nothing to play. And an
+    /// artifact belonging to a session that never finished is not safe
+    /// to offer either, because its duration and channel attribution
+    /// are not yet established.
     pub playback: bool,
     /// `meta.toml` exists and parsed.
     pub metadata: bool,

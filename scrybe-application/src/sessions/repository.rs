@@ -60,7 +60,7 @@ use crate::sessions::contract::{
 };
 use crate::sessions::scan::{
     classify, Classified, FolderView, ScannedSession, AUDIO_FILE, JOURNAL_DIR,
-    JOURNAL_MANIFEST_FILE, META_FILE, NOTES_FILE, TRANSCRIPT_FILE,
+    JOURNAL_MANIFEST_FILE, META_FILE, NOTES_FILE, PLAYBACK_FILE, TRANSCRIPT_FILE,
 };
 use crate::Result;
 
@@ -136,8 +136,9 @@ struct FolderFingerprint {
 type RootFingerprint = Vec<FolderFingerprint>;
 
 /// Whether each artifact `classify` probes for is present, in the
-/// order its classification rules consult them.
-type ArtifactPresence = [bool; 5];
+/// order its classification rules consult them, followed by the one it
+/// probes for availability rather than for state.
+type ArtifactPresence = [bool; 6];
 
 /// Probes what `classify` probes, through the view `classify` itself
 /// is handed, so the two cannot drift on which artifacts decide a
@@ -146,6 +147,7 @@ fn probe_artifacts(view: &DirectoryView) -> ArtifactPresence {
     [
         view.exists(META_FILE),
         view.exists(AUDIO_FILE),
+        view.exists(PLAYBACK_FILE),
         view.exists(NOTES_FILE),
         view.exists(TRANSCRIPT_FILE),
         view.exists(&format!("{JOURNAL_DIR}/{JOURNAL_MANIFEST_FILE}")),
@@ -478,8 +480,8 @@ impl SessionRepository {
     /// Fingerprinting precedes the cache comparison, so it runs on a
     /// warm hit too and is the pass a type-ahead search actually pays
     /// for on nearly every keystroke. It costs a `read_dir` of the root
-    /// plus seven `stat`s per folder — two modification times and the
-    /// five artifact probes — which is bounded per folder, independent
+    /// plus eight `stat`s per folder — two modification times and the
+    /// six artifact probes — which is bounded per folder, independent
     /// of artifact size, and strictly less than the classification it
     /// guards. The token is therefore checked before it starts and
     /// between its entries as well, not only in the classification loop
@@ -1116,6 +1118,41 @@ mod tests {
         .unwrap();
 
         assert_ne!(before, presence(&repository.fingerprint(None).unwrap()));
+    }
+
+    /// The availability of playback is decided by a file of its own, so
+    /// the fingerprint has to watch that file. A merge that writes it
+    /// after the scan was cached would otherwise leave the session
+    /// reported as unplayable until something else in the folder moved.
+    #[test]
+    fn test_a_playback_artifact_appearing_invalidates_the_cached_classification() {
+        let tree = Tree::new();
+        tree.complete("2026-04-29-1430-acme-01HXYZ", "Acme");
+        let repository = tree.repository();
+        assert!(
+            !repository
+                .get_session(&id("01HXYZ"))
+                .unwrap()
+                .artifacts
+                .playback
+        );
+
+        std::fs::write(
+            tree.dir
+                .path()
+                .join("2026-04-29-1430-acme-01HXYZ")
+                .join("playback.opus"),
+            b"",
+        )
+        .unwrap();
+
+        assert!(
+            repository
+                .get_session(&id("01HXYZ"))
+                .unwrap()
+                .artifacts
+                .playback
+        );
     }
 
     #[test]

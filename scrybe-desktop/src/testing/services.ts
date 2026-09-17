@@ -1,9 +1,14 @@
 import type {
   FailureCode,
+  NotesRegeneration,
   RecordingStatus,
+  SessionDetail,
+  SessionNotes,
+  SessionRepair,
   SessionRow,
   SessionRows,
   SettingsSummary,
+  TranscriptWindow,
 } from "../generated/bindings";
 import type { Scrybe } from "../ipc/ScrybeProvider";
 import {
@@ -28,6 +33,15 @@ export function servicesReturning(overrides: Partial<Scrybe> = {}): Scrybe {
     listSessions: () => Promise.resolve(page([])),
     searchSessions: () => Promise.resolve(page([])),
     cancelQuery: () => Promise.resolve(false),
+    getSession: () => Promise.resolve(detail()),
+    readNotes: () => Promise.resolve(notes()),
+    readTranscriptPage: (_id, offset, limit) =>
+      Promise.resolve(transcriptWindow(offset, limit)),
+    repairSession: () => Promise.resolve(repaired()),
+    regenerateNotes: () => Promise.resolve(regenerated()),
+    revealSession: () => Promise.resolve(),
+    copyNotes: () => Promise.resolve(),
+    copyTranscript: () => Promise.resolve(),
     settingsSummary: () => Promise.resolve(settings()),
     recordingStatus: () => Promise.resolve(idle()),
     settingsForm: () => Promise.resolve(settingsFormFixture()),
@@ -56,6 +70,92 @@ export function session(overrides: Partial<SessionRow> = {}): SessionRow {
     title: "Quarterly review",
     started_at: "2026-04-29T14:30:00Z",
     duration_secs: 2520,
+    ...overrides,
+  };
+}
+
+export function detail(overrides: Partial<SessionDetail> = {}): SessionDetail {
+  return {
+    id: "2026-04-29-1430-quarterly-review-01HXYZ",
+    progress: "complete",
+    session_id: "01HXYZ",
+    title: "Quarterly review",
+    started_at: "2026-04-29T14:30:00Z",
+    ended_at: "2026-04-29T15:12:00Z",
+    duration_secs: 2520,
+    artifacts: {
+      notes: true,
+      transcript: true,
+      audio: true,
+      playback: true,
+      metadata: true,
+      ...overrides.artifacts,
+    },
+    capture: {
+      channels: 2,
+      layout: "stereo:mic-l,system-r",
+      sample_rate_hz: 48000,
+      bitrate_bps: 32000,
+      ...overrides.capture,
+    },
+    providers: {
+      stt: "whisper-local",
+      llm: "stub",
+      diarizer: "binary-channel",
+      ...overrides.providers,
+    },
+    actions: { repair: false, regenerate_notes: true, ...overrides.actions },
+    ...overrides,
+  };
+}
+
+export function notes(overrides: Partial<SessionNotes> = {}): SessionNotes {
+  return {
+    id: "2026-04-29-1430-quarterly-review-01HXYZ",
+    progress: "complete",
+    markdown: "## TL;DR\n- shipped the thing",
+    ...overrides,
+  };
+}
+
+/** A transcript whose lines say which line they are. */
+export function transcriptWindow(
+  offset = 0,
+  limit = 50,
+  total = 4,
+): TranscriptWindow {
+  const end = Math.min(offset + limit, total);
+  return {
+    id: "2026-04-29-1430-quarterly-review-01HXYZ",
+    progress: "complete",
+    cursor: Math.min(offset, total),
+    lines: Array.from({ length: Math.max(end - offset, 0) }, (_unused, index) =>
+      `line ${(offset + index + 1).toString()}`,
+    ),
+    total_lines: total,
+    next: end < total ? end : null,
+  };
+}
+
+export function repaired(overrides: Partial<SessionRepair> = {}): SessionRepair {
+  return {
+    id: "2026-04-29-1430-quarterly-review-01HXYZ",
+    outcome: "recovered",
+    progress: "complete",
+    recovered_secs: 2520,
+    channels: 2,
+    wrote_metadata: true,
+    ...overrides,
+  };
+}
+
+export function regenerated(
+  overrides: Partial<NotesRegeneration> = {},
+): NotesRegeneration {
+  return {
+    id: "2026-04-29-1430-quarterly-review-01HXYZ",
+    outcome: "replaced",
+    bytes: 512,
     ...overrides,
   };
 }

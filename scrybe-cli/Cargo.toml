@@ -70,7 +70,7 @@ encoder-opus = ["scrybe-core/encoder-opus"]
 # §8.2). Forwards to `scrybe-core/openai-compat`, which pulls
 # `reqwest` with rustls-only TLS. Included in the published application;
 # runtime configuration still controls whether any network provider runs.
-llm-openai-compat = ["scrybe-core/openai-compat"]
+llm-openai-compat = ["scrybe-core/openai-compat", "scrybe-application/notes-generation"]
 # Desktop shell: native status-bar and floating-window indicators plus
 # a global hotkey, all wired to one main-thread stop/finalization path.
 #

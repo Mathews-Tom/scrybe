@@ -83,6 +83,11 @@ function group(rows: SessionRow[]): DateGroup[] {
  * after it. Each day's list carries the reference, because each of them
  * is a window onto the one truncated result.
  *
+ * A row is the control that opens the session, rather than a region
+ * with a control in it: the whole row is what the reader is aiming at,
+ * and a separate `Open` button beside each one would put a second stop
+ * in the keyboard order for every session in the list.
+ *
  * A row says what state its session is in twice over: in the label it
  * carries, and in the `data-progress` the stylesheet distinguishes an
  * unfinished and a repair-needed session by. Colour alone would leave
@@ -92,9 +97,11 @@ function group(rows: SessionRow[]): DateGroup[] {
 export function SessionList({
   query,
   empty,
+  onOpen,
 }: {
   query: Query<{ rows: SessionRow[]; total: number }>;
   empty: string;
+  onOpen: (id: string) => void;
 }) {
   const truncation = useId();
 
@@ -126,11 +133,19 @@ export function SessionList({
           >
             {day.rows.map((row) => (
               <li key={row.id} className="session-list__row" data-progress={row.progress}>
-                <span className="session-list__title">{row.title ?? row.id}</span>
-                <span className="session-list__meta">
-                  <span className="session-list__state">{PROGRESS_LABEL[row.progress]}</span> ·{" "}
-                  {started(row.started_at)} · {duration(row.duration_secs)}
-                </span>
+                <button
+                  type="button"
+                  className="session-list__open"
+                  onClick={() => {
+                    onOpen(row.id);
+                  }}
+                >
+                  <span className="session-list__title">{row.title ?? row.id}</span>
+                  <span className="session-list__meta">
+                    <span className="session-list__state">{PROGRESS_LABEL[row.progress]}</span> ·{" "}
+                    {started(row.started_at)} · {duration(row.duration_secs)}
+                  </span>
+                </button>
               </li>
             ))}
           </ul>

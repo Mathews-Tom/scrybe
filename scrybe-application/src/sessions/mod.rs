@@ -14,6 +14,7 @@
 //! or disappearing under the configured root.
 
 mod contract;
+mod generator;
 mod reader;
 mod repository;
 mod scan;
@@ -24,5 +25,6 @@ pub use contract::{
     SearchRequest, SessionDetail, SessionEligibility, SessionPage, SessionState, SessionSummary,
     TranscriptCursor, TranscriptDocument, TranscriptPage,
 };
+pub use generator::ConfiguredNotesGenerator;
 pub use reader::SessionReader;
 pub use repository::{NotesGenerationRequest, NotesGenerator, SessionRepository};
