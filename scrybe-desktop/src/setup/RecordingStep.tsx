@@ -32,25 +32,30 @@ export function RecordingStep({
   settings,
   readiness,
   onSaved,
+  onEdited,
   onRecheck,
 }: {
   settings: SettingsForm;
   readiness: ReadinessReport;
   onSaved: () => void;
+  /** Called when a field changes, so the confirmation this step no
+   * longer holds can be retired by whoever does. */
+  onEdited: () => void;
   onRecheck: () => void;
 }) {
   const scrybe = useScrybe();
   const [device, setDevice] = useState(settings.capture_mic_device);
-  const [saved, setSaved] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
 
   function save() {
     setFailure(null);
     scrybe.applySettings([{ field: "capture_mic_device", value: device }]).then(
-      () => {
-        setSaved(true);
-        onSaved();
-      },
+      // `onSaved` reloads settings and readiness, which unmounts this
+      // component while the reload is in flight — so a "Saved."
+      // confirmation set here beside it would be destroyed before it
+      // could ever render. It is the wizard's to hold, and is rendered
+      // beside this step rather than inside it.
+      onSaved,
       (error: unknown) => {
         setFailure(describe(error));
       },
@@ -72,18 +77,13 @@ export function RecordingStep({
           value={device}
           onChange={(event) => {
             setDevice(event.target.value);
-            setSaved(false);
+            onEdited();
           }}
         />
         <button type="button" onClick={save} disabled={device === settings.capture_mic_device}>
           Save
         </button>
       </div>
-      {saved && (
-        <p role="status" className="setup__saved">
-          Saved. Your advanced settings and comments were left untouched.
-        </p>
-      )}
       {failure !== null && (
         <p role="alert" className="setup__failure">
           {failure}

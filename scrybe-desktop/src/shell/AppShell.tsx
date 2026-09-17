@@ -46,11 +46,13 @@ export function AppShell() {
   // An installation that cannot record opens on setup. Derived from
   // readiness rather than from a "setup completed" flag: a flag would
   // have to be written somewhere, would go stale the moment a model was
-  // deleted or a permission revoked, and would leave a reader whose
-  // installation had broken looking at a session list that could not
-  // record. Until readiness settles the shell opens where it always
-  // has, so a healthy launch is not delayed by a check that will say
-  // nothing is wrong.
+  // deleted, and would leave a reader whose installation had broken
+  // looking at a session list that could not record. A revoked capture
+  // permission is not among the things that can take it back: nothing
+  // in this release detects one, and readiness reports capture as not
+  // checked rather than claiming it works. Until readiness settles the
+  // shell opens where it always has, so a healthy launch is not delayed
+  // by a check that will say nothing is wrong.
   const opensOnSetup = readiness.status === "ready" && !readiness.value.can_record;
   const activeId = chosenId ?? (opensOnSetup ? SETUP_ROUTE_ID : FIRST_ROUTE.id);
   const active = ROUTES.find((route) => route.id === activeId) ?? FIRST_ROUTE;

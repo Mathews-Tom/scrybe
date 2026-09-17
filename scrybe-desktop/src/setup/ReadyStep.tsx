@@ -28,7 +28,7 @@ export function ReadyStep({
       <ReadinessList readiness={readiness} />
       <p aria-live="polite" className="setup__verdict">
         {readiness.can_record
-          ? "Nothing above is blocking a recording. Scrybe does not check whether macOS has granted microphone and system-audio recording; macOS asks the first time a recording needs it."
+          ? "Nothing above is blocking a recording. Scrybe does not check whether macOS has granted microphone and system-audio recording; macOS asks the first time a recording needs it. If you have already refused one of those prompts, macOS will not ask again — open System Settings and grant it there, then check again."
           : "Recording is not available yet. The entries marked “Needs attention” above say why."}
       </p>
       {readiness.notes.state !== "ready" && readiness.can_record && (
