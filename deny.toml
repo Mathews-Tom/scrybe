@@ -138,6 +138,13 @@ license-files = [
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# A path dependency carries no version requirement, which `wildcards`
+# otherwise reads as a wildcard. `scrybe-desktop` depends on
+# `scrybe-application` by path and is `publish = false`, so this exempts
+# exactly that shape: an unpublished crate depending on a sibling in
+# this repository. A registry dependency with no version is still
+# denied, which is the case the rule exists for.
+allow-wildcard-paths = true
 highlight = "all"
 workspace-default-features = "allow"
 external-default-features = "allow"

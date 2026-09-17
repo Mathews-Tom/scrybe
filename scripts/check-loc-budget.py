@@ -240,6 +240,36 @@ LOC_CEILINGS: dict[str, int] = {
     # device-listing surface is added.
     "scrybe-capture-mic": 1500,
     "scrybe-android": 2500,
+    # The desktop host: the Tauri process that owns windowing, the tray,
+    # single-instance activation, and the translation between the
+    # WebView's IPC and the shared application services. It lives in its
+    # own Cargo workspace, so no root-workspace job can see it; this
+    # entry is the only thing that counts it, and a member absent from
+    # this table is silently uncounted rather than failing closed.
+    # Sized for the transport contracts and their generated-binding
+    # export, the narrow per-service commands, the process-lifetime
+    # application state, the window/tray/menu/single-instance/idle
+    # lifecycle, the navigation guard, the debug-only lifecycle channel
+    # and control socket, and the inline `#[cfg(test)]` coverage this
+    # script counts. Grounded in the 2,292 measured lines of
+    # `scrybe-application/src/sessions` and `src/config`, which the host
+    # mirrors as data-transfer types and forwarding commands rather than
+    # reimplements; it carries no domain policy of its own, so it is
+    # budgeted well under the service layer it fronts.
+    #
+    # The measured implementation is 1,062, leaving 138 lines of
+    # headroom. That is sized against the next thing to land here rather
+    # than chosen round: recording control adds two commands to
+    # `commands.rs` and their contract types, and turns the tray's
+    # `Record now` from a disabled item into a live one with a
+    # confirmation on the quit path — the same shape as the four
+    # commands and one tray item already measured here, which together
+    # account for roughly that many lines.
+    #
+    # The frontend is deliberately out of scope: this script measures
+    # Rust only, and the TypeScript surface is governed by review rather
+    # than by this gate.
+    "scrybe-desktop/src-tauri": 1200,
 }
 
 
@@ -271,12 +301,12 @@ def measure(crate_src: Path) -> int:
 def main() -> int:
     repo_root = Path(__file__).resolve().parent.parent
     overshoots: list[tuple[str, int, int]] = []
-    print(f"{'crate':<22} {'code LoC':>9}  {'ceiling':>8}  status")
-    print(f"{'-' * 22} {'-' * 9}  {'-' * 8}  {'-' * 6}")
+    print(f"{'crate':<25} {'code LoC':>9}  {'ceiling':>8}  status")
+    print(f"{'-' * 25} {'-' * 9}  {'-' * 8}  {'-' * 6}")
     for crate, ceiling in sorted(LOC_CEILINGS.items()):
         loc = measure(repo_root / crate / "src")
         status = "ok" if loc <= ceiling else "OVER"
-        print(f"{crate:<22} {loc:>9}  {ceiling:>8}  {status}")
+        print(f"{crate:<25} {loc:>9}  {ceiling:>8}  {status}")
         if loc > ceiling:
             overshoots.append((crate, loc, ceiling))
     if overshoots:

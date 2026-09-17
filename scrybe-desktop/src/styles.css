@@ -1,0 +1,127 @@
+:root {
+  color-scheme: light dark;
+
+  --surface: #ffffff;
+  --surface-raised: #f4f4f5;
+  --border: #d4d4d8;
+  --text: #18181b;
+  --text-muted: #52525b;
+  --accent: #1d4ed8;
+  --accent-contrast: #ffffff;
+  --status: #15803d;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --surface: #18181b;
+    --surface-raised: #232327;
+    --border: #3f3f46;
+    --text: #fafafa;
+    --text-muted: #a1a1aa;
+    --accent: #93b4fd;
+    --accent-contrast: #10131a;
+    --status: #4ade80;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--surface);
+  color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.app-shell {
+  display: grid;
+  grid-template-columns: minmax(10rem, 14rem) 1fr;
+  height: 100%;
+}
+
+.app-shell__sidebar {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 0.75rem;
+  background: var(--surface-raised);
+  border-right: 1px solid var(--border);
+}
+
+.app-shell__nav {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.app-shell__nav-item {
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid transparent;
+  border-radius: 0.375rem;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.app-shell__nav-item:hover {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.app-shell__nav-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.app-shell__nav-item[aria-current="page"] {
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+
+.app-shell__status {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0 0.75rem;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.app-shell__status-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--status);
+}
+
+.app-shell__main {
+  overflow-y: auto;
+  padding: 1.5rem 2rem;
+}
+
+.app-shell__main h1 {
+  margin-top: 0;
+  font-size: 1.375rem;
+}
+
+.app-shell__main p {
+  max-width: 44rem;
+  color: var(--text-muted);
+}
