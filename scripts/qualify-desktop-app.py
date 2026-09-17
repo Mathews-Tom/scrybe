@@ -69,26 +69,33 @@ What this cannot establish, stated plainly:
   artifact written somewhere else under `~/Library` would not be seen
   by it.
 
-Two scenarios, and two different no-network arguments. This matters,
-because reading one and assuming it applies to the other would be
-wrong.
+Two scenarios, one build. Both compile the shape the application
+ships — default features, which include the model transport — and
+there is no per-scenario feature selection at all. There used to be:
+`setup` named `model-download` explicitly while the host's default set
+did not carry it, and the effect was that the only artifact ever built
+with a transport was a qualification candidate. A scenario that
+qualifies a binary nobody installs establishes nothing about the one
+they do, so the selection is gone and the candidate differs from the
+shipped bundle only in the `--debug` profile that makes the control
+channel reachable.
 
-`lifecycle` builds the shape the application ships: default features,
-no model transport. Its no-network claim rests on three legs — the
-host's crate graph carries no HTTP, TLS, DNS, QUIC, or WebSocket crate;
-the content security policy read back out of the built artifact is the
-expected one directive for directive; and the socket sampler observed
-no internet socket at all.
+What differs is what each run drives, and therefore what its socket
+observations mean.
 
-`setup` is the one build in the tree that enables `model-download`, so
-the first of those three legs does not apply to it: the client is
-compiled in by design, and asserting its absence would either fail or,
-worse, be quietly deleted to make the run pass. What replaces it is the
-other two, and the socket leg is strengthened rather than dropped —
-where `lifecycle` asserts the set of destinations is empty, `setup`
-asserts every member of it is the local fixture, on loopback, on the
-fixture's own port. For a build that can legitimately open a socket
-that is the stronger statement of the two.
+`lifecycle` never asks for a model. Its claim rests on three legs — the
+host's crate graph carries exactly the approved transport and nothing
+more; the content security policy read back out of the built artifact
+is the expected one directive for directive; and the socket sampler
+observed no internet socket at all. That last leg is what says the
+compiled-in client stays unused unless somebody asks it to act.
+
+`setup` does ask, against a fixture on loopback, so an empty set of
+destinations would mean the run had not exercised what it exists to
+exercise. Its socket leg is the stronger statement rather than the
+weaker one: every destination observed must be the local fixture, on
+loopback, on the fixture's own port, with a separate assertion that
+some socket was seen at all so the check cannot pass by vacuity.
 
 Run locally:
 
@@ -318,41 +325,50 @@ class Run:
         return [entry for entry in self.entries if not entry.ok]
 
 
-def build_candidate(features: list[str]) -> Path:
+def build_candidate() -> Path:
     """Builds the bundle a double-click opens, and returns its path.
 
-    `features` is empty for every scenario but `setup`, which is the one
-    build that enables the model transport. That is why its no-network
-    argument is the socket sampler rather than the crate graph: the
-    client is compiled in here on purpose.
+    Default features, and no way to ask for anything else. That is the
+    point: the candidate every scenario drives differs from the bundle
+    a user installs only in the `--debug` profile, which is what makes
+    the debug-only control channel reachable. No scenario can qualify a
+    feature selection nobody ships.
     """
     subprocess.run(
         ["pnpm", "--dir", str(DESKTOP), "install", "--frozen-lockfile"],
         cwd=REPO_ROOT,
         check=True,
     )
-    command = [
-        "pnpm", "--dir", str(DESKTOP), "exec",
-        "tauri", "build", "--debug", "--bundles", "app",
-    ]
-    if features:
-        command += ["--features", ",".join(features)]
-    subprocess.run(command, cwd=REPO_ROOT, check=True)
+    subprocess.run(
+        [
+            "pnpm", "--dir", str(DESKTOP), "exec",
+            "tauri", "build", "--debug", "--bundles", "app",
+        ],
+        cwd=REPO_ROOT,
+        check=True,
+    )
     bundle = HOST / "target" / "debug" / "bundle" / "macos" / BUNDLE_NAME
     if not bundle.is_dir():
         raise RuntimeError(f"the candidate bundle was not produced at {bundle}")
     return bundle
 
 
-def build_release_binary(features: list[str] | None = None) -> Path:
-    """Builds the release host, for the compiled-out assertion."""
-    command = [
-        "cargo", "build", "--manifest-path", str(HOST / "Cargo.toml"),
-        "--release", "--bin", EXECUTABLE, "--locked",
-    ]
-    if features:
-        command += ["--features", ",".join(features)]
-    subprocess.run(command, cwd=REPO_ROOT, check=True)
+def build_release_binary() -> Path:
+    """Builds the release host, for the compiled-out assertion.
+
+    Default features, like the candidate: the string pools being
+    compared have to come from the same feature selection, or the
+    absence of a debug-only symbol from the release binary would say
+    as much about a feature as about the profile.
+    """
+    subprocess.run(
+        [
+            "cargo", "build", "--manifest-path", str(HOST / "Cargo.toml"),
+            "--release", "--bin", EXECUTABLE, "--locked",
+        ],
+        cwd=REPO_ROOT,
+        check=True,
+    )
     return HOST / "target" / "release" / EXECUTABLE
 
 
@@ -1130,18 +1146,24 @@ def setup(candidate: Candidate, run: Run) -> None:
     hold in the shipped binary, driven through the same manager the
     interface drives, with real sockets that can be watched.
 
-    How the no-network proof works here, and why it is not the one the
-    `lifecycle` scenario uses. That scenario reads the host's crate
-    graph and asserts it carries no HTTP client. This build is the one
-    build in the tree that enables `model-download`, so the client is
-    present by design and a crate-graph argument would be vacuous.
-    What replaces it is two things this file already does for other
-    reasons: the exact comparison of the shipped content security policy
-    against the built artifact, and the socket sampler — which here
-    asserts not that the set of destinations is empty but that every
-    member of it is the fixture on loopback. That is the stronger
-    statement of the two, and it is the one that matters for a build
-    that can legitimately open a socket.
+    How the no-network proof works here, and how it differs from the
+    one `lifecycle` makes. Both scenarios build the same shape — the
+    shipped one, default features, transport included — so neither can
+    argue from the absence of an HTTP client, and `lifecycle`'s
+    crate-graph check is an equality against the approved transport
+    rather than an absence.
+
+    What differs is what each run drives. `lifecycle` never asks for a
+    model, so its socket sampler asserts the set of destinations is
+    empty: the compiled-in client stays unused unless somebody asks it
+    to act. This scenario does ask, against a fixture on loopback, so
+    an empty set would mean the run had not exercised what it exists to
+    exercise. Its socket leg therefore asserts every member of the set
+    is the fixture, on loopback, on the fixture's own port — and
+    asserts separately that the set is non-empty, so it cannot pass by
+    vacuity. Beside it sits the exact comparison of the shipped content
+    security policy against the built artifact, which is what governs
+    the webview.
     """
     untouched = [
         ("the real configuration file", REAL_CONFIG, snapshot(REAL_CONFIG)),
@@ -1172,7 +1194,7 @@ def setup(candidate: Candidate, run: Run) -> None:
     webview_state(run)
 
     # The probe is a debug affordance, not a shipped one.
-    release = build_release_binary(["model-download"])
+    release = build_release_binary()
     release_strings = strings_in(release)
     run.record(
         "release: the model-acquisition probe is compiled out of a release build",
@@ -1485,11 +1507,6 @@ SCENARIOS: dict[str, Callable[[Candidate, Run], None]] = {
     "setup": setup,
 }
 
-# Cargo features each scenario's candidate is built with. Absent means
-# none, which is the shape the application ships.
-SCENARIO_FEATURES: dict[str, list[str]] = {
-    "setup": ["model-download"],
-}
 
 # What each scenario's success line claims to have covered. Stated per
 # scenario rather than once, because a summary that described the wrong
@@ -1535,10 +1552,14 @@ def main() -> int:
         )
         return 1
 
-    # The one scenario that enables the model transport. Everything
-    # else builds the shape the application ships.
-    features = SCENARIO_FEATURES.get(arguments.scenario, [])
-    bundle = build_candidate(features)
+    # Every scenario builds the shape the application ships: default
+    # features, no additions and no subtractions. There is deliberately
+    # no per-scenario feature selection any more — `setup` used to name
+    # `model-download` explicitly, back when the host's default feature
+    # set did not include it, and the effect was that the only artifact
+    # ever built with a transport was this candidate. Qualifying a
+    # binary nobody installs proves nothing about the one they do.
+    bundle = build_candidate()
     # A Unix socket path cannot exceed 104 bytes on macOS, and the
     # platform's own temporary directory is already most of that, so the
     # disposable root is created directly under `/tmp` with a short
