@@ -121,7 +121,6 @@ describe("useRecording", () => {
         from: "recording",
         to: "saving",
         elapsed_ms: 8_000,
-        stop_source: "tray",
         failure_summary: null,
       });
     });
