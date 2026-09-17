@@ -118,6 +118,11 @@ SINGLE_INSTANCE_SOCKET = Path("/tmp") / f"{BUNDLE_IDENTIFIER.replace('.', '_')}_
 REAL_CONFIG = Path.home() / "Library/Application Support/dev.scrybe.scrybe/config.toml"
 REAL_STORAGE_ROOT = Path.home() / "scrybe"
 
+# Where the application resolves managed models when the configuration
+# does not redirect it. A hermetic run must leave it alone: it holds
+# whatever this developer has installed, and half a gigabyte of it.
+PLATFORM_MODELS = Path.home() / "Library/Application Support/dev.scrybe.scrybe/models"
+
 # macOS creates these for any WKWebView host, resolved from the user
 # database rather than from `$HOME`, so no launch-time environment can
 # redirect them. They are WebView state, not application data; the
@@ -279,9 +284,36 @@ class Candidate:
         self.bundle = bundle
         self.workspace = workspace
         self.root = workspace / "sessions"
+        self.models = workspace / "models"
         self.config = workspace / "config.toml"
         self.root.mkdir(parents=True)
-        self.config.write_text(f'[storage]\nroot = "{self.root}"\n')
+        # Three things this configuration has to do, none of them
+        # obvious from the storage root alone.
+        #
+        # An absolute `[stt].model` is what redirects managed model
+        # storage: the application resolves the models directory from
+        # it through the same resolver the recorder loads a model
+        # through. Without it a run reads the platform directory
+        # holding this developer's own install — and deciding whether
+        # what is there is the catalog's artifact means hashing half a
+        # gigabyte of it, on the thread a window is waiting on.
+        #
+        # Both provider endpoints are remote, and deliberately at
+        # `.invalid`, which is reserved and resolves nowhere. The
+        # application dials a *loopback* notes endpoint to report
+        # whether local notes are available, and the built-in default
+        # is one; under the defaults a run's socket observations would
+        # therefore depend on whether this machine happens to be
+        # running a local provider. A remote endpoint is reported from
+        # its URL and never dialled, so what the sockets show is what
+        # the run did rather than what the machine was doing.
+        self.config.write_text(
+            f'[storage]\nroot = "{self.root}"\n\n'
+            f'[stt]\nprovider = "openai-compat"\n'
+            f'base_url = "https://stt.invalid/v1"\n'
+            f'model = "{self.models / "ggml-small.en.bin"}"\n\n'
+            f'[llm]\nbase_url = "https://notes.invalid/v1"\n'
+        )
 
     # -- operating-system facts -------------------------------------
 
