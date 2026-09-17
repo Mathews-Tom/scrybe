@@ -24,6 +24,21 @@ function status(overrides: Partial<RecordingStatus> = {}): RecordingStatus {
   };
 }
 
+/**
+ * A rejection shaped like the host's `CommandFailure`.
+ *
+ * Tauri serialises a command's error across the IPC boundary, so what
+ * a caller catches is a plain object and not an `Error`. The lint rule
+ * that wants an `Error` is suppressed here rather than satisfied: a
+ * fixture that rejected with one would be testing the view against a
+ * shape the application never produces, which is the more expensive
+ * mistake.
+ */
+function refusedBy(code: string, message: string): Promise<never> {
+  // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+  return Promise.reject({ code, message });
+}
+
 function withServices(scrybe: ReturnType<typeof servicesReturning>) {
   return ({ children }: { children: React.ReactNode }) => (
     <ScrybeProvider scrybe={scrybe}>{children}</ScrybeProvider>
@@ -282,13 +297,18 @@ describe("RecordingView", () => {
     expect(startRecording).toHaveBeenCalledWith(null);
   });
 
+  /**
+   * The host rejects with its own `CommandFailure` — a plain
+   * serialised object, not an `Error`, because that is what crosses
+   * Tauri's IPC boundary. The view must read the message it carries
+   * rather than falling back to a generic line.
+   */
   it("shows the refusal the host returned rather than a generic failure", async () => {
     await view({
-      startRecording: () =>
-        Promise.reject({
-          code: "preflight_failed",
-          message: "recording cannot start — model: no whisper.cpp model file at /m/s.bin",
-        }),
+      startRecording: () => refusedBy(
+        "preflight_failed",
+        "recording cannot start — model: no whisper.cpp model file at /m/s.bin",
+      ),
     });
 
     await userEvent.click(screen.getByRole("button", { name: "Record" }));
