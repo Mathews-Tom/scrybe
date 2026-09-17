@@ -28,6 +28,25 @@ Tokio's `net`, `process`, and `signal-unix` features are similarly
 inspected via `cargo tree --format` so accidental enabling of
 `tokio/net` is caught even though tokio itself is allowlisted.
 
+What this does NOT cover: the desktop host's graph.
+
+`scrybe-desktop/src-tauri` declares its own workspace and resolves its
+own `Cargo.lock`, and every command below runs against the root
+manifest, so nothing in this file inspects the desktop graph. That
+graph carries three crates from the denylist below — `reqwest`,
+`hyper`, and `hyper-util` — and they are target-gated away from the
+platform this application ships to: `tauri` declares `reqwest` under
+`[target.'cfg(any(target_os = "android", all(target_vendor = "apple",
+not(target_os = "macos"))))'.dependencies]`, so a macOS build never
+compiles it or the two crates beneath it, and
+`cargo tree --manifest-path scrybe-desktop/src-tauri/Cargo.toml
+--target aarch64-apple-darwin` resolves none of the three. That is a
+fact about those three crates, not a property this file checks: a
+networking crate reaching the desktop graph without a target gate would
+be just as invisible here. Extending this audit to the second graph
+means resolving it separately, because `--no-default-features` is not
+the shape the desktop host builds in.
+
 Run locally:
 
     python3 scripts/check-egress-baseline.py

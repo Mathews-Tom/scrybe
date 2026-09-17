@@ -29,7 +29,7 @@ use std::sync::Arc;
 use tauri::{Emitter, Manager};
 
 use crate::contract::{RecordingTransition, TRANSITION_EVENT};
-use crate::lifecycle::{menu, tray, window};
+use crate::lifecycle::{menu, navigation, tray, window};
 use crate::state::Desktop;
 
 /// Starts the desktop application and blocks until it exits.
@@ -51,6 +51,12 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             crate::note!(app, "second-launch-activated");
             window::show(app);
         }))
+        // A policy cannot govern a top-level navigation, so the
+        // content security policy alone left the frontend able to put
+        // what it reads into a URL and leave. Registered as a plugin
+        // because the main window is created from configuration before
+        // any of this crate's code runs.
+        .plugin(navigation::guard())
         .manage(desktop)
         // Replaces the platform default, whose predefined quit item
         // terminates the process natively without reaching the

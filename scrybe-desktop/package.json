@@ -15,7 +15,7 @@
     "lint": "eslint .",
     "test": "vitest run",
     "tauri": "tauri",
-    "bindings": "cargo run --manifest-path src-tauri/Cargo.toml --bin bindings",
+    "bindings": "cargo run --manifest-path src-tauri/Cargo.toml --example bindings",
     "check:bindings": "cargo test --manifest-path src-tauri/Cargo.toml --locked --lib contract::",
     "check:capabilities": "node scripts/check-capabilities.mjs"
   },
