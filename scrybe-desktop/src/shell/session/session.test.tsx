@@ -241,6 +241,41 @@ describe("SessionDetail", () => {
     expect(screen.getByRole("alert").textContent).toBe("the notes provider did not answer");
   });
 
+  it("test_a_stale_error_does_not_survive_a_repair_made_outside_this_window", async () => {
+    // The storage root, not this view's own actions, is what decided
+    // this session is fixed: the CLI, another window, or a file moved
+    // in Finder. A sentence about a repair attempted here that has
+    // since failed describes nothing once that happens, and must not
+    // sit on screen as if it still applies.
+    const user = userEvent.setup();
+    let repairedElsewhere = false;
+    await renderWith(
+      <SessionDetail id={ID} onBack={noop} />,
+      servicesReturning({
+        getSession: () =>
+          Promise.resolve(
+            detail({
+              progress: repairedElsewhere ? "complete" : "repairable",
+              actions: { repair: !repairedElsewhere, regenerate_notes: false },
+            }),
+          ),
+        repairSession: () => commandFailure("repair_failed", "could not repair"),
+      }),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Repair recording" }));
+    await settle();
+    expect(screen.getByRole("alert").textContent).toBe("could not repair");
+
+    repairedElsewhere = true;
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    await settle();
+
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   it("test_copying_a_transcript_never_reads_the_document_into_this_side", async () => {
     // The copy is a command. A view that fetched every window and
     // joined them would put back exactly the payload the windowed read

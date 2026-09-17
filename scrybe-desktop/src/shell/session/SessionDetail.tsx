@@ -23,7 +23,13 @@ type Document = "notes" | "transcript";
  * transcript edited in another editor or a recording repaired here
  * shows as it is rather than as it was when the view opened. What an
  * action did is held here rather than beside the buttons, because the
- * re-read rebuilds those and would take the sentence with them.
+ * re-read rebuilds those and would take the sentence with them. It is
+ * cleared the moment the storage root itself is why this session is
+ * being re-read, though, rather than surviving indefinitely: a
+ * sentence about this reader's own last action describes nothing once
+ * the CLI, another window, or a file moved in Finder is what changed
+ * this session, and a repair made that way must not leave an earlier
+ * in-app failure sitting on screen forever.
  */
 export function SessionDetail({ id, onBack }: { id: string; onBack: () => void }) {
   const scrybe = useScrybe();
@@ -33,6 +39,16 @@ export function SessionDetail({ id, onBack }: { id: string; onBack: () => void }
   const revision = `${storage.toString()}:${acted.toString()}:${id}`;
   const session = useQuery(() => scrybe.getSession(id), revision);
   const [shown, setShown] = useState<Document>("notes");
+
+  // Adjusting state during rendering rather than in an effect: `storage`
+  // changing is what a stale outcome must not survive, and comparing
+  // against the value last cleared for keeps this synchronous with the
+  // render it affects instead of leaving one stale frame behind it.
+  const [clearedFor, setClearedFor] = useState(storage);
+  if (storage !== clearedFor) {
+    setClearedFor(storage);
+    setOutcome(null);
+  }
 
   const said =
     outcome === null ? null : (
