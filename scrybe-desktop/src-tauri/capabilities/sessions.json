@@ -1,12 +1,13 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "sessions",
-  "description": "Reading and searching the sessions under the configured storage root. No path is accepted or returned: a session is named by an opaque identity the service layer resolves beneath the root.",
+  "description": "Reading and searching the sessions under the configured storage root, and abandoning a search already in flight. No path is accepted or returned: a session is named by an opaque identity the service layer resolves beneath the root, and a query is named by an identifier the frontend minted for it.",
   "windows": [
     "main"
   ],
   "permissions": [
     "allow-list-sessions",
-    "allow-search-sessions"
+    "allow-search-sessions",
+    "allow-cancel-query"
   ]
 }

@@ -1,4 +1,5 @@
 import { useScrybe } from "../../ipc/ScrybeProvider";
+import { useStorageRootRevision } from "../library";
 import { SessionList } from "../SessionList";
 import { useQuery } from "../useQuery";
 
@@ -7,7 +8,13 @@ const PAGE = 20;
 
 export function SessionsView() {
   const scrybe = useScrybe();
-  const sessions = useQuery(() => scrybe.listSessions(0, PAGE), "sessions");
+  // Part of the read's identity, so returning to the window re-reads the
+  // root through the same path the first render took.
+  const revision = useStorageRootRevision();
+  const sessions = useQuery(
+    () => scrybe.listSessions(0, PAGE),
+    `sessions-${revision.toString()}`,
+  );
 
   return (
     <>

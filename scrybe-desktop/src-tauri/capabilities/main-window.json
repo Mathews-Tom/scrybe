@@ -10,6 +10,7 @@
     "core:event:allow-unlisten",
     "allow-list-sessions",
     "allow-search-sessions",
+    "allow-cancel-query",
     "allow-settings-summary",
     "allow-recording-status",
     "allow-settings-form",
