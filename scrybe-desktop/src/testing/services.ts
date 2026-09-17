@@ -37,6 +37,7 @@ export function servicesReturning(overrides: Partial<Scrybe> = {}): Scrybe {
     modelOffer: () => Promise.resolve(modelOfferFixture()),
     installModel: () => Promise.resolve(modelOutcome()),
     cancelModelInstall: () => Promise.resolve(false),
+    onModelProgress: () => Promise.resolve(() => undefined),
     openSystemSettings: () => Promise.resolve(),
     openAdvancedConfiguration: () => Promise.resolve(),
     ...overrides,

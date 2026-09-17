@@ -4,6 +4,7 @@ import type {
   DiagnosticRows,
   ModelOffer,
   ModelOutcome,
+  ModelProgress,
   ReadinessReport,
   RecordingStatus,
   RecoveryActionView,
@@ -26,6 +27,7 @@ import {
   diagnosticsReport,
   installModel,
   modelOffer,
+  onModelProgress,
   openAdvancedConfiguration,
   openSystemSettings,
   readinessReport,
@@ -61,6 +63,15 @@ export interface Scrybe {
   /** Requires the digest the offer showed. */
   installModel: (id: string, acknowledgedSha256: string) => Promise<ModelOutcome>;
   cancelModelInstall: () => Promise<boolean>;
+  /**
+   * Subscribes to download progress until the returned function is
+   * called. Here rather than imported directly by the panel that uses
+   * it, for the reason every other service is here: the event bridge
+   * exists only inside the host's WebView, so a component wired
+   * straight to it could only be exercised by launching the
+   * application.
+   */
+  onModelProgress: (onProgress: (progress: ModelProgress) => void) => Promise<() => void>;
   openSystemSettings: (capability: string) => Promise<void>;
   openAdvancedConfiguration: () => Promise<void>;
 }
@@ -78,6 +89,7 @@ const REAL: Scrybe = {
   modelOffer,
   installModel,
   cancelModelInstall,
+  onModelProgress,
   openSystemSettings,
   openAdvancedConfiguration,
 };
