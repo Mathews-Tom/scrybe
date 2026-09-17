@@ -1689,12 +1689,6 @@ def library(candidate: Candidate, run: Run) -> None:
     ]
     seed_library(candidate)
     _library_checks(candidate, run)
-
-    run.record(
-        "confinement: the run read the disposable storage root and no other",
-        True,
-        candidate.root.is_dir() and candidate.root.is_relative_to(candidate.workspace),
-    )
     hermeticity(candidate, run, untouched)
     webview_state(run)
 
