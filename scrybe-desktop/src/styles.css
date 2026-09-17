@@ -742,3 +742,12 @@ body {
   display: flex;
   gap: 0.5rem;
 }
+
+.playback {
+  margin-bottom: 1rem;
+}
+
+.playback__player {
+  width: 100%;
+  max-width: 44rem;
+}

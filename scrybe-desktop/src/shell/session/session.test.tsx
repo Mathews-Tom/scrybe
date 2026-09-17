@@ -1,4 +1,4 @@
-import { act, screen, within } from "@testing-library/react";
+import { act, fireEvent, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
@@ -279,6 +279,56 @@ describe("SessionDetail", () => {
 
     expect(sessionReads).toBe(2);
     expect(notesReads).toBe(2);
+  });
+
+  it("test_a_session_with_playback_audio_offers_a_player_pointed_at_the_scheme", async () => {
+    await renderWith(<SessionDetail id={ID} onBack={noop} />);
+
+    const player = screen.getByLabelText("Playback").querySelector("audio");
+
+    expect(player?.getAttribute("src")).toBe(`scrybe-audio://localhost/${ID}/playback`);
+    expect(player?.hasAttribute("controls")).toBe(true);
+  });
+
+  it("test_a_session_without_playback_audio_offers_no_player_at_all", async () => {
+    // A player for a session with nothing to play is the misleading
+    // affordance this surface exists to avoid.
+    await renderWith(
+      <SessionDetail id={ID} onBack={noop} />,
+      servicesReturning({
+        getSession: () =>
+          Promise.resolve(
+            detail({
+              artifacts: {
+                notes: true,
+                transcript: true,
+                audio: true,
+                playback: false,
+                metadata: true,
+              },
+            }),
+          ),
+      }),
+    );
+
+    expect(screen.queryByLabelText("Playback")).toBeNull();
+  });
+
+  it("test_audio_that_cannot_be_read_says_so_rather_than_failing_silently", async () => {
+    await renderWith(<SessionDetail id={ID} onBack={noop} />);
+    const player = screen.getByLabelText("Playback").querySelector("audio");
+    if (player === null) {
+      throw new Error("a playable session renders a player");
+    }
+
+    await act(async () => {
+      fireEvent.error(player);
+      await Promise.resolve();
+    });
+
+    expect(screen.getByRole("alert").textContent).toBe(
+      "This session's audio could not be played.",
+    );
   });
 
   it("test_a_session_that_is_gone_is_reported_rather_than_rendered_empty", async () => {

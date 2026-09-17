@@ -197,6 +197,10 @@ DEBUG_ONLY_STRINGS = [
 # so it checks the list above and this one is checked where it is used.
 MODEL_PROBE_STRINGS = ["probe-model-install", "probe-model-cancel", "probe-model-offer"]
 
+# The playback probe the `library` scenario drives, checked the same way
+# and for the same reason.
+PLAYBACK_PROBE_STRINGS = ["probe-playback"]
+
 # The artifact the setup scenario's own server hands the application.
 #
 # Large enough that the download is not instantaneous, so a sampler can
@@ -266,9 +270,32 @@ POLICY_WINDOW = 4096
 # inherit from `default-src` and so has to be named. Top-level
 # navigation is governed by none of them — that is the navigation guard,
 # checked separately below.
+#
+# `media-src` is what governs the source an `<audio>` element may load,
+# and it does not inherit from `default-src` for a custom scheme, so the
+# scheme has to be named here or the player is blocked by the webview
+# with nothing in this file to show for it. `connect-src` is the
+# directive that sounds like it should govern this and does not: it
+# covers fetch, XHR, WebSocket, and beacon, none of which is how a media
+# element loads. Admitting the scheme rather than an origin is
+# deliberate — a custom scheme has no meaningful host, and what may be
+# reached on it is decided in `src/playback.rs`, which parses the
+# session identity and opens `playback.opus` or nothing.
+#
+# Read this next part before changing the string above. The check below
+# compares the policy in the built artifact against this constant, so it
+# passes for *any* string written in both places. Naming the scheme
+# under the wrong directive and updating this to match reports success
+# while playback stays blocked at runtime — which is not hypothetical:
+# admitting `scrybe-audio:` under `connect-src` instead passes every
+# string comparison in this file and serves nothing. Only driving the
+# real webview at a real `scrybe-audio://` URL and observing what the
+# protocol handler served tells the two apart, which is what the
+# `probe-playback` verb exists for.
 EXPECTED_CSP = (
     "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
-    "img-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost; "
+    "img-src 'self' data:; media-src 'self' scrybe-audio:; "
+    "connect-src 'self' ipc: http://ipc.localhost; "
     "object-src 'none'; base-uri 'none'; frame-src 'none'; form-action 'none'"
 )
 
