@@ -3412,6 +3412,7 @@ dependencies = [
  "directories",
  "futures",
  "libc",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "sha2",
@@ -3422,6 +3423,7 @@ dependencies = [
  "toml 0.8.23",
  "tracing",
  "ulid",
+ "url",
  "windows-sys 0.59.0",
 ]
 

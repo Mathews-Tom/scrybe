@@ -183,5 +183,84 @@ reason: string | null,
  */
 promoted: boolean, };
 
+export type SessionArtifacts = { notes: boolean, transcript: boolean, audio: boolean, playback: boolean, metadata: boolean, };
+
+export type SessionCapture = { channels: number | null, 
+/**
+ * Canonical channel-attribution descriptor, e.g.
+ * `stereo:mic-l,system-r`.
+ */
+layout: string | null, sample_rate_hz: number | null, bitrate_bps: number | null, };
+
+export type SessionProviders = { stt: string | null, llm: string | null, diarizer: string | null, };
+
+export type SessionActions = { repair: boolean, regenerate_notes: boolean, };
+
+export type SessionDetail = { 
+/**
+ * The opaque identity every later command addresses this session
+ * by. A folder name, never a path.
+ */
+id: string, progress: SessionProgress, 
+/**
+ * The session ULID recorded in `meta.toml`, when metadata exists.
+ */
+session_id: string | null, title: string | null, 
+/**
+ * RFC 3339. Rendered in the viewer's locale by the frontend, which
+ * is the only side that knows the viewer's locale.
+ */
+started_at: string | null, 
+/**
+ * RFC 3339.
+ */
+ended_at: string | null, 
+/**
+ * `u64` on the wire is a JSON number, not a `bigint`.
+ */
+duration_secs: number | null, artifacts: SessionArtifacts, capture: SessionCapture, providers: SessionProviders, actions: SessionActions, };
+
+export type SessionNotes = { id: string, progress: SessionProgress, 
+/**
+ * `null` when the session has no durable notes, which is not the
+ * same as notes that are empty.
+ */
+markdown: string | null, };
+
+export type TranscriptWindow = { id: string, progress: SessionProgress, 
+/**
+ * The line this window starts at.
+ */
+cursor: number, 
+/**
+ * Transcript lines, newline-stripped.
+ */
+lines: Array<string>, 
+/**
+ * Lines in the whole transcript.
+ */
+total_lines: number, 
+/**
+ * Where the next window starts, or `null` at the end.
+ */
+next: number | null, };
+
+export type RepairKind = "recovered" | "metadata_reconstructed" | "nothing_to_repair";
+
+export type SessionRepair = { id: string, outcome: RepairKind, 
+/**
+ * The session's state after the repair, so the view re-renders its
+ * actions from what is true now rather than from what it assumed.
+ */
+progress: SessionProgress, recovered_secs: number | null, channels: number | null, wrote_metadata: boolean, };
+
+export type NotesOutcome = "replaced" | "unchanged";
+
+export type NotesRegeneration = { id: string, outcome: NotesOutcome, 
+/**
+ * Bytes of the durable `notes.md` after the operation.
+ */
+bytes: number, };
+
 export const RECORDING_TRANSITION_EVENT = "recording-transition";
 export const MODEL_PROGRESS_EVENT = "scrybe://model-progress";

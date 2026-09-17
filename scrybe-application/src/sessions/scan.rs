@@ -24,6 +24,7 @@ pub const META_FILE: &str = "meta.toml";
 pub const NOTES_FILE: &str = "notes.md";
 pub const TRANSCRIPT_FILE: &str = "transcript.md";
 pub const AUDIO_FILE: &str = "audio.opus";
+pub const PLAYBACK_FILE: &str = "playback.opus";
 pub const JOURNAL_DIR: &str = "journal";
 pub const JOURNAL_MANIFEST_FILE: &str = "manifest.toml";
 
@@ -167,6 +168,7 @@ pub fn classify(id: SessionRef, view: &dyn FolderView) -> Classified {
     let notes = view.exists(NOTES_FILE);
     let transcript = view.exists(TRANSCRIPT_FILE);
     let audio = view.exists(AUDIO_FILE);
+    let playback = view.exists(PLAYBACK_FILE);
 
     let (state, meta) = if view.exists(META_FILE) {
         match view.read(META_FILE).map(|body| toml::from_str(&body)) {
@@ -200,7 +202,7 @@ pub fn classify(id: SessionRef, view: &dyn FolderView) -> Classified {
             notes,
             transcript,
             audio,
-            playback: audio && state.is_complete(),
+            playback: playback && state.is_complete(),
             metadata,
         },
     }))
@@ -274,6 +276,7 @@ bitrate_bps = 32000
         let session = Fixture::default()
             .with(META_FILE, VALID_META)
             .with(AUDIO_FILE, "")
+            .with(PLAYBACK_FILE, "")
             .with(TRANSCRIPT_FILE, "# t\n")
             .with(NOTES_FILE, "## TL;DR\n")
             .classify();
@@ -350,11 +353,34 @@ bitrate_bps = 32000
         assert!(!session.eligibility().regenerate_notes);
     }
 
+    /// `pipeline::merge` writes `playback.opus` only when the capture
+    /// had two channels, so a mono session reaches completion with
+    /// `audio.opus` and nothing to play back. Reading playback off
+    /// `audio` therefore offered a player for a file that is not there.
     #[test]
-    fn test_playback_is_withheld_from_audio_belonging_to_an_incomplete_session() {
-        let session = Fixture::default().with(AUDIO_FILE, "").classify();
+    fn test_a_complete_session_without_a_playback_artifact_reports_no_playback() {
+        let session = Fixture::default()
+            .with(META_FILE, VALID_META)
+            .with(AUDIO_FILE, "")
+            .classify();
 
+        assert_eq!(session.state, SessionState::Complete);
         assert!(session.artifacts.audio);
+        assert!(!session.artifacts.playback);
+    }
+
+    /// The artifact being present is necessary but not sufficient: a
+    /// session that never reached a readable `meta.toml` has no
+    /// established duration or channel attribution, so what is on disk
+    /// is not yet known to be the whole recording.
+    #[test]
+    fn test_playback_is_withheld_from_an_artifact_belonging_to_an_incomplete_session() {
+        let session = Fixture::default()
+            .with(AUDIO_FILE, "")
+            .with(PLAYBACK_FILE, "")
+            .classify();
+
+        assert_eq!(session.state, SessionState::Repairable);
         assert!(!session.artifacts.playback);
     }
 

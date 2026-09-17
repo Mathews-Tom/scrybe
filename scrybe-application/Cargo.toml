@@ -33,6 +33,13 @@ agent-access = []
 # turns this on, and that one is on by default, because the shipped
 # desktop application performs an in-app model download.
 model-download = ["dep:reqwest"]
+# The configured notes provider `ConfiguredNotesGenerator` talks to.
+# Off by default for the same reason `model-download` is: the library
+# egress baseline reads a graph with no network crate in it at all,
+# and this feature is what buys the OpenAI-compatible client. With it
+# off the generator still compiles and still refuses, so a frontend
+# gets a stated reason rather than a missing command.
+notes-generation = ["scrybe-core/openai-compat"]
 
 [dependencies]
 async-trait.workspace = true

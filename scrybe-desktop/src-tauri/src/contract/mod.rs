@@ -19,6 +19,7 @@
 //! when the two disagree, so a contract change that skips regeneration
 //! cannot reach a merge.
 
+pub mod detail;
 pub mod error;
 pub mod recording;
 pub mod session;
@@ -30,6 +31,10 @@ use std::path::{Path, PathBuf};
 
 use ts_rs::{Config, TS};
 
+pub use detail::{
+    NotesOutcome, NotesRegeneration, RepairKind, SessionActions, SessionArtifacts, SessionCapture,
+    SessionDetail, SessionNotes, SessionProviders, SessionRepair, TranscriptWindow,
+};
 pub use error::{CommandFailure, FailureCode};
 pub use recording::{RecordingState, RecordingStatus, RecordingTransition, TRANSITION_EVENT};
 pub use session::{SessionProgress, SessionRow, SessionRows};
@@ -95,6 +100,17 @@ contract![
     ModelOffer,
     ModelProgress,
     ModelOutcome,
+    SessionArtifacts,
+    SessionCapture,
+    SessionProviders,
+    SessionActions,
+    SessionDetail,
+    SessionNotes,
+    TranscriptWindow,
+    RepairKind,
+    SessionRepair,
+    NotesOutcome,
+    NotesRegeneration,
 ];
 
 /// The complete `bindings.ts` file content.
@@ -205,6 +221,17 @@ mod tests {
                 "ModelOffer",
                 "ModelProgress",
                 "ModelOutcome",
+                "SessionArtifacts",
+                "SessionCapture",
+                "SessionProviders",
+                "SessionActions",
+                "SessionDetail",
+                "SessionNotes",
+                "TranscriptWindow",
+                "RepairKind",
+                "SessionRepair",
+                "NotesOutcome",
+                "NotesRegeneration",
             ],
         );
     }

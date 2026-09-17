@@ -308,12 +308,28 @@ LOC_CEILINGS: dict[str, int] = {
     # rather than silently disappearing. That module alone measures 478
     # of the 906 lines under `contract/`.
     #
-    # The remaining 185 lines of headroom are sized rather than chosen
-    # round: recording control is the next thing to land here, and it
-    # adds two commands and their contract types and turns the tray's
-    # `Record now` from a disabled item into a live one with a
-    # confirmation on the quit path — the same shape this table priced
-    # at roughly 140 lines before guided setup displaced it.
+    # Raised from 2300 to 2950 for the session library. Derived, not
+    # rounded, from what the measured figure did and what the rest of
+    # this layer still owes:
+    #
+    #   2119  before any of it
+    #   + 91  the request-keyed cancellation registry and the cancel
+    #         command a search is abandoned through
+    #   +401  the detail surface: six session commands, the reveal and
+    #         the two clipboard paths, and `contract/detail.rs`, which
+    #         projects eleven types rather than the three `session.rs`
+    #         carried
+    #   =2611 measured
+    #   +339  the audio protocol: the scheme handler, the byte-range
+    #         parsing written by hand because Tauri supplies none, the
+    #         typed refusals for a missing or unfinished artifact, and
+    #         the confinement tests that drive the registered handler
+    #         rather than the path helper underneath it
+    #   =2950
+    #
+    # Recording control, which this table used to reserve 140 lines
+    # for, is not in that sum: it has not landed and its ceiling should
+    # be argued by the work that lands it, not carried here.
     #
     # `lifecycle/model_probe.rs` is 140 of the measured figure and is
     # `#[cfg(debug_assertions)]` in full. It is counted anyway: this
@@ -322,7 +338,7 @@ LOC_CEILINGS: dict[str, int] = {
     # The frontend is deliberately out of scope: this script measures
     # Rust only, and the TypeScript surface is governed by review rather
     # than by this gate.
-    "scrybe-desktop/src-tauri": 2300,
+    "scrybe-desktop/src-tauri": 2950,
 }
 
 

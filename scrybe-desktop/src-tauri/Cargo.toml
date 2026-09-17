@@ -34,7 +34,7 @@ path = "src/main.rs"
 # while a user who pressed `Download and verify this model` got told
 # the build carried no transport and handed a `Try again` button that
 # could never work.
-default = ["model-download"]
+default = ["model-download", "notes-generation"]
 # The managed model transport.
 #
 # Enabling it is the only thing in this tree that turns on
@@ -48,6 +48,13 @@ default = ["model-download"]
 # graph must carry exactly the approved transport and nothing more, and
 # the graph with the feature off must carry none of it.
 model-download = ["scrybe-application/model-download"]
+# The configured notes provider `Regenerate notes` asks for. On by
+# default, because the shipped application offers the action and a build
+# without this carries no provider to answer it; still a named feature,
+# so `--no-default-features` resolves a host with no HTTP client at all,
+# which is what `scripts/check-app-egress-baseline.py` reads to prove
+# the gating is real rather than a label.
+notes-generation = ["scrybe-application/notes-generation"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

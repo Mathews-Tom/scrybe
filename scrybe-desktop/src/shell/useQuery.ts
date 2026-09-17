@@ -54,8 +54,12 @@ export function useQuery<T>(read: () => Promise<T>, key: string): Query<T> {
  * A command failure arrives as the payload Rust serialized, which
  * carries a stable code and a message the service layer wrote. Anything
  * else is a bridge failure and says so.
+ *
+ * Exported because an action a reader presses fails the same way a read
+ * does, and two readings of the same payload would eventually disagree
+ * about which of them is a message worth showing.
  */
-function describe(error: unknown): string {
+export function describe(error: unknown): string {
   if (
     typeof error === "object" &&
     error !== null &&
