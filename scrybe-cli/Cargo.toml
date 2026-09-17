@@ -98,6 +98,7 @@ futures.workspace = true
 global-hotkey = { version = "0.7", optional = true }
 keyboard-types = { version = "0.8", optional = true }
 png = { version = "0.18", optional = true }
+scrybe-application = { package = "scrybe-meeting-application", path = "../scrybe-application", version = "=1.6.0" }
 scrybe-capture-mac = { package = "scrybe-meeting-capture-mac", path = "../scrybe-capture-mac", version = "=1.6.0" }
 scrybe-capture-mic = { package = "scrybe-meeting-capture-mic", path = "../scrybe-capture-mic", version = "=1.6.0" }
 scrybe-core = { package = "scrybe-meeting-core", path = "../scrybe-core", version = "=1.6.0" }
