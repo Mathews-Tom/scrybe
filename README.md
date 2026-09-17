@@ -54,15 +54,37 @@ scrybe doctor
 The GitHub installer downloads the matching macOS tarball, verifies the release checksum manifest, and installs `scrybe` on `PATH`. Both installation paths provide the same production capabilities. On an interactive terminal, `scrybe doctor` reads the configured capture mode, explains the required macOS permission, and offers the applicable live probe. It does not modify the system or create signing identities without an explicit confirmation. Manual tarball installation, release verification, and source builds are documented in [`INSTALL.md`](INSTALL.md).
 
 ## First Local Recording Setup
+
+### In the application
+
+Open Scrybe. An installation that cannot record yet opens on guided setup, which walks through four steps and can be left at any point:
+
+1. **Welcome** — where recordings are kept, that no meeting bot joins a call, and that the transcription-model download is the only network request setup makes.
+2. **Recording** — the microphone, and what the Microphone and Screen & System Audio Recording permissions are for. macOS raises its own dialog the first time a recording needs one; if you have already refused a capability, each has a button that opens the System Settings pane where it is granted.
+3. **Transcription and notes** — the transcription model, shown with its source, upstream revision, licence, exact byte count, SHA-256, destination, and disk requirement *before* anything is requested. Nothing is fetched until you confirm it; the download is cancellable, and it is promoted to its final name only after its size and digest both match exactly. Local notes are checked separately, and setup can be finished without them.
+4. **Ready** — capture, transcription, notes, storage, and privacy reported separately.
+
+Setup never asks for an account or an API key. Recording remains unavailable until capture, transcription, and storage are all unblocked; notes are optional and visibly so.
+
+Settings carries the same model storage, the same readiness report, and a diagnostics list whose repairs run only when you choose one. `Open advanced configuration` opens `config.toml` for the settings no form models.
+
+### From the terminal
+
 ```sh
 mkdir -p ~/Library/Application\ Support/dev.scrybe.scrybe/models
 curl -L -o ~/Library/Application\ Support/dev.scrybe.scrybe/models/ggml-small.en.bin \
-  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-small.en.bin
+shasum -a 256 ~/Library/Application\ Support/dev.scrybe.scrybe/models/ggml-small.en.bin
+# expect c6138d6d58ecc8322097e0f987c32f1be8bb0a18532a3f88f734d1bbf9c41e5d
 
 ollama pull gemma4:latest
 scrybe init
 scrybe doctor
 ```
+
+The URL is pinned to an immutable upstream revision, and the digest above is the one the application's own catalog (`scrybe-application/models.toml`) carries — so a file fetched by hand and one installed through the application are the same 487,614,201 bytes. A `resolve/main` URL names whatever that branch points at today and no checked-in digest can describe it; do not substitute one.
+
+`scrybe doctor` reports whether the model is present and whether a configured *local* notes endpoint is answering. A missing model is reported before a recording starts rather than when transcription does.
 
 On macOS, bare `scrybe init` writes the local recording profile:
 
