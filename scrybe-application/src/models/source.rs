@@ -11,8 +11,10 @@
 //! an installed artifact — is about what happens to bytes, not about
 //! how they arrive. Keeping arrival behind this trait is what lets
 //! every one of those properties be tested in a build that carries no
-//! HTTP client at all, which is the build the default gate runs and
-//! the build the desktop host ships unless `model-download` is on.
+//! HTTP client at all, which is the build the default gate runs. The
+//! desktop host enables `model-download` by default and therefore
+//! ships the transport; this crate leaves it off so that the library
+//! and command-line graphs the egress baselines read stay clean.
 //!
 //! [`UnavailableSource`] is what a build without the feature resolves
 //! to. It fails at [`ModelSource::open`], which is after the

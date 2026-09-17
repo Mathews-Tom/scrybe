@@ -23,14 +23,15 @@ default = []
 # Adds no dependency; built on `serde_json`, already a dependency below.
 agent-access = []
 # The HTTP transport managed model acquisition reads artifacts through.
-# Off by default, mirroring `scrybe-core`'s `openai-compat`: every other
-# property of the manager — the confirmation gate, free-space
+# Off by default here, mirroring `scrybe-core`'s `openai-compat`: every
+# other property of the manager — the confirmation gate, free-space
 # preflight, cancellation, exact size and digest verification, atomic
 # promotion, refusal to replace an installed artifact — is transport
 # independent and is exercised in a build that carries no network crate
-# at all. Only `scrybe-desktop/src-tauri`'s own default-off
-# `model-download` feature turns this on, so both egress baselines and
-# the desktop lifecycle qualification keep reading a clean graph.
+# at all, which is what the library and command-line egress baselines
+# read. `scrybe-desktop/src-tauri`'s feature of the same name is what
+# turns this on, and that one is on by default, because the shipped
+# desktop application performs an in-app model download.
 model-download = ["dep:reqwest"]
 
 [dependencies]
