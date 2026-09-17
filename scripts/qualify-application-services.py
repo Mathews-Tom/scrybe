@@ -12,9 +12,8 @@ agent surface report the *same* sessions with the *same* classification
 — which is the point of having one service layer rather than three
 private filesystem walks.
 
-What it covers, per the M13 verification contract: list, search, show,
-configuration validation, doctor findings, record start and stop, and
-every read-only agent tool.
+What it covers: list, search, show, configuration validation, doctor
+findings, record start and stop, and every read-only agent tool.
 
 Determinism:
 
