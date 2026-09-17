@@ -47,6 +47,12 @@ model-download = ["scrybe-application/model-download"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+# Already resolved in this graph by `scrybe-meeting-core`, which uses it
+# to find the platform data directory, so naming it here unifies onto
+# the same version and adds no crate to the audited surface. It is what
+# resolves the home directory a `~`-prefixed storage root expands
+# against.
+directories = "5"
 scrybe-application = { package = "scrybe-meeting-application", path = "../../scrybe-application" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

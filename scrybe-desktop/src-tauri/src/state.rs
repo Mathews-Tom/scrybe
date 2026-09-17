@@ -12,7 +12,7 @@
 //! state models that can disagree about whether a recording is running.
 //! This host builds exactly one, at startup, and hands out borrows.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use scrybe_application::config::ConfigService;
 use scrybe_application::{ApplicationError, ScrybeApplication, StorageRoot};
@@ -42,7 +42,7 @@ impl Desktop {
         let config = ConfigService::discover()?;
         let snapshot = config.snapshot()?;
         Ok(Self::new(
-            StorageRoot::new(&snapshot.form.storage_root),
+            StorageRoot::new(expand_home(Path::new(&snapshot.form.storage_root))),
             config.path().to_path_buf(),
         ))
     }
@@ -59,5 +59,79 @@ impl Desktop {
     #[must_use]
     pub const fn application(&self) -> &ScrybeApplication {
         &self.application
+    }
+}
+
+/// Resolves a leading `~` against the home directory.
+///
+/// `StorageRoot` documents that expansion stays with the caller, and
+/// until now this host was not doing it — it handed the configuration's
+/// value straight through, while the configuration the installer writes
+/// holds the literal `~/scrybe`. The installed application therefore
+/// resolved a relative path named `~` beneath whatever directory it
+/// happened to be launched from, and presented an empty session list
+/// over a storage root full of recordings. The command-line tool has
+/// had this expansion all along; the two now agree.
+///
+/// Only a leading `~` or `~/` is expanded. A `~user` form is not: it
+/// needs a password-database lookup, no configuration this application
+/// writes produces one, and silently treating it as the current user's
+/// home would resolve to the wrong person's files.
+fn expand_home(root: &Path) -> PathBuf {
+    let text = root.to_string_lossy();
+    let Some(home) = home_directory() else {
+        return root.to_path_buf();
+    };
+    if text == "~" {
+        return home;
+    }
+    text.strip_prefix("~/")
+        .map_or_else(|| root.to_path_buf(), |rest| home.join(rest))
+}
+
+fn home_directory() -> Option<PathBuf> {
+    directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf())
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_a_home_relative_root_resolves_beneath_the_home_directory() {
+        let home = home_directory().unwrap();
+
+        let expanded = expand_home(Path::new("~/scrybe"));
+
+        assert_eq!(expanded, home.join("scrybe"));
+        assert!(expanded.is_absolute());
+    }
+
+    #[test]
+    fn test_a_bare_tilde_resolves_to_the_home_directory() {
+        assert_eq!(expand_home(Path::new("~")), home_directory().unwrap());
+    }
+
+    #[test]
+    fn test_an_absolute_root_is_left_alone() {
+        let absolute = Path::new("/var/folders/scrybe-q-abc/sessions");
+
+        assert_eq!(expand_home(absolute), absolute);
+    }
+
+    #[test]
+    fn test_a_relative_root_that_is_not_home_relative_is_left_alone() {
+        assert_eq!(expand_home(Path::new("sessions")), Path::new("sessions"));
+    }
+
+    /// A `~user` form names someone else's home, and resolving it to
+    /// the current user's would point the application at the wrong
+    /// person's recordings.
+    #[test]
+    fn test_another_users_home_is_not_resolved_to_this_one() {
+        let other = Path::new("~someone/scrybe");
+
+        assert_eq!(expand_home(other), other);
     }
 }
