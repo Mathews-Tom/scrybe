@@ -195,6 +195,7 @@ body {
 }
 
 .session-list__meta,
+.session-list__truncation,
 .settings dd {
   color: var(--text-muted);
 }

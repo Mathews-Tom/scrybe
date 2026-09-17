@@ -167,6 +167,11 @@ POLL_SECONDS = 0.1
 # enough that `lsof` is not the thing being measured.
 SAMPLE_SECONDS = 0.25
 
+# How far past the start of a policy to read before giving up on
+# finding its end. Generous: the shipped policy is under 300 bytes, and
+# over-reading costs nothing because the grammar stops the match.
+POLICY_WINDOW = 4096
+
 # The content security policy the bundle must ship, read back out of the
 # built `index.html`. Declared here rather than read from
 # `tauri.conf.json`, because a check that reads the policy from the same
@@ -196,7 +201,13 @@ TRAY_QUIT = "quit"
 # navigation probe that drives the exfiltration path the policy cannot
 # govern.
 NAVIGATE_OFFSITE = "navigate-offsite"
+OPEN_OFFSITE = "open-offsite"
 RECORD_WINDOW_URL = "record-window-url"
+RECORD_WEBVIEWS = "record-webviews"
+
+# The one webview label this application ever creates. A second one
+# means a new-window request was answered rather than dropped.
+MAIN_WEBVIEW = "main"
 
 
 @dataclass
@@ -334,6 +345,20 @@ class Candidate:
                 return record.get("detail")
         return None
 
+    def last_detail_of(self, event: str) -> str | None:
+        """The most recent `event`, for one a run records more than once.
+
+        The window URL is read once after the navigation probe and again
+        after the new-window probe, and it is the second reading that
+        answers the second question. `detail_of` returns the first
+        match, so asking it would have re-asserted the earlier answer
+        and reported a check that could not fail.
+        """
+        for record in reversed(self.records()):
+            if record["event"] == event:
+                return record.get("detail")
+        return None
+
     # -- driving it --------------------------------------------------
 
     def launch(self) -> None:
@@ -437,19 +462,52 @@ def host_dependency_graph() -> set[str]:
     }
 
 
-def policy_occurrences(binary: Path, policy: str) -> tuple[bool, int]:
-    """Whether the built executable carries `policy`, and how many
-    policies it carries at all.
+# One content security policy, read out of the string pool.
+#
+# Tauri compiles the configuration into the executable rather than
+# shipping it as data, so the policy sits in the pool with its length
+# held in code and nothing at all marking where it ends — the next
+# configuration string is glued straight onto its last character. A
+# check that took a fixed number of bytes from the start of the policy
+# would therefore be the containment test this replaces wearing a
+# different shape, and containment is exactly what a relaxation
+# survives: a policy formed by appending a directive still contains the
+# expected one verbatim, and still carries one `default-src`.
+#
+# What does mark the end is the grammar. A policy is a `;`-separated
+# list of directives; a directive is a name followed by space-separated
+# source expressions, each of them either quoted or free of spaces,
+# semicolons, and quotes. The policy therefore runs until the first
+# byte that can continue neither, which is where the next configuration
+# string begins.
+# A directive is a name followed by space-separated source
+# expressions, each either quoted or free of spaces, semicolons, and
+# quotes. A policy is those, separated by semicolons.
+DIRECTIVE = r"[a-z][a-z0-9-]*(?: (?:'[^']*'|[^ ;']+))*"
+POLICY = re.compile(f"{DIRECTIVE}(?:; ?{DIRECTIVE})*")
+
+
+def shipped_policies(binary: Path) -> list[str]:
+    """Every content security policy the built executable carries.
 
     Tauri embeds the frontend in the executable rather than shipping it
     as a file in the bundle, and embeds the configured policy alongside
-    it as the value it injects at run time. Reading it back out of the
-    built artifact is what makes this a check on what was shipped rather
-    than on what `tauri.conf.json` says, which would pass whatever the
-    file was changed to.
+    it as the value it serves the `Content-Security-Policy` header
+    from. Reading it back out of the built artifact is what makes this a
+    check on what was shipped rather than on what `tauri.conf.json`
+    says, which would pass whatever the file was changed to.
+
+    The caller compares what comes back against the expected policy
+    exactly, so an added, removed, or reordered directive is a
+    difference rather than a longer string that still contains the old
+    one.
     """
     image = binary.read_bytes()
-    return policy.encode() in image, image.count(b"default-src ")
+    found = []
+    for match in re.finditer(rb"default-src[\x20;]", image):
+        window = image[match.start() : match.start() + POLICY_WINDOW]
+        found.append(POLICY.match(window.decode("ascii", errors="replace"))[0])
+    return found
 
 
 def hermeticity(candidate: Candidate, run: Run, untouched: list[tuple[str, Path, object]]) -> None:
@@ -635,6 +693,44 @@ def lifecycle(candidate: Candidate, run: Run) -> None:
         f"the window reached {reached!r} after {attempted!r}",
     )
 
+    # (h) The other exfiltration door, which the guard does not cover
+    # either. `location.href` above reaches the navigation-policy
+    # delegate; a script-initiated `window.open` and a click on a link
+    # carrying `target="_blank"` do not — WebKit routes both to the UI
+    # delegate's create-web-view method, which `wry` answers with
+    # nothing *only because no new-window handler is registered*. That
+    # door is therefore held shut by the absence of a call rather than
+    # by anything this stack decides, and a new-window handler — a
+    # detached playback window being the obvious next candidate — would
+    # open it while the guard, the policy, and every check above stayed
+    # green. Probing the main window's URL cannot see it, because a new
+    # window would not have moved the old one.
+    #
+    # The reach of the webview check below stops at a handler answering
+    # `NewWindowResponse::Create`, which hands back a window Tauri
+    # tracks. One answering `Allow` has `wry` build the `NSWindow` and
+    # the `WKWebView` itself, and Tauri never learns of them, so they
+    # appear in no list readable from here — a run with such a handler
+    # registered passes every check in this file. What covers that
+    # answer is `src-tauri/tests/new_window_handler.rs`, which asserts
+    # the handler is not registered at all.
+    candidate.control(OPEN_OFFSITE)
+    time.sleep(SETTLE_SECONDS)
+    candidate.control(RECORD_WEBVIEWS)
+    candidate.control(RECORD_WINDOW_URL)
+    opened = candidate.detail_of("new-window-attempted")
+    run.record(
+        "new window: `window.open` and `target=_blank` create no second webview",
+        MAIN_WEBVIEW,
+        candidate.last_detail_of("webview-labels"),
+    )
+    landed = candidate.last_detail_of("window-url")
+    run.assert_that(
+        "new window: the main window is still on the application origin afterwards",
+        landed is not None and landed.startswith(APPLICATION_ORIGIN),
+        f"the window reached {landed!r} after {opened!r}",
+    )
+
     # (d) Idle quit exits cleanly.
     candidate.control(TRAY_QUIT)
     run.assert_that(
@@ -714,9 +810,13 @@ def lifecycle(candidate: Candidate, run: Run) -> None:
     )
 
     # (h) The policy the bundle ships, read back out of it.
-    carried, policies = policy_occurrences(shipped / EXECUTABLE, EXPECTED_CSP)
-    run.record("policy: the bundle carries the expected content security policy", True, carried)
-    run.record("policy: the bundle carries exactly one content security policy", 1, policies)
+    policies = shipped_policies(shipped / EXECUTABLE)
+    run.record("policy: the bundle carries exactly one content security policy", 1, len(policies))
+    run.record(
+        "policy: the policy the bundle carries is the expected one, directive for directive",
+        EXPECTED_CSP,
+        policies[0] if len(policies) == 1 else policies,
+    )
 
     # The debug-only channel is compiled out of a release build.
     release = build_release_binary()

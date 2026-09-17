@@ -37,8 +37,12 @@ const CLOSE_WINDOW: &str = "close-window";
 const DESTROY_WINDOW: &str = "destroy-window";
 /// Ask the frontend to navigate off the application's origin.
 const NAVIGATE_OFFSITE: &str = "navigate-offsite";
+/// Ask the frontend to open a *new* window off that origin.
+const OPEN_OFFSITE: &str = "open-offsite";
 /// Record where the main window actually is.
 const RECORD_WINDOW_URL: &str = "record-window-url";
+/// Record every webview the process has.
+const RECORD_WEBVIEWS: &str = "record-webviews";
 
 /// Where [`NAVIGATE_OFFSITE`] tries to go.
 ///
@@ -121,7 +125,9 @@ fn run(app: &tauri::AppHandle, verb: &str) {
         CLOSE_WINDOW => close(app),
         DESTROY_WINDOW => destroy(app),
         NAVIGATE_OFFSITE => navigate_offsite(app),
+        OPEN_OFFSITE => open_offsite(app),
         RECORD_WINDOW_URL => record_window_url(app),
+        RECORD_WEBVIEWS => record_webviews(app),
         // Everything else is a tray menu item identity, dispatched
         // through the same function the platform's menu event uses.
         item => tray::activate(app, item),
@@ -170,6 +176,63 @@ fn navigate_offsite(app: &tauri::AppHandle) {
     if let Err(error) = main.eval(format!("location.href = {OFFSITE_URL:?}")) {
         eprintln!("scrybe-desktop: could not drive a navigation: {error}");
     }
+}
+
+/// Drives the two ways frontend code asks for a *new* window.
+///
+/// Neither reaches the navigation guard. `location.href`, which
+/// [`navigate_offsite`] drives, goes to the navigation-policy delegate,
+/// and so do link clicks, form submissions, and meta-refresh. A
+/// script-initiated `window.open` does not: `WebKit` routes it to
+/// `webView:createWebViewWithConfiguration:forNavigationAction:` on the
+/// *UI* delegate, and a click on a link carrying `target="_blank"` goes
+/// the same way. `wry` answers that delegate method with `None`
+/// whenever no new-window handler is registered, so this second
+/// exfiltration door is currently held shut by the absence of a call
+/// rather than by any decision this application makes — and the first
+/// handler anyone adds opens it while the guard, the policy, and every
+/// other check here stay green.
+///
+/// Driving both is how a run establishes that nothing opened, rather
+/// than inferring it from a main-window URL that a new window would not
+/// have changed anyway.
+fn open_offsite(app: &tauri::AppHandle) {
+    let Some(main) = app.get_webview_window(window::MAIN) else {
+        eprintln!("scrybe-desktop: no main window to open from");
+        return;
+    };
+    crate::note!(app, "new-window-attempted", OFFSITE_URL);
+    let script = format!(
+        "window.open({OFFSITE_URL:?}, '_blank');
+         const probe = document.createElement('a');
+         probe.href = {OFFSITE_URL:?};
+         probe.target = '_blank';
+         probe.textContent = 'probe';
+         document.body.appendChild(probe);
+         probe.click();
+         probe.remove();"
+    );
+    if let Err(error) = main.eval(script) {
+        eprintln!("scrybe-desktop: could not drive a new-window request: {error}");
+    }
+}
+
+/// Records every webview window the process has, by label.
+///
+/// A new-window request that was answered rather than dropped arrives
+/// as a second one, so the label list is the evidence that none did.
+/// Sent after [`OPEN_OFFSITE`] has had time to take effect.
+///
+/// `webview_windows` rather than `webviews`, which is behind Tauri's
+/// `unstable` feature and would widen this host's dependency surface
+/// for a list that is the same one here: every webview this
+/// application creates owns a window, and a new-window handler
+/// answering with `NewWindowResponse::Create` hands back a
+/// `WebviewWindow` too.
+fn record_webviews(app: &tauri::AppHandle) {
+    let mut labels: Vec<String> = app.webview_windows().into_keys().collect();
+    labels.sort();
+    crate::note!(app, "webview-labels", &labels.join(","));
 }
 
 /// Records where the main window is now.

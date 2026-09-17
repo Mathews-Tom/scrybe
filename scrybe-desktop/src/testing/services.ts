@@ -25,8 +25,8 @@ export function servicesReturning(overrides: Partial<Scrybe> = {}): Scrybe {
   };
 }
 
-export function page(rows: SessionRow[]): SessionRows {
-  return { rows, offset: 0, total: rows.length, has_more: false };
+export function page(rows: SessionRow[], overrides: Partial<SessionRows> = {}): SessionRows {
+  return { rows, offset: 0, total: rows.length, has_more: false, ...overrides };
 }
 
 export function session(overrides: Partial<SessionRow> = {}): SessionRow {

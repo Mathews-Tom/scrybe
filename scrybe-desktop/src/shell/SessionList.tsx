@@ -1,3 +1,5 @@
+import { useId } from "react";
+
 import type { SessionProgress, SessionRow } from "../generated/bindings";
 import type { Query } from "./useQuery";
 
@@ -30,6 +32,16 @@ function started(at: string | null): string {
  * A failure is shown as itself. Rendering an empty list when Rust
  * reported an unreadable storage root would tell the reader their
  * recordings are gone.
+ *
+ * A truncated read is shown as itself for the same reason. Both views
+ * ask for one page and Rust answers with the total, so a storage root
+ * holding twenty-one sessions used to render exactly like one holding
+ * twenty: nothing on screen separated "these are your sessions" from
+ * "these are the first twenty of them", and there is no paging control
+ * to go looking for the rest with. The count is what makes the
+ * difference visible, and it describes the list rather than sitting
+ * beside it, so it is read out with the list rather than stranded
+ * after it.
  */
 export function SessionList({
   query,
@@ -38,6 +50,8 @@ export function SessionList({
   query: Query<{ rows: SessionRow[]; total: number }>;
   empty: string;
 }) {
+  const truncation = useId();
+
   if (query.status === "loading") {
     return <p role="status">Loading sessions…</p>;
   }
@@ -48,21 +62,30 @@ export function SessionList({
       </p>
     );
   }
-  if (query.value.rows.length === 0) {
+  const { rows, total } = query.value;
+  if (rows.length === 0) {
     return <p>{empty}</p>;
   }
+  const truncated = total > rows.length;
 
   return (
-    <ul className="session-list">
-      {query.value.rows.map((row) => (
-        <li key={row.id} className="session-list__row">
-          <span className="session-list__title">{row.title ?? row.id}</span>
-          <span className="session-list__meta">
-            {PROGRESS_LABEL[row.progress]} · {started(row.started_at)} ·{" "}
-            {duration(row.duration_secs)}
-          </span>
-        </li>
-      ))}
-    </ul>
+    <>
+      <ul className="session-list" aria-describedby={truncated ? truncation : undefined}>
+        {rows.map((row) => (
+          <li key={row.id} className="session-list__row">
+            <span className="session-list__title">{row.title ?? row.id}</span>
+            <span className="session-list__meta">
+              {PROGRESS_LABEL[row.progress]} · {started(row.started_at)} ·{" "}
+              {duration(row.duration_secs)}
+            </span>
+          </li>
+        ))}
+      </ul>
+      {truncated ? (
+        <p id={truncation} className="session-list__truncation">
+          {`Showing the first ${rows.length.toString()} of ${total.toString()}.`}
+        </p>
+      ) : null}
+    </>
   );
 }

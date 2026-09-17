@@ -36,6 +36,42 @@ describe("SessionsView", () => {
     expect(rows[1]?.textContent).toContain("Needs repair");
   });
 
+  it("test_sessions_beyond_one_page_says_how_many_there_are_rather_than_showing_a_page", async () => {
+    // The view asks for twenty and Rust answers with the total, so
+    // twenty-one sessions used to render exactly like twenty. With no
+    // paging control to go looking with, the count is the only thing
+    // that separates a complete list from a truncated one.
+    const rows = Array.from({ length: 20 }, (_unused, index) =>
+      session({ id: `session-${index.toString()}`, title: `Session ${index.toString()}` }),
+    );
+    await renderWith(
+      <SessionsView />,
+      servicesReturning({
+        listSessions: () => Promise.resolve(page(rows, { total: 21, has_more: true })),
+      }),
+    );
+
+    expect(screen.getAllByRole("listitem")).toHaveLength(20);
+    expect(screen.getByText("Showing the first 20 of 21.")).toBeDefined();
+    expect(screen.getByRole("list").getAttribute("aria-describedby")).toBe(
+      screen.getByText("Showing the first 20 of 21.").id,
+    );
+  });
+
+  it("test_sessions_that_fit_in_one_page_say_nothing_about_a_count", async () => {
+    // The other half of the rule: a complete list must not read as a
+    // truncated one either.
+    await renderWith(
+      <SessionsView />,
+      servicesReturning({
+        listSessions: () => Promise.resolve(page([session({ title: "Quarterly review" })])),
+      }),
+    );
+
+    expect(screen.queryByText(/Showing the first/)).toBeNull();
+    expect(screen.getByRole("list").getAttribute("aria-describedby")).toBeNull();
+  });
+
   it("test_sessions_with_nothing_recorded_says_so_rather_than_showing_a_blank_region", async () => {
     await renderWith(<SessionsView />);
 
