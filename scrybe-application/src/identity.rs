@@ -130,7 +130,15 @@ fn validate(candidate: &str) -> Result<(), IdentityRejection> {
     if candidate.chars().any(char::is_control) {
         return Err(IdentityRejection::Control);
     }
-    if Path::new(candidate).is_absolute() {
+    // `Path::is_absolute` is platform-dependent: Windows calls
+    // `/etc/passwd` root-relative rather than absolute, so relying on
+    // it alone would classify the same identity differently on
+    // different platforms. A leading separator names a filesystem root
+    // everywhere, so it is refused as absolute everywhere.
+    if candidate.starts_with('/')
+        || candidate.starts_with('\\')
+        || Path::new(candidate).is_absolute()
+    {
         return Err(IdentityRejection::Absolute);
     }
     if candidate
@@ -202,6 +210,19 @@ mod tests {
         let rejection = SessionRef::parse("/etc/passwd").unwrap_err();
 
         assert_eq!(rejection, IdentityRejection::Absolute);
+    }
+
+    #[test]
+    fn test_parse_rejects_a_rooted_identity_the_same_way_on_every_platform() {
+        // Windows does not consider a leading `/` absolute; the
+        // classification must not depend on where this runs.
+        for rooted in ["/etc/passwd", "\\\\server\\share", "/", "\\"] {
+            assert_eq!(
+                SessionRef::parse(rooted).unwrap_err(),
+                IdentityRejection::Absolute,
+                "{rooted} must be refused as absolute"
+            );
+        }
     }
 
     #[test]
