@@ -114,9 +114,10 @@ fn capabilities() -> Vec<(String, serde_json::Value)> {
         }
     }
 
-    let config: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(host_root().join("tauri.conf.json")).unwrap())
-            .unwrap();
+    let config: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(host_root().join("tauri.conf.json")).unwrap(),
+    )
+    .unwrap();
     if let Some(inlined) = config["app"]["security"]["capabilities"].as_array() {
         // A string entry references a capability file, already
         // collected above. Anything else is declared only here.
