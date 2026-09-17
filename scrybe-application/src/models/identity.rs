@@ -60,6 +60,15 @@ impl FileIdentity {
     /// What `metadata` says the file is, or `None` when the platform
     /// will not say.
     #[must_use]
+    // Off Unix, `platform_identity` is already `const fn` because its
+    // only possible answer is `None`, which makes this wrapper
+    // const-able there too; on Unix the wrapped call reads live
+    // metadata through `MetadataExt` and can never be `const`. Adding
+    // `const` here only where one arm happens to allow it would leave
+    // this method's constness depend on the platform it is compiled
+    // for, which is a divergence users of this shared API should not
+    // see, so the lint is silenced off Unix instead of followed.
+    #[cfg_attr(not(unix), allow(clippy::missing_const_for_fn))]
     pub fn of(metadata: &std::fs::Metadata) -> Option<Self> {
         platform_identity(metadata)
     }
