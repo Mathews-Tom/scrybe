@@ -20,6 +20,11 @@ pub enum ConfigValueKind {
     Text,
     Integer,
     Boolean,
+    /// An ordered list of strings. `[shell].indicators` is the one
+    /// such field, and the schema requires it to be non-empty and free
+    /// of duplicates — both of which the strict validation of the
+    /// complete candidate enforces, so neither is restated here.
+    TextList,
 }
 
 /// A typed value bound for one [`ConfigField`].
@@ -29,6 +34,7 @@ pub enum ConfigValue {
     Boolean(bool),
     Integer(i64),
     Text(String),
+    TextList(Vec<String>),
 }
 
 impl ConfigValue {
@@ -39,6 +45,7 @@ impl ConfigValue {
             Self::Boolean(_) => ConfigValueKind::Boolean,
             Self::Integer(_) => ConfigValueKind::Integer,
             Self::Text(_) => ConfigValueKind::Text,
+            Self::TextList(_) => ConfigValueKind::TextList,
         }
     }
 }
@@ -67,6 +74,12 @@ impl From<u32> for ConfigValue {
     }
 }
 
+impl From<Vec<String>> for ConfigValue {
+    fn from(value: Vec<String>) -> Self {
+        Self::TextList(value)
+    }
+}
+
 /// The closed set of configuration fields a GUI owns.
 ///
 /// Adding a variant is the only way to widen the write surface, which
@@ -78,6 +91,8 @@ impl From<u32> for ConfigValue {
 pub enum ConfigField {
     StorageRoot,
     StorageAudioBitrateKbps,
+    CaptureMicDevice,
+    CaptureHotkey,
     RecordSource,
     RecordSystemBackend,
     RecordLlm,
@@ -88,13 +103,16 @@ pub enum ConfigField {
     LlmBaseUrl,
     LlmModel,
     ConsentDefaultMode,
+    ShellIndicators,
     AgentAccessEnabled,
 }
 
 /// Every field a GUI may write, in a stable order.
-pub const EDITABLE_FIELDS: [ConfigField; 13] = [
+pub const EDITABLE_FIELDS: [ConfigField; 16] = [
     ConfigField::StorageRoot,
     ConfigField::StorageAudioBitrateKbps,
+    ConfigField::CaptureMicDevice,
+    ConfigField::CaptureHotkey,
     ConfigField::RecordSource,
     ConfigField::RecordSystemBackend,
     ConfigField::RecordLlm,
@@ -105,6 +123,7 @@ pub const EDITABLE_FIELDS: [ConfigField; 13] = [
     ConfigField::LlmBaseUrl,
     ConfigField::LlmModel,
     ConfigField::ConsentDefaultMode,
+    ConfigField::ShellIndicators,
     ConfigField::AgentAccessEnabled,
 ];
 
@@ -114,6 +133,8 @@ impl ConfigField {
     pub const fn table(self) -> &'static str {
         match self {
             Self::StorageRoot | Self::StorageAudioBitrateKbps => "storage",
+            Self::CaptureMicDevice | Self::CaptureHotkey => "capture",
+            Self::ShellIndicators => "shell",
             Self::RecordSource | Self::RecordSystemBackend | Self::RecordLlm => "record",
             Self::SttProvider | Self::SttModel | Self::SttLanguage => "stt",
             Self::LlmProvider | Self::LlmBaseUrl | Self::LlmModel => "llm",
@@ -128,6 +149,9 @@ impl ConfigField {
         match self {
             Self::StorageRoot => "root",
             Self::StorageAudioBitrateKbps => "audio_bitrate_kbps",
+            Self::CaptureMicDevice => "mic_device",
+            Self::CaptureHotkey => "hotkey",
+            Self::ShellIndicators => "indicators",
             Self::RecordSource => "source",
             Self::RecordSystemBackend => "system_backend",
             Self::RecordLlm => "llm",
@@ -146,6 +170,7 @@ impl ConfigField {
         match self {
             Self::StorageAudioBitrateKbps => ConfigValueKind::Integer,
             Self::AgentAccessEnabled => ConfigValueKind::Boolean,
+            Self::ShellIndicators => ConfigValueKind::TextList,
             _ => ConfigValueKind::Text,
         }
     }
@@ -206,6 +231,12 @@ pub struct ConfigDiagnostic {
 pub struct ConfigForm {
     pub schema_version: u32,
     pub storage_root: String,
+    pub capture_mic_device: String,
+    /// The configured global hotkey, absent when none is set. The
+    /// schema models it as optional, and reporting an unset hotkey as
+    /// an empty string would make "no hotkey" and "a hotkey nobody can
+    /// press" the same value.
+    pub capture_hotkey: Option<String>,
     pub storage_audio_format: String,
     pub storage_audio_bitrate_kbps: u32,
     pub record_source: String,
@@ -233,6 +264,8 @@ impl From<&Config> for ConfigForm {
         Self {
             schema_version: config.schema_version,
             storage_root: config.storage.root.display().to_string(),
+            capture_mic_device: config.capture.mic_device.clone(),
+            capture_hotkey: config.capture.hotkey.clone(),
             storage_audio_format: config.storage.audio_format.clone(),
             storage_audio_bitrate_kbps: config.storage.audio_bitrate_kbps,
             record_source: config.record.source.clone(),
@@ -363,6 +396,7 @@ mod tests {
                 ConfigValueKind::Text => ConfigValue::Text("x".into()),
                 ConfigValueKind::Integer => ConfigValue::Integer(1),
                 ConfigValueKind::Boolean => ConfigValue::Boolean(true),
+                ConfigValueKind::TextList => ConfigValue::TextList(vec!["x".into()]),
             };
 
             assert_eq!(sample.kind(), field.kind());

@@ -375,6 +375,9 @@ timeout_ms = 3000
                 crate::config::ConfigValueKind::Text => update.set(field, "synthetic"),
                 crate::config::ConfigValueKind::Integer => update.set(field, 64_u32),
                 crate::config::ConfigValueKind::Boolean => update.set(field, true),
+                crate::config::ConfigValueKind::TextList => {
+                    update.set(field, vec!["menu-bar-label".to_string()])
+                }
             };
         }
 

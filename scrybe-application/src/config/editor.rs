@@ -153,6 +153,18 @@ fn to_item(value: &ConfigValue) -> Item {
         ConfigValue::Boolean(flag) => toml_edit::value(*flag),
         ConfigValue::Integer(number) => toml_edit::value(*number),
         ConfigValue::Text(text) => toml_edit::value(text.as_str()),
+        // An inline array, which is the only array form a
+        // single-key assignment can produce. The alternative — an
+        // array of tables — is a document shape, not a value, and
+        // `set_preserving_decor` refuses to overwrite one of those
+        // for the same reason it refuses a sub-table.
+        ConfigValue::TextList(items) => {
+            let mut array = toml_edit::Array::new();
+            for item in items {
+                array.push(item.as_str());
+            }
+            toml_edit::value(array)
+        }
     }
 }
 
@@ -281,6 +293,7 @@ audio_format = "opus"
                 ConfigValueKind::Text => update.set(field, "changed"),
                 ConfigValueKind::Integer => update.set(field, 64_u32),
                 ConfigValueKind::Boolean => update.set(field, true),
+                ConfigValueKind::TextList => update.set(field, vec!["changed".to_string()]),
             };
         }
 
