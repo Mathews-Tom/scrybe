@@ -233,3 +233,102 @@ async fn test_a_refusing_server_promotes_nothing() {
     );
     assert!(!dir.path().join("models/ggml-fixture.en.bin").exists());
 }
+
+/// A server that accepts the connection and then stops sending without
+/// closing it. A half-open connection after a dropped network and a
+/// stalled edge both look like this from the client's side.
+async fn stalling() -> MockServer {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(ARTIFACT_PATH))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_bytes(ARTIFACT)
+                .set_delay(std::time::Duration::from_mins(1)),
+        )
+        .mount(&server)
+        .await;
+    server
+}
+
+/// A manager whose client gives up on a silent peer quickly, so a
+/// stall can be asserted without waiting the production figure out.
+fn impatient_manager(dir: &std::path::Path) -> ModelManager {
+    ModelManager::with_source(
+        dir.join("models"),
+        Arc::new(
+            HttpModelSource::with_timeouts(
+                std::time::Duration::from_secs(5),
+                std::time::Duration::from_millis(250),
+            )
+            .unwrap(),
+        ),
+    )
+}
+
+#[tokio::test]
+async fn test_a_source_that_accepts_the_connection_and_then_stalls_is_abandoned() {
+    let server = stalling().await;
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = manifest_for(&server, ARTIFACT);
+    let manager = impatient_manager(dir.path());
+
+    // The outer bound is the assertion. Without a read timeout on the
+    // client the install future is parked for as long as the peer holds
+    // the connection open, which is what this must not do.
+    let report = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        manager.install_manifest(
+            &manifest,
+            &ModelConfirmation::new(&manifest.id, &manifest.sha256),
+            &CancellationToken::new(),
+            &nothing,
+        ),
+    )
+    .await
+    .expect("a stalled source parked the install: it never resolved")
+    .unwrap();
+
+    assert!(
+        matches!(
+            report.state,
+            ModelState::Failed {
+                reason: ModelFailure::Transport { .. }
+            }
+        ),
+        "{:?}",
+        report.state
+    );
+    assert!(!dir.path().join("models/ggml-fixture.en.bin").exists());
+}
+
+#[tokio::test]
+async fn test_a_cancellation_during_a_stall_is_observed_as_a_cancellation() {
+    let server = stalling().await;
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = manifest_for(&server, ARTIFACT);
+    let manager = impatient_manager(dir.path());
+    let cancel = CancellationToken::new();
+
+    // Cancelled while the peer is silent, which is exactly when a user
+    // presses Cancel: nothing is moving and nothing is being reported.
+    // The read timeout is what ends the silence; this asserts the
+    // manager then reports what the user asked for rather than the
+    // timeout that let it notice.
+    cancel.cancel();
+    let report = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        manager.install_manifest(
+            &manifest,
+            &ModelConfirmation::new(&manifest.id, &manifest.sha256),
+            &cancel,
+            &nothing,
+        ),
+    )
+    .await
+    .expect("a cancelled install against a stalled source never resolved")
+    .unwrap();
+
+    assert_eq!(report.state, ModelState::Cancelled);
+    assert!(!report.promoted);
+}

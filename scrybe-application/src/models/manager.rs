@@ -18,8 +18,8 @@
 //! zero-request property testable rather than merely intended.
 //!
 //! After that the sequence is: free space, unique `.partial`, stream
-//! with cancellation checked between chunks, exact size, exact digest,
-//! rename. Every failure and every cancellation leaves the partial
+//! with cancellation checked between chunks and again whenever one
+//! fails to arrive, exact size, exact digest, rename. Every failure and every cancellation leaves the partial
 //! where it is and the destination untouched, so nothing half-written
 //! is ever reachable under the name a runtime would load.
 //!
@@ -35,7 +35,6 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
 
 use scrybe_core::storage::full_fsync;
 use sha2::{Digest, Sha256};
@@ -46,6 +45,7 @@ use crate::models::contract::{
     DownloadProgress, InstallReport, ModelConfirmation, ModelFailure, ModelPlan, ModelState,
     StaleModelPartial,
 };
+use crate::models::identity::FileIdentity;
 use crate::models::manifest::{self, ModelManifest};
 use crate::models::source::{ArtifactChunks, ModelSource, UnavailableSource};
 use crate::models::space;
@@ -83,18 +83,32 @@ pub struct ModelManager {
     /// readiness, diagnostics, and the model plan together, so an
     /// unmemoised answer would hash it three times to render one page.
     ///
-    /// Keyed on length and modification time as well as path, so a file
-    /// that was replaced is hashed again. That is the same evidence
-    /// every build system trusts for the same purpose, and the
-    /// alternative — trusting the path alone — would report a
-    /// substituted artifact as the one that was verified.
+    /// Keyed on the file's identity and both of its timestamps as well
+    /// as its length, so a file that was replaced is hashed again.
+    ///
+    /// Length and modification time alone are what a build system
+    /// trusts, and they are not enough here. A build system keys inputs
+    /// it produced; this keys a file any other process may rewrite, and
+    /// preserving a modification time across a rewrite is ordinary
+    /// rather than adversarial — `rsync -t`, `cp -p`, `tar -x`, `unzip`
+    /// and a bare `utimes` all do it. A substitution of the same length
+    /// that kept the modification time would then be answered from the
+    /// memo, and `installed_state` would report `Ready` for bytes
+    /// nothing ever hashed. The desktop host is a long-lived tray
+    /// process, so its memo outlives exactly such an event.
+    ///
+    /// [`FileIdentity`] closes that: the inode and device number change
+    /// when the destination is replaced by a rename, and the change
+    /// time moves whenever the inode is written at all. Unlike the
+    /// modification time, no userspace interface sets a change time —
+    /// only altering the clock or writing the filesystem raw does, and
+    /// neither is available to the tools above.
     verified: Mutex<HashMap<PathBuf, Verified>>,
 }
 
 /// One file's digest, and what the file looked like when it was taken.
 struct Verified {
-    len: u64,
-    modified: Option<SystemTime>,
+    identity: FileIdentity,
     digest: String,
 }
 
@@ -267,8 +281,11 @@ impl ModelManager {
     /// Acquires `id`, having been told the user agreed to it.
     ///
     /// `progress` is called as bytes arrive, at a coarse stride.
-    /// `cancel` is checked between chunks; a cancelled download leaves
-    /// its `.partial` in place and promotes nothing.
+    /// `cancel` is checked between chunks, and again when a chunk fails
+    /// to arrive, so how soon a cancellation is observed is bounded by
+    /// how long the source lets one read block rather than by whether
+    /// the peer keeps sending. A cancelled download leaves its
+    /// `.partial` in place and promotes nothing.
     ///
     /// # Errors
     ///
@@ -409,31 +426,38 @@ impl ModelManager {
     }
 
     /// The digest of `path`, reusing the last one taken when the file
-    /// has not changed since.
+    /// is still the same file, unchanged.
     ///
     /// A poisoned lock falls through to hashing rather than failing:
     /// the memo is an optimisation, and the answer it caches is
-    /// recomputable.
+    /// recomputable. A platform that will not describe the file's
+    /// identity is handled the same way — [`FileIdentity::of`] returns
+    /// `None`, nothing is read from the memo and nothing is written to
+    /// it, and every read hashes. Memoising under a partial key would
+    /// be worse than not memoising: two files the platform cannot tell
+    /// apart would compare equal and answer for each other.
     fn digest_of_unchanged(&self, path: &Path, metadata: &std::fs::Metadata) -> Result<String> {
-        let len = metadata.len();
-        let modified = metadata.modified().ok();
-        if let Ok(memo) = self.verified.lock() {
-            if let Some(entry) = memo.get(path) {
-                if entry.len == len && entry.modified == modified {
-                    return Ok(entry.digest.clone());
+        let identity = FileIdentity::of(metadata);
+        if let Some(identity) = identity {
+            if let Ok(memo) = self.verified.lock() {
+                if let Some(entry) = memo.get(path) {
+                    if entry.identity == identity {
+                        return Ok(entry.digest.clone());
+                    }
                 }
             }
         }
         let digest = digest_of(path)?;
-        if let Ok(mut memo) = self.verified.lock() {
-            memo.insert(
-                path.to_path_buf(),
-                Verified {
-                    len,
-                    modified,
-                    digest: digest.clone(),
-                },
-            );
+        if let Some(identity) = identity {
+            if let Ok(mut memo) = self.verified.lock() {
+                memo.insert(
+                    path.to_path_buf(),
+                    Verified {
+                        identity,
+                        digest: digest.clone(),
+                    },
+                );
+            }
         }
         Ok(digest)
     }
@@ -606,12 +630,24 @@ async fn stream_into(
             Ok(Some(chunk)) => chunk,
             Ok(None) => break,
             Err(error) => {
+                // Cancellation first. A transport bounded by a read
+                // timeout reports a stalled peer as an error, and a
+                // user who pressed Cancel during that stall asked for
+                // this to stop — reporting the timeout instead would
+                // name the consequence rather than the cause.
+                if cancel.is_cancelled() {
+                    return Streamed::Stopped(InstallReport {
+                        id: manifest.id.clone(),
+                        state: ModelState::Cancelled,
+                        promoted: false,
+                    });
+                }
                 return Streamed::Stopped(failed(
                     manifest,
                     ModelFailure::Transport {
                         summary: error.message().to_string(),
                     },
-                ))
+                ));
             }
         };
         // An artifact longer than the manifest is stopped as it

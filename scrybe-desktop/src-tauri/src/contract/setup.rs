@@ -249,6 +249,12 @@ pub enum ReadinessState {
     Ready,
     Blocked,
     NotConfigured,
+    /// Nothing in the service layer checked this one. Mirrored rather
+    /// than folded into `NotConfigured`, which means something else
+    /// entirely — that the facet is deliberately not in use — and the
+    /// difference is what a reader needs to tell "nothing is wrong"
+    /// from "nobody looked".
+    Unverified,
 }
 
 impl From<FacetState> for ReadinessState {
@@ -257,6 +263,7 @@ impl From<FacetState> for ReadinessState {
             FacetState::Ready => Self::Ready,
             FacetState::Blocked => Self::Blocked,
             FacetState::NotConfigured => Self::NotConfigured,
+            FacetState::Unverified => Self::Unverified,
         }
     }
 }

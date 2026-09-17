@@ -90,10 +90,6 @@ pub enum DiagnosticCode {
     NotesProviderUnreachable,
     /// Nothing answered at the configured local notes endpoint.
     NotesProviderReachable,
-    /// The microphone permission has been refused.
-    MicrophonePermissionDenied,
-    /// The Screen & System Audio Recording permission has been refused.
-    SystemAudioPermissionDenied,
 }
 
 /// A mutation a user can explicitly choose in response to a finding.

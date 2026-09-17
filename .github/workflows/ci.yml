@@ -409,19 +409,24 @@ jobs:
         run: cargo test --manifest-path scrybe-desktop/src-tauri/Cargo.toml --all-targets --locked
       # The debug-only lifecycle channel compiles to a different
       # expansion in a release build, so checking only the debug profile
-      # would leave half of it unbuilt — and the half that ships.
+      # would leave half of it unbuilt — and the half that ships. This
+      # builds default features, so the transport a user installs is in
+      # this graph.
       - name: cargo check (desktop host, release profile)
         run: cargo check --manifest-path scrybe-desktop/src-tauri/Cargo.toml --release --bin scrybe-desktop --locked
-      # The model transport is behind a default-off feature, so every
-      # step above compiles the host without it. This is the one step
-      # that builds the shape the setup qualification runs.
-      - name: cargo clippy (desktop host, model transport enabled)
-        run: cargo clippy --manifest-path scrybe-desktop/src-tauri/Cargo.toml --all-targets --locked --features model-download -- -D warnings
-      # Asserts the default host graph carries no networking crate, the
-      # feature-on graph carries exactly the approved transport, and the
-      # model catalog names only the approved destination. Runs here
-      # because it resolves the desktop workspace, which the root
-      # `egress-audit` job cannot see.
+      # Every step above builds the shipped shape, which carries the
+      # model transport. This is the one step that builds the host
+      # without it — the configuration nobody ships, checked because a
+      # feature that cannot be turned off is a label rather than a gate,
+      # and `check-app-egress-baseline.py` reads that graph to prove the
+      # transport is genuinely what the feature controls.
+      - name: cargo clippy (desktop host, no model transport)
+        run: cargo clippy --manifest-path scrybe-desktop/src-tauri/Cargo.toml --all-targets --locked --no-default-features -- -D warnings
+      # Asserts the shipped host graph carries exactly the approved
+      # transport and nothing more, that turning the feature off leaves
+      # no transport at all, and that the model catalog names only the
+      # approved destination. Runs here because it resolves the desktop
+      # workspace, which the root `egress-audit` job cannot see.
       - name: app egress baseline
         run: python3 scripts/check-app-egress-baseline.py
       # Regenerates the TypeScript contract from the Rust one and fails

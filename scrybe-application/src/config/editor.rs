@@ -53,10 +53,36 @@ pub fn apply(text: &str, update: &ConfigUpdate) -> Result<String> {
     for (field, value) in update.entries() {
         check_kind(field, value)?;
         let table = table_mut(&mut document, field.table())?;
+        if means_unset(field, value) {
+            table.remove(field.key());
+            continue;
+        }
         set_preserving_decor(table, field.key(), to_item(value))?;
     }
 
     Ok(document.to_string())
+}
+
+/// Whether this change means "unset" rather than "set to empty".
+///
+/// `[capture].hotkey` is the only field in the writable set the schema
+/// models as optional, and the settings form offers it as "leave empty
+/// for none". An empty string is not that: the strict schema accepts
+/// it as `Some("")`, so the default accelerator is never substituted,
+/// and the recording shell then refuses to start because it cannot
+/// register an empty accelerator. Removing the key is what "none" is
+/// in this document, and it is what the `Option` in the schema and the
+/// `Option` in the form's snapshot already mean.
+///
+/// Removal takes the whole key, including the comment that decorated
+/// it. That is the one case where this module does not preserve what
+/// surrounded a value, and it is unavoidable: there is no key left to
+/// hang the decor on.
+const fn means_unset(field: ConfigField, value: &ConfigValue) -> bool {
+    matches!(
+        (field, value),
+        (ConfigField::CaptureHotkey, ConfigValue::Text(text)) if text.is_empty()
+    )
 }
 
 fn check_kind(field: ConfigField, value: &ConfigValue) -> Result<()> {
