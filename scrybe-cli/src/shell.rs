@@ -13,14 +13,18 @@
 //! lifecycle and one idempotent stop signal.
 
 use std::sync::mpsc::{self, Receiver};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
+use scrybe_application::recording::{
+    RecordingController, RecordingSnapshot, RecordingState, StopAcceptance, StopSource,
+};
 use scrybe_core::config::{ShellConfig, ShellIndicator};
 use tokio::runtime::Runtime;
 use tokio::sync::watch;
 
-use crate::commands::rec::{monitor_signals, run_with_stop, Args};
+use crate::commands::rec::{monitor_signals, run_with_stop, Args, RECORDING_FAILURE_SUMMARY};
 #[cfg(target_os = "macos")]
 use crate::floating_panel::{prepare_application, reduce_motion_enabled, FloatingPanel};
 use crate::hotkey::{HotkeyEvent, HotkeyListener, DEFAULT_STOP_ACCELERATOR};
@@ -37,28 +41,6 @@ const POLL_INTERVAL: Duration = Duration::from_millis(20);
 pub enum ShellState {
     Recording,
     Saving,
-}
-
-/// Native control that won the stop race.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum StopSource {
-    Tray,
-    FloatingWindow,
-    SurfaceFailure,
-    Hotkey,
-    Signal,
-}
-
-impl StopSource {
-    const fn label(self) -> &'static str {
-        match self {
-            Self::Tray => "tray",
-            Self::FloatingWindow => "floating-window",
-            Self::SurfaceFailure => "surface-failure",
-            Self::Hotkey => "hotkey",
-            Self::Signal => "signal",
-        }
-    }
 }
 
 /// One rendering-independent snapshot for all shell surfaces.
@@ -83,48 +65,67 @@ impl ShellView {
     }
 }
 
-/// Owns the only Recording -> Saving transition and stop signal.
-struct StopCoordinator {
-    started_at: Instant,
-    frozen_elapsed: Option<Duration>,
-    first_source: Option<StopSource>,
+impl From<&RecordingSnapshot> for ShellView {
+    /// Projects the shared recording state onto the two states these
+    /// native surfaces render.
+    ///
+    /// `Preparing` reads as recording, not as saving. The controller
+    /// sits in it for the whole of `run_with_stop`'s preflight, and
+    /// these surfaces are already up and being rendered during it, so
+    /// projecting it as saving would show a `Saving…` tray label, a
+    /// pinned waveform, and a dimmed pill dot until capture starts. It
+    /// also accepts a stop, which is what `stop_enabled` reports, and
+    /// the surfaces' fixtures take `stop_enabled` to imply a live
+    /// recording.
+    ///
+    /// Everything after capture — finalizing, completed, settled —
+    /// reads as saving, because that is what the surfaces show until
+    /// they are torn down.
+    fn from(snapshot: &RecordingSnapshot) -> Self {
+        Self {
+            state: match snapshot.state {
+                RecordingState::Preparing | RecordingState::Recording => ShellState::Recording,
+                _ => ShellState::Saving,
+            },
+            elapsed: Duration::from_millis(snapshot.elapsed_ms),
+            stop_enabled: snapshot.stop_enabled(),
+        }
+    }
+}
+
+/// Bridges the process-wide recording controller to the stop channel
+/// the recording task waits on.
+///
+/// The controller decides whether a stop is accepted; this only
+/// forwards the one accepted request onto the channel, so a second
+/// tray click cannot signal the recording task twice.
+struct ShellStop {
+    controller: Arc<RecordingController>,
     stop_tx: watch::Sender<bool>,
 }
 
-impl StopCoordinator {
-    const fn new(started_at: Instant, stop_tx: watch::Sender<bool>) -> Self {
+impl ShellStop {
+    const fn new(controller: Arc<RecordingController>, stop_tx: watch::Sender<bool>) -> Self {
         Self {
-            started_at,
-            frozen_elapsed: None,
-            first_source: None,
+            controller,
             stop_tx,
         }
     }
 
-    fn request_stop(&mut self, source: StopSource, now: Instant) -> Option<ShellView> {
-        if self.frozen_elapsed.is_some() {
-            return None;
+    fn request(&self, source: StopSource) {
+        if self.controller.request_stop(source) != StopAcceptance::Accepted {
+            return;
         }
-        self.frozen_elapsed = Some(now.saturating_duration_since(self.started_at));
-        self.first_source = Some(source);
         let _ = self.stop_tx.send(true);
-        Some(self.view(now))
+        tracing::debug!(
+            source = source.label(),
+            elapsed = self.view().elapsed_label(),
+            "recording stop accepted"
+        );
     }
 
-    fn view(&self, now: Instant) -> ShellView {
-        let elapsed = self
-            .frozen_elapsed
-            .unwrap_or_else(|| now.saturating_duration_since(self.started_at));
-        let state = if self.frozen_elapsed.is_some() {
-            ShellState::Saving
-        } else {
-            ShellState::Recording
-        };
-        ShellView {
-            state,
-            elapsed,
-            stop_enabled: state == ShellState::Recording,
-        }
+    fn view(&self) -> ShellView {
+        ShellView::from(&self.controller.snapshot())
     }
 }
 
@@ -248,55 +249,126 @@ pub fn run_record_with_shell(args: Args, runtime: &Runtime) -> Result<()> {
         .unwrap_or_else(|| DEFAULT_STOP_ACCELERATOR.to_string());
 
     let (stop_tx, stop_rx) = watch::channel(false);
-    let mut stop = StopCoordinator::new(Instant::now(), stop_tx);
-    let initial = stop.view(Instant::now());
-    let mut surfaces = NativeSurfaces::start(&cfg.shell, &accelerator, initial)?;
-    let hotkey = HotkeyListener::start(&accelerator).context("starting global hotkey listener")?;
+    let controller = Arc::new(RecordingController::new());
+
+    // Constructing the native surfaces and registering the hotkey is
+    // this shell's preflight: if either fails, no session folder is
+    // ever created.
+    controller.begin_preparing().map_err(anyhow::Error::from)?;
+    let stop = ShellStop::new(Arc::clone(&controller), stop_tx);
+    let mut surfaces = match NativeSurfaces::start(&cfg.shell, &accelerator, stop.view()) {
+        Ok(surfaces) => surfaces,
+        Err(error) => return Err(settle_failure(&controller, error)),
+    };
+    let hotkey = match HotkeyListener::start(&accelerator) {
+        Ok(hotkey) => hotkey,
+        Err(error) => {
+            return Err(settle_failure(
+                &controller,
+                error.context("starting global hotkey listener"),
+            ))
+        }
+    };
+
     let (signal_tx, signal_rx) = mpsc::channel();
     let signal_handle = runtime.spawn(monitor_signals(move || {
         let _ = signal_tx.send(());
     }));
-    let task = runtime.spawn(run_with_stop(args, stop_rx));
+    // No `mark_recording` here. The controller stays `Preparing` until
+    // the pipeline publishes `SessionProgress::Recording`, which is the
+    // real capture boundary; `run_with_stop` drives both that and the
+    // entry into `Saving` from the controller it is handed. Marking
+    // recording at this point made every preflight failure inside
+    // `run_with_stop` look like a capture failure.
+    let task = runtime.spawn(run_with_stop(args, stop_rx, Some(Arc::clone(&controller))));
 
-    let surface_result = pump_until_finished(&mut surfaces, &hotkey, &signal_rx, &mut stop, &task);
+    let surface_result = pump_until_finished(&mut surfaces, &hotkey, &signal_rx, &stop, &task);
     let recording_result = runtime.block_on(task);
     signal_handle.abort();
-    let recording_result = recording_result.context("joining recording task")?;
+    // Every error exit from here settles the controller. A bare `?`
+    // would return with the controller stuck wherever it was, so every
+    // later snapshot would report a recording that is no longer running
+    // and the process could never start another.
+    let recording_result = match recording_result.context("joining recording task") {
+        Ok(result) => result,
+        Err(error) => return Err(settle_failure(&controller, error)),
+    };
     if let Err(recording_error) = recording_result {
         if let Err(surface_error) = surface_result {
             tracing::warn!(%surface_error, "shell surface also failed during recording teardown");
         }
-        return Err(recording_error).context("recording session failed");
+        return Err(settle_failure(
+            &controller,
+            recording_error.context("recording session failed"),
+        ));
     }
+    settle_success(&controller);
     surface_result
+}
+
+/// Records a failure against the controller and settles it back to
+/// idle, returning the error the caller should surface.
+///
+/// The controller labels the failure from the state it was in, so the
+/// shell never has to decide whether a failure was preflight, capture,
+/// or finalization.
+fn settle_failure(controller: &RecordingController, error: anyhow::Error) -> anyhow::Error {
+    // A fixed literal rather than `error.to_string()`: the summary is a
+    // `Serialize` field of `RecordingEvent` and `RecordingSnapshot`,
+    // and a surface-construction or hotkey-registration error can carry
+    // a device or accelerator identity. The detailed error is still
+    // returned to the caller and traced.
+    tracing::error!(%error, "recording attempt failed");
+    if let Err(conflict) = controller.fail(RECORDING_FAILURE_SUMMARY) {
+        tracing::debug!(%conflict, "recording failure arrived in a state that cannot fail");
+    }
+    if let Err(conflict) = controller.acknowledge() {
+        tracing::debug!(%conflict, "recording controller could not settle to idle");
+    }
+    error
+}
+
+/// Walks the controller through its completion transitions.
+fn settle_success(controller: &RecordingController) {
+    if controller.snapshot().state == RecordingState::Recording {
+        // The capture source ended on its own rather than by request.
+        if let Err(conflict) = controller.begin_saving() {
+            tracing::debug!(%conflict, "recording controller could not enter saving");
+        }
+    }
+    if let Err(conflict) = controller.complete() {
+        tracing::debug!(%conflict, "recording controller could not complete");
+    }
+    if let Err(conflict) = controller.acknowledge() {
+        tracing::debug!(%conflict, "recording controller could not settle to idle");
+    }
 }
 
 fn pump_until_finished(
     surfaces: &mut NativeSurfaces,
     hotkey: &HotkeyListener,
     signal_rx: &Receiver<()>,
-    stop: &mut StopCoordinator,
+    stop: &ShellStop,
     task: &tokio::task::JoinHandle<Result<()>>,
 ) -> Result<()> {
     let mut surface_error = None;
     while !task.is_finished() {
         if let Some(source) = surfaces.poll_stop() {
-            apply_stop_request(stop, source);
+            stop.request(source);
         }
         if matches!(hotkey.poll(), Some(HotkeyEvent::StopRequested)) {
-            apply_stop_request(stop, StopSource::Hotkey);
+            stop.request(StopSource::Hotkey);
         }
         poll_signal_stop(signal_rx, stop);
 
         if surface_error.is_none() {
-            let view = stop.view(Instant::now());
-            if let Err(error) = surfaces.render(view) {
-                apply_stop_request(stop, StopSource::SurfaceFailure);
+            if let Err(error) = surfaces.render(stop.view()) {
+                stop.request(StopSource::SurfaceFailure);
                 surface_error = Some(error);
             }
         }
         if let Err(error) = pump_platform(POLL_INTERVAL) {
-            apply_stop_request(stop, StopSource::SurfaceFailure);
+            stop.request(StopSource::SurfaceFailure);
             surface_error.get_or_insert(error);
             std::thread::sleep(POLL_INTERVAL);
         }
@@ -304,21 +376,9 @@ fn pump_until_finished(
     surface_error.map_or(Ok(()), Err)
 }
 
-fn poll_signal_stop(signal_rx: &Receiver<()>, stop: &mut StopCoordinator) {
+fn poll_signal_stop(signal_rx: &Receiver<()>, stop: &ShellStop) {
     if signal_rx.try_recv().is_ok() {
-        apply_stop_request(stop, StopSource::Signal);
-    }
-}
-
-fn apply_stop_request(stop: &mut StopCoordinator, source: StopSource) {
-    if let Some(view) = stop.request_stop(source, Instant::now()) {
-        debug_assert_eq!(view.state, ShellState::Saving);
-        debug_assert!(!view.stop_enabled);
-        tracing::debug!(
-            source = source.label(),
-            elapsed = view.elapsed_label(),
-            "recording stop accepted"
-        );
+        stop.request(StopSource::Signal);
     }
 }
 
@@ -458,28 +518,43 @@ mod tests {
         );
     }
 
-    #[test]
-    fn first_stop_source_freezes_elapsed_and_disables_every_control() {
-        let started_at = Instant::now();
-        let (stop_tx, mut stop_rx) = watch::channel(false);
-        let mut stop = StopCoordinator::new(started_at, stop_tx);
+    /// A controller already in `Recording`, which is the state every
+    /// shell surface is constructed against.
+    fn recording() -> (Arc<RecordingController>, ShellStop, watch::Receiver<bool>) {
+        let controller = Arc::new(RecordingController::new());
+        controller.begin_preparing().unwrap();
+        controller.mark_recording().unwrap();
+        let (stop_tx, stop_rx) = watch::channel(false);
+        let stop = ShellStop::new(Arc::clone(&controller), stop_tx);
+        (controller, stop, stop_rx)
+    }
 
-        assert!(stop
-            .request_stop(StopSource::Tray, started_at + Duration::from_secs(7))
-            .is_some());
-        assert!(stop
-            .request_stop(StopSource::Tray, started_at + Duration::from_secs(9))
-            .is_none());
-        assert!(stop
-            .request_stop(StopSource::Hotkey, started_at + Duration::from_secs(11))
-            .is_none());
+    #[test]
+    fn only_the_first_stop_request_reaches_the_recording_task() {
+        let (_controller, stop, mut stop_rx) = recording();
+
+        stop.request(StopSource::Tray);
+        stop.request(StopSource::Tray);
+        stop.request(StopSource::Hotkey);
+
         assert!(stop_rx.has_changed().unwrap());
         assert!(*stop_rx.borrow_and_update());
-        assert!(!stop_rx.has_changed().unwrap());
-        assert_eq!(stop.first_source, Some(StopSource::Tray));
-        let view = stop.view(started_at + Duration::from_secs(20));
+        assert!(
+            !stop_rx.has_changed().unwrap(),
+            "a repeated stop must not signal the recording task again"
+        );
+    }
+
+    #[test]
+    fn the_first_stop_source_wins_and_disables_every_control() {
+        let (controller, stop, _stop_rx) = recording();
+
+        stop.request(StopSource::Tray);
+        stop.request(StopSource::Hotkey);
+
+        assert_eq!(controller.snapshot().stop_source, Some(StopSource::Tray));
+        let view = stop.view();
         assert_eq!(view.state, ShellState::Saving);
-        assert_eq!(view.elapsed, Duration::from_secs(7));
         assert!(!view.stop_enabled);
     }
 
@@ -491,48 +566,99 @@ mod tests {
             StopSource::Hotkey,
             StopSource::Signal,
         ] {
-            let started_at = Instant::now();
-            let (stop_tx, _stop_rx) = watch::channel(false);
-            let mut stop = StopCoordinator::new(started_at, stop_tx);
-            let view = stop
-                .request_stop(source, started_at + Duration::from_secs(3))
-                .unwrap();
+            let (controller, stop, _stop_rx) = recording();
 
-            assert_eq!(stop.first_source, Some(source));
-            assert_eq!(view.state, ShellState::Saving);
-            assert_eq!(view.elapsed, Duration::from_secs(3));
-            assert!(!view.stop_enabled);
+            stop.request(source);
+
+            assert_eq!(controller.snapshot().stop_source, Some(source));
+            assert_eq!(stop.view().state, ShellState::Saving);
+            assert!(!stop.view().stop_enabled);
         }
     }
 
     #[test]
     fn signal_event_reaches_the_shared_saving_transition() {
-        let started_at = Instant::now();
-        let (stop_tx, mut stop_rx) = watch::channel(false);
-        let mut stop = StopCoordinator::new(started_at, stop_tx);
+        let (controller, stop, mut stop_rx) = recording();
         let (signal_tx, signal_rx) = mpsc::channel();
         signal_tx.send(()).unwrap();
 
-        poll_signal_stop(&signal_rx, &mut stop);
+        poll_signal_stop(&signal_rx, &stop);
 
-        assert_eq!(stop.first_source, Some(StopSource::Signal));
+        assert_eq!(controller.snapshot().stop_source, Some(StopSource::Signal));
         assert!(*stop_rx.borrow_and_update());
-        assert_eq!(stop.view(Instant::now()).state, ShellState::Saving);
+        assert_eq!(stop.view().state, ShellState::Saving);
     }
 
     #[test]
-    fn recording_elapsed_advances_until_the_first_stop() {
-        let started_at = Instant::now();
-        let (stop_tx, _stop_rx) = watch::channel(false);
-        let stop = StopCoordinator::new(started_at, stop_tx);
+    fn a_live_recording_shows_a_running_timer_and_an_enabled_stop_control() {
+        let (_controller, stop, _stop_rx) = recording();
+
+        let view = stop.view();
+
+        assert_eq!(view.state, ShellState::Recording);
+        assert!(view.stop_enabled);
+    }
+
+    #[test]
+    fn preflight_renders_as_a_live_recording_with_the_stop_control_enabled() {
+        // `run_with_stop` sits in `Preparing` for the whole preflight —
+        // config load, storage root creation, capture-source and
+        // provider resolution, notes-runtime model load, device
+        // enumeration, capture start — and `NativeSurfaces::start` is
+        // handed that view as its initial state. Projecting it as
+        // `Saving` pins the waveform, labels the tray `Saving…  00:00`,
+        // and dims the floating pill's dot for the whole window.
+        let controller = Arc::new(RecordingController::new());
+        controller.begin_preparing().unwrap();
+
+        let view = ShellView::from(&controller.snapshot());
+
+        assert_eq!(view.state, ShellState::Recording);
+        // `Preparing` satisfies `accepts_stop`, so projecting it as
+        // `Saving` also broke the stop_enabled-implies-Recording
+        // invariant the surfaces' own fixtures encode.
+        assert!(view.stop_enabled);
+    }
+
+    #[test]
+    fn a_surface_failure_stops_the_recording_through_the_same_controller() {
+        let (controller, stop, mut stop_rx) = recording();
+
+        stop.request(StopSource::SurfaceFailure);
 
         assert_eq!(
-            stop.view(started_at + Duration::from_secs(4)),
-            ShellView {
-                state: ShellState::Recording,
-                elapsed: Duration::from_secs(4),
-                stop_enabled: true,
-            }
+            controller.snapshot().stop_source,
+            Some(StopSource::SurfaceFailure)
         );
+        assert!(*stop_rx.borrow_and_update());
+    }
+
+    #[test]
+    fn a_completed_recording_settles_the_controller_back_to_idle() {
+        let (controller, stop, _stop_rx) = recording();
+        stop.request(StopSource::Tray);
+
+        settle_success(&controller);
+
+        assert_eq!(controller.snapshot().state, RecordingState::Idle);
+    }
+
+    #[test]
+    fn a_capture_source_that_ends_on_its_own_still_settles_to_idle() {
+        let (controller, _stop, _stop_rx) = recording();
+
+        settle_success(&controller);
+
+        assert_eq!(controller.snapshot().state, RecordingState::Idle);
+    }
+
+    #[test]
+    fn a_failed_recording_settles_to_idle_and_returns_its_error() {
+        let (controller, _stop, _stop_rx) = recording();
+
+        let error = settle_failure(&controller, anyhow::anyhow!("capture device disappeared"));
+
+        assert!(error.to_string().contains("capture device disappeared"));
+        assert_eq!(controller.snapshot().state, RecordingState::Idle);
     }
 }
