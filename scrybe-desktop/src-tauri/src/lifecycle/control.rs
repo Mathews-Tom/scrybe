@@ -41,12 +41,7 @@ const DESTROY_WINDOW: &str = "destroy-window";
 /// A failure to bind is reported and not propagated: it costs the
 /// process its qualification channel, not its ability to run.
 pub fn serve(app: &tauri::AppHandle) {
-    let path = app
-        .state::<Desktop>()
-        .application()
-        .root()
-        .path()
-        .join(FILE_NAME);
+    let path = socket_path(app.state::<Desktop>().application().root().path());
     let handle = app.clone();
 
     match bind(&path) {
@@ -140,6 +135,23 @@ fn destroy(app: &tauri::AppHandle) {
     };
     if let Err(error) = main.destroy() {
         eprintln!("scrybe-desktop: could not destroy the main window: {error}");
+    }
+}
+
+/// Removes the socket as the process exits.
+///
+/// A socket left in the storage root would outlive the process that
+/// owned it and would be the one thing a qualification run found in a
+/// root it expects to hold nothing but the record.
+pub fn remove_socket(app: &tauri::AppHandle) {
+    let path = socket_path(app.state::<Desktop>().application().root().path());
+    if let Err(error) = std::fs::remove_file(&path) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            eprintln!(
+                "scrybe-desktop: could not remove the control channel at {}: {error}",
+                path.display()
+            );
+        }
     }
 }
 

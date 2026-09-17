@@ -1,0 +1,141 @@
+import { screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { describe, expect, it } from "vitest";
+
+import { renderWith } from "../../testing/render";
+import {
+  commandFailure,
+  page,
+  servicesReturning,
+  session,
+  settings,
+} from "../../testing/services";
+import { SearchView } from "./SearchView";
+import { SessionsView } from "./SessionsView";
+import { SettingsView } from "./SettingsView";
+
+describe("SessionsView", () => {
+  it("test_sessions_lists_each_recorded_session_with_its_state", async () => {
+    await renderWith(
+      <SessionsView />,
+      servicesReturning({
+        listSessions: () =>
+          Promise.resolve(
+            page([
+              session({ title: "Quarterly review" }),
+              session({ id: "other", title: "Standup", progress: "repairable" }),
+            ]),
+          ),
+      }),
+    );
+
+    const rows = screen.getAllByRole("listitem");
+
+    expect(rows).toHaveLength(2);
+    expect(rows[0]?.textContent).toContain("Quarterly review");
+    expect(rows[1]?.textContent).toContain("Needs repair");
+  });
+
+  it("test_sessions_with_nothing_recorded_says_so_rather_than_showing_a_blank_region", async () => {
+    await renderWith(<SessionsView />);
+
+    expect(
+      screen.getByText("Nothing has been recorded into this storage root yet."),
+    ).toBeDefined();
+  });
+
+  it("test_sessions_surfaces_an_unreadable_storage_root_as_an_alert", async () => {
+    await renderWith(
+      <SessionsView />,
+      servicesReturning({
+        listSessions: () =>
+          commandFailure(
+            "storage_root_missing",
+            "the configured storage root does not exist",
+          ),
+      }),
+    );
+
+    expect(screen.getByRole("alert").textContent).toBe(
+      "the configured storage root does not exist",
+    );
+    expect(screen.queryByRole("list")).toBeNull();
+  });
+});
+
+describe("SearchView", () => {
+  it("test_search_field_has_a_label_and_is_operable_by_keyboard", async () => {
+    const user = userEvent.setup();
+    await renderWith(
+      <SearchView />,
+      servicesReturning({
+        searchSessions: (query) =>
+          Promise.resolve(page(query === "review" ? [session()] : [])),
+      }),
+    );
+
+    await user.tab();
+    await user.keyboard("review");
+    await user.keyboard("{Enter}");
+
+    expect(screen.getByRole("searchbox", { name: "Search transcripts and notes" })).toBe(
+      document.activeElement,
+    );
+    expect(await screen.findByText("Quarterly review")).toBeDefined();
+  });
+
+  it("test_search_with_no_match_names_the_query_it_found_nothing_for", async () => {
+    const user = userEvent.setup();
+    await renderWith(<SearchView />);
+
+    await user.type(
+      screen.getByRole("searchbox", { name: "Search transcripts and notes" }),
+      "budget",
+    );
+    await user.click(screen.getByRole("button", { name: "Search" }));
+
+    expect(await screen.findByText("Nothing matches “budget”.")).toBeDefined();
+  });
+});
+
+describe("SettingsView", () => {
+  it("test_settings_shows_where_storage_and_configuration_live", async () => {
+    await renderWith(<SettingsView />);
+
+    expect(screen.getByText("/configured/sessions")).toBeDefined();
+    expect(screen.getByText("/configured/config.toml")).toBeDefined();
+  });
+
+  it("test_settings_says_when_no_configuration_file_has_been_written_yet", async () => {
+    await renderWith(
+      <SettingsView />,
+      servicesReturning({
+        settingsSummary: () => Promise.resolve(settings({ config_exists: false })),
+      }),
+    );
+
+    expect(
+      screen.getByText("/configured/config.toml (not yet written)"),
+    ).toBeDefined();
+  });
+
+  it("test_settings_reports_the_service_layers_configuration_warnings", async () => {
+    await renderWith(
+      <SettingsView />,
+      servicesReturning({
+        settingsSummary: () =>
+          Promise.resolve(
+            settings({
+              warnings: [
+                { severity: "warning", message: "the storage root does not exist" },
+              ],
+            }),
+          ),
+      }),
+    );
+
+    expect(
+      screen.getByText("Warning: the storage root does not exist"),
+    ).toBeDefined();
+  });
+});

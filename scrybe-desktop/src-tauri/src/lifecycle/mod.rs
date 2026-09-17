@@ -45,11 +45,19 @@ macro_rules! note {
     };
 }
 
-/// The release expansion: nothing at all.
+/// The release expansion.
+///
+/// It consumes the application handle so the call site does not become
+/// an unused binding, and discards everything else: the event name and
+/// detail are never named in the expansion, so no release build carries
+/// their string literals. Expanding to a block rather than to nothing
+/// keeps a call in expression position valid.
 #[cfg(not(debug_assertions))]
 #[macro_export]
 macro_rules! note {
-    ($($ignored:tt)*) => {};
+    ($app:expr $(, $ignored:expr)* $(,)?) => {{
+        let _ = $app;
+    }};
 }
 
 /// Keeps the process alive when its last window goes away.
@@ -68,7 +76,11 @@ pub fn keep_running_without_a_window(app: &tauri::AppHandle, event: tauri::RunEv
             api.prevent_exit();
             crate::note!(app, "implicit-exit-prevented");
         }
-        tauri::RunEvent::Exit => crate::note!(app, "exited"),
+        tauri::RunEvent::Exit => {
+            #[cfg(debug_assertions)]
+            control::remove_socket(app);
+            crate::note!(app, "exited");
+        }
         _ => {}
     }
 }
