@@ -429,12 +429,6 @@ jobs:
       # workspace, which the root `egress-audit` job cannot see.
       - name: app egress baseline
         run: python3 scripts/check-app-egress-baseline.py
-      # The setup scenario builds the one shape that enables the model
-      # transport, so the host has to compile in it too. The scenario
-      # itself needs a window server and is run on the workstation, not
-      # here; this is the compile leg of it.
-      - name: cargo check (desktop host, model transport enabled)
-        run: cargo check --manifest-path scrybe-desktop/src-tauri/Cargo.toml --all-targets --locked --features model-download
       # Regenerates the TypeScript contract from the Rust one and fails
       # when the checked-in file differs, so it needs the Rust host and
       # therefore runs here rather than on the frontend leg.

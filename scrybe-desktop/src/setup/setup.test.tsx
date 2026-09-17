@@ -386,6 +386,62 @@ describe("the transcription step", () => {
     expect(calls).toEqual(["cancel"]);
   });
 
+  /// Every install failure used to reach this panel as the single state
+  /// `failed` plus prose, so a full disk and a corrupted download were
+  /// indistinguishable to anything but a human reader — and both were
+  /// offered the same `Try again`, which for the full disk could never
+  /// work because nothing about the disk had changed.
+  it("test_a_full_disk_and_a_corrupted_download_are_told_apart", async () => {
+    const user = userEvent.setup();
+    await renderWith(
+      <SetupWizard onExit={() => undefined} />,
+      servicesReturning({
+        installModel: () =>
+          Promise.resolve(
+            modelOutcome({
+              state: "failed",
+              reason: "insufficient_space",
+              failure: "installing it needs 756049465 bytes and 12 are free",
+              promoted: false,
+            }),
+          ),
+      }),
+    );
+    await goTo(user, "Transcription and notes");
+    await user.click(
+      await screen.findByRole("button", { name: "Download and verify this model" }),
+    );
+
+    expect(await screen.findByText(/There is not enough room on the disk/)).toBeDefined();
+    expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+  });
+
+  it("test_a_digest_failure_is_told_apart_and_is_worth_retrying", async () => {
+    const user = userEvent.setup();
+    await renderWith(
+      <SetupWizard onExit={() => undefined} />,
+      servicesReturning({
+        installModel: () =>
+          Promise.resolve(
+            modelOutcome({
+              state: "failed",
+              reason: "digest_mismatch",
+              failure:
+                "the artifact did not match the checked-in digest, so nothing was installed",
+              promoted: false,
+            }),
+          ),
+      }),
+    );
+    await goTo(user, "Transcription and notes");
+    await user.click(
+      await screen.findByRole("button", { name: "Download and verify this model" }),
+    );
+
+    expect(await screen.findByText(/not the file the catalog describes/)).toBeDefined();
+    expect(screen.getByRole("button", { name: "Try again" })).toBeDefined();
+  });
+
   it("test_an_installed_model_is_reported_rather_than_offered_again", async () => {
     const user = userEvent.setup();
     await renderWith(

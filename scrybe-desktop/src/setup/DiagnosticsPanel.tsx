@@ -40,14 +40,20 @@ const SEVERITY: Record<string, string> = {
  *
  * Opening this reads. Nothing here is applied on mount, on a timer, or
  * as a side effect of rendering: every mutation is a button a person
- * pressed, and the button is present only for a finding whose recovery
- * the service layer says changes something. A finding that offers no
- * recovery, or whose recovery is only "look at your configuration",
- * carries no button that mutates.
+ * pressed.
  *
- * `mutation_required` comes from Rust, derived there from the action's
- * own shape rather than asserted by whichever call site built the
- * finding, so this screen cannot mislabel one.
+ * What decides whether a finding gets a button is the `elsewhere` test
+ * in `Finding` below, and nothing else. A recovery this application
+ * performs itself gets a button; `install_transcription_model` and
+ * `review_configuration` get a line of text instead, because the first
+ * goes through the confirmation flow in Setup and the second is not
+ * something any code can do on the user's behalf. That list lives in
+ * this file, so widening it is a change here.
+ *
+ * `mutation_required` reaches this screen on every row and is read by
+ * nothing. It is the service layer's own statement about whether
+ * applying an action would change anything, derived there from the
+ * action's shape; it does not govern this button and never has.
  */
 export function DiagnosticsPanel({ onRepaired }: { onRepaired: () => void }) {
   const scrybe = useScrybe();

@@ -28,7 +28,7 @@
 use std::sync::Arc;
 
 use scrybe_application::models::{
-    DownloadProgress, InstallReport, ModelConfirmation, ModelManifest, ModelState,
+    DownloadProgress, InstallReport, ModelConfirmation, ModelFailure, ModelManifest, ModelState,
 };
 use tauri::Manager as _;
 
@@ -184,12 +184,22 @@ fn cancel(app: &tauri::AppHandle) {
     crate::note!(app, CANCEL, if running { "running" } else { "idle" });
 }
 
+/// The outcome, as one line the harness compares exactly.
+///
+/// A failure carries which failure. Collapsing every one to `failed`
+/// made the free-space, digest, size and transport outcomes
+/// indistinguishable in the scenario's evidence, so four checks that
+/// exercise four different refusals all asserted the same string and
+/// none of them would have noticed the manager taking the wrong one.
 fn describe(report: &InstallReport) -> String {
-    format!(
-        "{}:promoted={}",
-        discriminant(&report.state),
-        report.promoted
-    )
+    match &report.state {
+        ModelState::Failed { reason } => format!(
+            "failed:{}:promoted={}",
+            failure_kind(reason),
+            report.promoted
+        ),
+        state => format!("{}:promoted={}", discriminant(state), report.promoted),
+    }
 }
 
 const fn discriminant(state: &ModelState) -> &'static str {
@@ -200,5 +210,18 @@ const fn discriminant(state: &ModelState) -> &'static str {
         ModelState::Ready => "ready",
         ModelState::Cancelled => "cancelled",
         ModelState::Failed { .. } => "failed",
+    }
+}
+
+/// Which refusal a failure was. The summaries the variants carry are
+/// prose a person reads; this is the discriminant a gate compares.
+const fn failure_kind(reason: &ModelFailure) -> &'static str {
+    match reason {
+        ModelFailure::SizeMismatch { .. } => "size_mismatch",
+        ModelFailure::DigestMismatch { .. } => "digest_mismatch",
+        ModelFailure::InsufficientSpace { .. } => "insufficient_space",
+        ModelFailure::Transport { .. } => "transport",
+        ModelFailure::Storage { .. } => "storage",
+        ModelFailure::InstalledArtifactUnrecognized { .. } => "installed_artifact_unrecognized",
     }
 }

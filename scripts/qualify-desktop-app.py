@@ -105,6 +105,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import http.server
+import ipaddress
 import json
 import os
 import re
@@ -1218,7 +1219,15 @@ def _setup_checks(candidate: Candidate, run: Run, server: FixtureServer) -> None
         candidate.wait_for_event("probe-model-offer"),
         "the application recorded no `model-offer`",
     )
-    run.record("offer: requests the fixture received while reading it", 0, server.count())
+    # There is deliberately no "requests the fixture received while
+    # reading the offer" check here. It would compare a counter that
+    # has never been incremented against zero, at a point in the run
+    # where nothing has yet been able to increment it — it could not
+    # fail, and a check that cannot fail inflates the count while
+    # establishing nothing. The zero-request property is asserted below
+    # against the confirmation gate, where a control exists: the
+    # counter is read again after a confirmed install has provably
+    # moved it.
 
     # (a) An unconfirmed install reaches the source no further. The
     # digest handed back is not the one on offer, which is the shape a
@@ -1258,7 +1267,7 @@ def _setup_checks(candidate: Candidate, run: Run, server: FixtureServer) -> None
     candidate.wait_for_event("probe-model-install", count=2)
     run.record(
         "free space: the outcome when the artifact does not fit",
-        "failed:promoted=false",
+        "failed:insufficient_space:promoted=false",
         candidate.last_detail_of("probe-model-install"),
     )
     run.record(
@@ -1280,7 +1289,7 @@ def _setup_checks(candidate: Candidate, run: Run, server: FixtureServer) -> None
     candidate.wait_for_event("probe-model-install", count=3, timeout=60.0)
     run.record(
         "digest: the outcome when the artifact does not match",
-        "failed:promoted=false",
+        "failed:digest_mismatch:promoted=false",
         candidate.last_detail_of("probe-model-install"),
     )
     run.record(
@@ -1422,11 +1431,20 @@ def reaches_only(line: str, port: int) -> bool:
     last field instead would read `(ESTABLISHED)` and find no address at
     all, which would make this pass everything.
 
-    Every host named must be loopback, and where the name has a remote
-    half — the `->` form, which is a connection rather than a listening
-    socket — its port must be the fixture's. A connection to some other
-    service on this machine is as much a failure here as one to a
-    public host.
+    Every host named must be an explicit loopback address, and where the
+    name has a remote half — the `->` form, which is a connection rather
+    than a listening socket — its port must be the fixture's. A
+    connection to some other service on this machine is as much a
+    failure here as one to a public host.
+
+    "Explicit" rules out `*`, which this used to accept. A wildcard is
+    not a loopback address: `*:8080 (LISTEN)` is a socket bound to every
+    interface on the machine, reachable from the network, and
+    `*:52000->*:51234` names a peer this check cannot see. Accepting
+    either made the scenario's only no-network leg pass on sockets it
+    had not actually established anything about — and because this build
+    carries a compiled-in HTTP client by design, that leg is the proof,
+    not a corroboration of one.
     """
     fields = line.split()
     if len(fields) < 9:
@@ -1436,12 +1454,27 @@ def reaches_only(line: str, port: int) -> bool:
     for endpoint in (local, remote):
         if endpoint == "":
             continue
-        host = endpoint.rsplit(":", 1)[0].strip("[]")
-        if host not in {"127.0.0.1", "localhost", "*", "::1"}:
+        if not is_loopback_host(endpoint.rsplit(":", 1)[0].strip("[]")):
             return False
     if remote == "":
         return True
     return remote.rsplit(":", 1)[-1] == str(port)
+
+
+def is_loopback_host(host: str) -> bool:
+    """Whether `host` is literally a loopback address.
+
+    Parsed rather than matched against a list of spellings: `lsof -nP`
+    prints numeric addresses, and the whole of `127.0.0.0/8` and `::1`
+    are loopback, not just the two spellings anyone thinks to write
+    down. A name — including `localhost` — is not an address and is
+    refused; `-n` means one should never appear, and if one does, this
+    check cannot say where it points.
+    """
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 # Scenarios are registered here rather than enumerated at each call
