@@ -28,6 +28,15 @@ const UNSUPPORTED = 4;
  * that lets an `<audio>` element load this URL does not let script
  * fetch it. So each code is turned into the one sentence it actually
  * supports, and none of them speculates beyond it.
+ *
+ * This panel is rendered only for a session whose playback artifact is
+ * already known to exist, so no sentence here may say otherwise.
+ * WebKit reports `UNSUPPORTED` (4) not only for a format it cannot
+ * decode but also for an HTTP 4xx on the underlying fetch — which is
+ * exactly what the scheme returns for a session or artifact it can no
+ * longer find, or one that has not finished recording. Saying "this
+ * session has no audio to play" for that code would contradict the
+ * precondition that put the player on screen in the first place.
  */
 function why(error: MediaError | null): string {
   // The numbers rather than `MediaError.MEDIA_ERR_*`. The interface
@@ -42,7 +51,7 @@ function why(error: MediaError | null): string {
     case DECODE:
       return "This session's audio is on disk but could not be decoded.";
     case UNSUPPORTED:
-      return "This session has no audio to play.";
+      return "This session's audio could not be loaded.";
     default:
       return "This session's audio could not be played.";
   }

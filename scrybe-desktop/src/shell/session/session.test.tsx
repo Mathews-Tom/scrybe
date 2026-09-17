@@ -34,6 +34,21 @@ async function settle(): Promise<void> {
   });
 }
 
+/**
+ * Simulates the platform reporting `code` on the player's `error`
+ * before the `error` event PlaybackPanel reads it in fires.
+ *
+ * A plain object rather than a real `MediaError`: jsdom does not
+ * implement the interface, and a literal `{ code }` is exactly the
+ * shape `why()` reads — a numeric `code` and nothing else.
+ */
+function failPlayback(player: HTMLAudioElement, code: number): void {
+  Object.defineProperty(player, "error", {
+    configurable: true,
+    value: { code },
+  });
+}
+
 describe("opening a session", () => {
   it("test_a_row_in_the_list_opens_the_session_it_names", async () => {
     const user = userEvent.setup();
@@ -329,6 +344,83 @@ describe("SessionDetail", () => {
     expect(screen.getByRole("alert").textContent).toBe(
       "This session's audio could not be played.",
     );
+  });
+
+  it("test_playback_being_stopped_before_it_started_is_told_apart_from_an_actual_failure", async () => {
+    await renderWith(<SessionDetail id={ID} onBack={noop} />);
+    const player = screen.getByLabelText("Playback").querySelector("audio");
+    if (player === null) {
+      throw new Error("a playable session renders a player");
+    }
+
+    failPlayback(player, 1);
+    await act(async () => {
+      fireEvent.error(player);
+      await Promise.resolve();
+    });
+
+    expect(screen.getByRole("alert").textContent).toBe(
+      "Playback was stopped before it started.",
+    );
+  });
+
+  it("test_a_network_failure_says_the_audio_could_not_be_read_from_disk", async () => {
+    await renderWith(<SessionDetail id={ID} onBack={noop} />);
+    const player = screen.getByLabelText("Playback").querySelector("audio");
+    if (player === null) {
+      throw new Error("a playable session renders a player");
+    }
+
+    failPlayback(player, 2);
+    await act(async () => {
+      fireEvent.error(player);
+      await Promise.resolve();
+    });
+
+    expect(screen.getByRole("alert").textContent).toBe(
+      "This session's audio could not be read from disk.",
+    );
+  });
+
+  it("test_a_decode_failure_says_the_audio_is_on_disk_but_unreadable", async () => {
+    await renderWith(<SessionDetail id={ID} onBack={noop} />);
+    const player = screen.getByLabelText("Playback").querySelector("audio");
+    if (player === null) {
+      throw new Error("a playable session renders a player");
+    }
+
+    failPlayback(player, 3);
+    await act(async () => {
+      fireEvent.error(player);
+      await Promise.resolve();
+    });
+
+    expect(screen.getByRole("alert").textContent).toBe(
+      "This session's audio is on disk but could not be decoded.",
+    );
+  });
+
+  it("test_an_unsupported_source_error_never_claims_the_session_has_no_audio", async () => {
+    // WebKit reports this same code for an HTTP 4xx on the underlying
+    // fetch, which is exactly what the scheme returns for a session or
+    // artifact it can no longer find. This panel renders only when the
+    // playback artifact is already known to exist, so the message must
+    // not contradict that by claiming there is nothing to play.
+    await renderWith(<SessionDetail id={ID} onBack={noop} />);
+    const player = screen.getByLabelText("Playback").querySelector("audio");
+    if (player === null) {
+      throw new Error("a playable session renders a player");
+    }
+
+    failPlayback(player, 4);
+    await act(async () => {
+      fireEvent.error(player);
+      await Promise.resolve();
+    });
+
+    const message = screen.getByRole("alert").textContent;
+    expect(message).toBe("This session's audio could not be loaded.");
+    expect(message).not.toMatch(/no audio/i);
   });
 
   it("test_a_session_that_is_gone_is_reported_rather_than_rendered_empty", async () => {
