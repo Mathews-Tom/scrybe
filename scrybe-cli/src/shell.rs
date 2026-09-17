@@ -67,15 +67,25 @@ impl ShellView {
 
 impl From<&RecordingSnapshot> for ShellView {
     /// Projects the shared recording state onto the two states these
-    /// native surfaces render. Everything that is not live capture —
-    /// finalizing, completed, settled — reads as saving, because that
-    /// is what the surfaces show until they are torn down.
+    /// native surfaces render.
+    ///
+    /// `Preparing` reads as recording, not as saving. The controller
+    /// sits in it for the whole of `run_with_stop`'s preflight, and
+    /// these surfaces are already up and being rendered during it, so
+    /// projecting it as saving would show a `Saving…` tray label, a
+    /// pinned waveform, and a dimmed pill dot until capture starts. It
+    /// also accepts a stop, which is what `stop_enabled` reports, and
+    /// the surfaces' fixtures take `stop_enabled` to imply a live
+    /// recording.
+    ///
+    /// Everything after capture — finalizing, completed, settled —
+    /// reads as saving, because that is what the surfaces show until
+    /// they are torn down.
     fn from(snapshot: &RecordingSnapshot) -> Self {
         Self {
-            state: if snapshot.state == RecordingState::Recording {
-                ShellState::Recording
-            } else {
-                ShellState::Saving
+            state: match snapshot.state {
+                RecordingState::Preparing | RecordingState::Recording => ShellState::Recording,
+                _ => ShellState::Saving,
             },
             elapsed: Duration::from_millis(snapshot.elapsed_ms),
             stop_enabled: snapshot.stop_enabled(),
@@ -586,6 +596,27 @@ mod tests {
         let view = stop.view();
 
         assert_eq!(view.state, ShellState::Recording);
+        assert!(view.stop_enabled);
+    }
+
+    #[test]
+    fn preflight_renders_as_a_live_recording_with_the_stop_control_enabled() {
+        // `run_with_stop` sits in `Preparing` for the whole preflight —
+        // config load, storage root creation, capture-source and
+        // provider resolution, notes-runtime model load, device
+        // enumeration, capture start — and `NativeSurfaces::start` is
+        // handed that view as its initial state. Projecting it as
+        // `Saving` pins the waveform, labels the tray `Saving…  00:00`,
+        // and dims the floating pill's dot for the whole window.
+        let controller = Arc::new(RecordingController::new());
+        controller.begin_preparing().unwrap();
+
+        let view = ShellView::from(&controller.snapshot());
+
+        assert_eq!(view.state, ShellState::Recording);
+        // `Preparing` satisfies `accepts_stop`, so projecting it as
+        // `Saving` also broke the stop_enabled-implies-Recording
+        // invariant the surfaces' own fixtures encode.
         assert!(view.stop_enabled);
     }
 
