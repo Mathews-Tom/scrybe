@@ -77,6 +77,72 @@ describe("the settings surface", () => {
     ]);
   });
 
+  /// The confirmation used to be state inside `SettingsFormPanel`, set
+  /// beside the same `onSaved` call that reloads the form — which
+  /// unmounts that panel while the reload is in flight, destroying the
+  /// flag before it could render. A successful write gave the user no
+  /// feedback at all.
+  it("test_a_successful_write_is_confirmed", async () => {
+    const user = userEvent.setup();
+    await renderWith(
+      <SettingsView />,
+      servicesReturning({
+        applySettings: () => Promise.resolve(settingsFormFixture()),
+      }),
+    );
+    const root = await screen.findByLabelText("Storage root");
+
+    await user.clear(root);
+    await user.type(root, "/elsewhere/sessions");
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    expect(await screen.findByRole("status")).toHaveProperty("textContent", "Saved.");
+  });
+
+  it("test_the_confirmation_is_retired_once_the_form_is_edited_again", async () => {
+    const user = userEvent.setup();
+    await renderWith(
+      <SettingsView />,
+      servicesReturning({
+        applySettings: () => Promise.resolve(settingsFormFixture()),
+      }),
+    );
+    const root = await screen.findByLabelText("Storage root");
+    await user.clear(root);
+    await user.type(root, "/elsewhere/sessions");
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    expect(await screen.findByRole("status")).toBeDefined();
+
+    await user.type(await screen.findByLabelText("Storage root"), "/more");
+
+    await waitFor(() => {
+      expect(screen.queryByRole("status")).toBeNull();
+    });
+  });
+
+  /// On a fresh install the configuration file does not exist yet and
+  /// this call fails. The failure used to be dropped on the floor, so
+  /// the button looked like it had done nothing.
+  it("test_a_failure_to_open_the_advanced_configuration_is_reported", async () => {
+    const user = userEvent.setup();
+    await renderWith(
+      <SettingsView />,
+      servicesReturning({
+        openAdvancedConfiguration: () =>
+          commandFailure("config_unreadable", "no configuration file exists yet"),
+      }),
+    );
+
+    await user.click(
+      await screen.findByRole("button", { name: "Open advanced configuration" }),
+    );
+
+    expect(await screen.findByRole("alert")).toHaveProperty(
+      "textContent",
+      "no configuration file exists yet",
+    );
+  });
+
   it("test_nothing_is_written_until_something_changes", async () => {
     const written: unknown[] = [];
     await renderWith(

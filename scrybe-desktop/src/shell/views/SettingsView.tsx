@@ -25,14 +25,30 @@ const MANAGED_MODEL = "whisper-small-en";
 export function SettingsView() {
   const scrybe = useScrybe();
   const [generation, setGeneration] = useState(0);
+  // The write confirmation lives here rather than in the form panel.
+  // Saving calls `changed`, which reloads the form and unmounts that
+  // panel while the reload is in flight, so a flag set beside the write
+  // was destroyed before it could ever render.
+  const [saved, setSaved] = useState(false);
   const { readiness, recheck } = useReadiness();
   const form = useQuery(() => scrybe.settingsForm(), `settings-form:${String(generation)}`);
   const offer = useQuery(() => scrybe.modelOffer(MANAGED_MODEL), `offer:${String(generation)}`);
 
   const changed = useCallback(() => {
+    setSaved(false);
     setGeneration((previous) => previous + 1);
     recheck();
   }, [recheck]);
+
+  const settingsSaved = useCallback(() => {
+    setGeneration((previous) => previous + 1);
+    recheck();
+    setSaved(true);
+  }, [recheck]);
+
+  const settingsEdited = useCallback(() => {
+    setSaved(false);
+  }, []);
 
   return (
     <>
@@ -55,7 +71,18 @@ export function SettingsView() {
           {form.message}
         </p>
       )}
-      {form.status === "ready" && <SettingsFormPanel form={form.value} onSaved={changed} />}
+      {form.status === "ready" && (
+        <SettingsFormPanel
+          form={form.value}
+          onSaved={settingsSaved}
+          onEdited={settingsEdited}
+        />
+      )}
+      {saved && (
+        <p role="status" className="setup__saved">
+          Saved.
+        </p>
+      )}
 
       <section aria-labelledby="settings-model-heading">
         <h2 id="settings-model-heading">Managed model storage</h2>

@@ -81,18 +81,26 @@ function proposed(field: SettingsField, text: string): SettingsChange {
  * rather than left to be trusted, because a settings screen that
  * silently rewrote a hand-edited file is precisely what this one must
  * not be mistaken for.
+ *
+ * The confirmation for a successful write is not this component's, and
+ * cannot be: `onSaved` reloads the form, which unmounts this panel
+ * while the reload is in flight, so any state set beside that call is
+ * destroyed before it can render. `SettingsView` owns it.
  */
 export function SettingsFormPanel({
   form,
   onSaved,
+  onEdited,
 }: {
   form: SettingsForm;
   onSaved: () => void;
+  /// Called when a field changes, so the view can retire a "Saved."
+  /// that no longer describes what is in the form.
+  onEdited: () => void;
 }) {
   const scrybe = useScrybe();
   const [edits, setEdits] = useState<Partial<Record<SettingsField, string>>>({});
   const [failure, setFailure] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
 
   const changes = ROWS.filter(
     (row) => edits[row.field] !== undefined && edits[row.field] !== currentValue(form, row.field),
@@ -100,14 +108,29 @@ export function SettingsFormPanel({
 
   function save() {
     setFailure(null);
-    setSaved(false);
     scrybe.applySettings(changes).then(
       () => {
         setEdits({});
-        setSaved(true);
+        // `onSaved` reloads the form, which unmounts this component
+        // while the new one is in flight — so the confirmation cannot
+        // live in this component's state. It is the view's, and is
+        // rendered beside the panel rather than inside it.
         onSaved();
       },
       (error: unknown) => {
+        setFailure(describe(error));
+      },
+    );
+  }
+
+  function openAdvanced() {
+    setFailure(null);
+    scrybe.openAdvancedConfiguration().then(
+      () => undefined,
+      (error: unknown) => {
+        // Reported rather than dropped. On a fresh install the file
+        // does not exist yet and the call fails, and swallowing it made
+        // the button look like it had done nothing at all.
         setFailure(describe(error));
       },
     );
@@ -135,7 +158,7 @@ export function SettingsFormPanel({
                 aria-describedby={row.help === undefined ? undefined : `${id}-help`}
                 onChange={(event) => {
                   setEdits({ ...edits, [row.field]: event.target.value });
-                  setSaved(false);
+                  onEdited();
                 }}
               />
             ) : (
@@ -146,7 +169,7 @@ export function SettingsFormPanel({
                 aria-describedby={row.help === undefined ? undefined : `${id}-help`}
                 onChange={(event) => {
                   setEdits({ ...edits, [row.field]: event.target.value });
-                  setSaved(false);
+                  onEdited();
                 }}
               />
             )}
@@ -167,12 +190,7 @@ export function SettingsFormPanel({
         >
           Save changes
         </button>
-        <button
-          type="button"
-          onClick={() => {
-            void scrybe.openAdvancedConfiguration();
-          }}
-        >
+        <button type="button" onClick={openAdvanced}>
           Open advanced configuration
         </button>
       </div>
@@ -192,11 +210,6 @@ export function SettingsFormPanel({
             ))}
           </ul>
         </>
-      )}
-      {saved && (
-        <p role="status" className="setup__saved">
-          Saved.
-        </p>
       )}
       {failure !== null && (
         <p role="alert" className="setup__failure">
