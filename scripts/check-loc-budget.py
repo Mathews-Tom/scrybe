@@ -216,6 +216,20 @@ LOC_CEILINGS: dict[str, int] = {
     # Raised to 2700 for M6's opt-in transactional VoiceProcessingIO path:
     # explicit device/format/processing configuration, ducking suppression,
     # RAII cleanup, and a plain-input fallback proved against forced failures.
+    # Shared application-service layer consumed by the CLI and the
+    # read-only agent surface. Sized for typed serializable contracts,
+    # opaque confined identity, and errors; the paged cancellable session
+    # repository with classification, root confinement, and coalesced
+    # invalidation; the structure-preserving atomic configuration editor
+    # with rollback; structured diagnostic findings with a separate repair
+    # boundary; the versioned recording state model with idempotent stop;
+    # and the inline `#[cfg(test)]` coverage this script counts. Grounded
+    # in the 1,171 measured lines of `scrybe-core/src/agent_access` and the
+    # 1,758 measured lines of the migrating `scrybe-cli` list/show/runtime/
+    # doctor/shell surfaces, which this layer generalizes rather than
+    # copies. The `scrybe-core` and `scrybe-cli` ceilings do not move: the
+    # migration deletes the duplicated scans it replaces.
+    "scrybe-application": 5200,
     "scrybe-capture-mac": 2700,
     "scrybe-capture-linux": 2500,
     "scrybe-capture-win": 2500,

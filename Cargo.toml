@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "scrybe-core",
+    "scrybe-application",
     "scrybe-cli",
     "scrybe-capture-mac",
     "scrybe-capture-linux",

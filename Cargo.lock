@@ -3343,6 +3343,7 @@ dependencies = [
  "objc2-foundation",
  "png",
  "pretty_assertions",
+ "scrybe-meeting-application",
  "scrybe-meeting-capture-mac",
  "scrybe-meeting-capture-mic",
  "scrybe-meeting-core",
@@ -3396,6 +3397,18 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "scrybe-meeting-application"
+version = "1.6.0"
+dependencies = [
+ "chrono",
+ "pretty_assertions",
+ "scrybe-meeting-core",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
 ]
 
 [[package]]

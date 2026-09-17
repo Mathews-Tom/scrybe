@@ -1,0 +1,28 @@
+[package]
+name = "scrybe-meeting-application"
+version = "1.6.0"
+description = "Shared application services for the Scrybe meeting recorder: sessions, configuration, diagnostics, and recording."
+publish = true
+authors.workspace = true
+edition.workspace = true
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
+rust-version.workspace = true
+readme = "../README.md"
+
+[lib]
+name = "scrybe_application"
+
+[dependencies]
+chrono.workspace = true
+scrybe-core = { package = "scrybe-meeting-core", path = "../scrybe-core", version = "=1.6.0" }
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+pretty_assertions = "1"
+serde_json.workspace = true
+
+[lints]
+workspace = true
