@@ -108,7 +108,11 @@ fn test_a_playable_session_serves_its_whole_playback_artifact() {
 fn test_a_byte_range_serves_exactly_the_bytes_it_names() {
     let (_dir, desktop) = root();
 
-    let response = get(&desktop, &format!("/{COMPLETE}/playback"), Some("bytes=10-19"));
+    let response = get(
+        &desktop,
+        &format!("/{COMPLETE}/playback"),
+        Some("bytes=10-19"),
+    );
 
     assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
     assert_eq!(header(&response, "Content-Range"), "bytes 10-19/1024");
@@ -131,7 +135,11 @@ fn test_a_suffix_range_serves_the_end_of_the_artifact() {
 fn test_an_open_ended_range_serves_to_the_end_of_the_artifact() {
     let (_dir, desktop) = root();
 
-    let response = get(&desktop, &format!("/{COMPLETE}/playback"), Some("bytes=1020-"));
+    let response = get(
+        &desktop,
+        &format!("/{COMPLETE}/playback"),
+        Some("bytes=1020-"),
+    );
 
     assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
     assert_eq!(header(&response, "Content-Range"), "bytes 1020-1023/1024");
@@ -146,7 +154,11 @@ fn test_a_range_that_cannot_be_satisfied_is_refused_with_the_artifact_size() {
     let (_dir, desktop) = root();
 
     for header_value in ["bytes=2000-", "bytes=50-40", "bytes=-0", "bytes=1024-2048"] {
-        let response = get(&desktop, &format!("/{COMPLETE}/playback"), Some(header_value));
+        let response = get(
+            &desktop,
+            &format!("/{COMPLETE}/playback"),
+            Some(header_value),
+        );
 
         assert_eq!(
             response.status(),
@@ -165,7 +177,11 @@ fn test_a_range_header_this_server_cannot_parse_serves_the_whole_artifact() {
     let (_dir, desktop) = root();
 
     for header_value in ["chunks=0-10", "bytes=abc", "bytes=0-9,20-29"] {
-        let response = get(&desktop, &format!("/{COMPLETE}/playback"), Some(header_value));
+        let response = get(
+            &desktop,
+            &format!("/{COMPLETE}/playback"),
+            Some(header_value),
+        );
 
         assert_eq!(response.status(), StatusCode::OK, "{header_value}");
         assert_eq!(response.body().len(), 1024);
@@ -190,7 +206,11 @@ fn test_an_unfinished_session_is_refused_even_though_the_file_is_there() {
     // what it holds is not known to be the whole recording.
     let (_dir, desktop) = root();
 
-    let response = get(&desktop, &format!("/{UNFINISHED}/playback"), Some("bytes=0-9"));
+    let response = get(
+        &desktop,
+        &format!("/{UNFINISHED}/playback"),
+        Some("bytes=0-9"),
+    );
 
     assert_eq!(response.status(), StatusCode::CONFLICT);
     assert!(String::from_utf8_lossy(response.body()).contains("has not finished"));

@@ -269,11 +269,7 @@ pub fn reveal_session(
     // Resolution first, so a name no session answers to is a refusal
     // rather than a file manager opening on nothing.
     let detail = desktop.application().sessions().get_session(&id)?;
-    let folder = desktop
-        .application()
-        .sessions()
-        .root()
-        .resolve(&detail.id);
+    let folder = desktop.application().sessions().root().resolve(&detail.id);
     crate::setup::open(&app, &folder.display().to_string())
 }
 
