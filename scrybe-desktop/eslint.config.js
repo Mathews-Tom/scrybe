@@ -16,7 +16,7 @@ const jsxA11yStrict = jsxA11y.flatConfigs.strict;
 /* eslint-enable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access */
 
 export default defineConfig([
-  globalIgnores(["dist", "src-tauri/target", "src/bindings"]),
+  globalIgnores(["dist", "src-tauri/target"]),
   js.configs.recommended,
   tseslint.configs.strictTypeChecked,
   tseslint.configs.stylisticTypeChecked,
@@ -27,14 +27,14 @@ export default defineConfig([
       globals: { ...globals.browser },
       parserOptions: {
         projectService: {
-          allowDefaultProject: ["eslint.config.js", "scripts/*.mjs"],
+          allowDefaultProject: ["eslint.config.js"],
         },
         tsconfigRootDir: import.meta.dirname,
       },
     },
   },
   {
-    files: ["scripts/**/*.mjs", "eslint.config.js", "vite.config.ts"],
+    files: ["eslint.config.js", "vite.config.ts"],
     languageOptions: { globals: { ...globals.node } },
   },
 ]);
