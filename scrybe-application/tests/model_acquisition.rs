@@ -629,6 +629,46 @@ fn test_an_installed_matching_model_plans_as_ready() {
     assert_eq!(plan.state, ModelState::Ready);
 }
 
+/// Deciding whether an installed artifact is the catalog's means
+/// hashing half a gigabyte, so the answer is memoised. The memo must
+/// not outlive the file it describes.
+#[test]
+fn test_replacing_the_installed_artifact_is_noticed_rather_than_answered_from_the_last_reading() {
+    let fixture = Fixture::new();
+    let manifest = manifest();
+    fixture.seed_destination(ARTIFACT);
+    let manager = fixture.manager(Arc::new(UnavailableSource));
+    assert_eq!(
+        manager.plan_for(&manifest).unwrap().state,
+        ModelState::Ready
+    );
+
+    // Same length, different bytes — the case a memo keyed on the path
+    // alone would answer with the previous verdict. The modification
+    // time is moved forward explicitly, because a filesystem whose
+    // timestamps are coarse could otherwise record the rewrite at the
+    // same instant as the first write.
+    let substituted: Vec<u8> = ARTIFACT.iter().map(|byte| byte ^ 0x20).collect();
+    fixture.seed_destination(&substituted);
+    let later = std::time::SystemTime::now() + std::time::Duration::from_secs(2);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(fixture.destination())
+        .unwrap()
+        .set_modified(later)
+        .unwrap();
+
+    assert!(
+        matches!(
+            manager.plan_for(&manifest).unwrap().state,
+            ModelState::Failed {
+                reason: ModelFailure::InstalledArtifactUnrecognized { .. }
+            }
+        ),
+        "a replaced artifact was reported from the previous reading"
+    );
+}
+
 #[test]
 fn test_an_installed_file_of_the_wrong_length_is_left_exactly_as_it_was() {
     let fixture = Fixture::new();
