@@ -171,16 +171,15 @@ fn diagnose_notes_endpoint(config: &Config, findings: &mut Vec<DiagnosticFinding
         return;
     }
     // A warning rather than an error. Recording and transcription do
-    // not depend on it, and the product deliberately lets a user record
-    // with notes unavailable — the session records a `notes_missing`
-    // outcome instead of failing.
+    // not depend on it, and setup can be finished without a local notes
+    // provider; one can be configured later.
     findings.push(super::service::finding(
         DiagnosticCode::NotesProviderUnreachable,
         Severity::Warning,
         DiagnosticComponent::Providers,
         format!(
             "nothing is answering at the configured local notes provider {}; \
-             recordings will complete without notes",
+             notes need one running on this Mac",
             config.llm.base_url
         ),
         Some(RecoveryAction::ReviewConfiguration),

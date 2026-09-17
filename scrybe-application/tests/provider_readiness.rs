@@ -367,11 +367,55 @@ fn test_recording_may_be_ready_while_notes_are_visibly_unavailable() {
 
     assert_eq!(readiness.notes.state, FacetState::Blocked);
     assert_eq!(readiness.storage.state, FacetState::Ready);
-    assert_eq!(readiness.capture.state, FacetState::Ready);
     assert!(
         !readiness.notes.summary.is_empty(),
         "an unavailable notes provider says nothing about why"
     );
+}
+
+/// Nothing in this layer probes a capture permission, so the facet must
+/// not claim one either way. It used to report `Ready` off an empty
+/// evidence list, which told an installation whose microphone had been
+/// refused that it was ready to record.
+#[test]
+fn test_capture_is_reported_as_unverified_rather_than_claimed_ready() {
+    let install = Install::new();
+
+    let readiness = Readiness::from_report(&install.report(LOCAL_TRANSCRIPTION));
+
+    assert_eq!(readiness.capture.state, FacetState::Unverified);
+    assert!(
+        readiness.capture.codes.is_empty(),
+        "capture cited evidence it cannot have: {:?}",
+        readiness.capture.codes
+    );
+    assert!(
+        readiness.capture.summary.contains("not checked here"),
+        "the capture summary does not say what was left unchecked: {:?}",
+        readiness.capture.summary
+    );
+}
+
+/// Unverified is not a blocker. Refusing to record on the strength of a
+/// permission nothing measured would replace one wrong claim with
+/// another, and macOS raises its own dialog where the grant is needed.
+#[test]
+fn test_an_unverified_capture_facet_does_not_stop_a_recording() {
+    let install = Install::new();
+    let port = {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
+    };
+    let body = format!(
+        "schema_version = 1\n\n\
+         [stt]\nprovider = \"openai-compat\"\nbase_url = \"https://stt.example/v1\"\n\n\
+         [llm]\nbase_url = \"http://127.0.0.1:{port}/v1\"\n"
+    );
+
+    let readiness = Readiness::from_report(&install.report(&body));
+
+    assert_eq!(readiness.capture.state, FacetState::Unverified);
+    assert!(readiness.can_record());
 }
 
 #[test]
