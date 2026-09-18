@@ -24,6 +24,7 @@ pub mod contract;
 pub mod lifecycle;
 pub mod playback;
 pub mod queries;
+pub mod recording;
 pub mod setup;
 pub mod state;
 
@@ -71,6 +72,10 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         // whichever install is running without the frontend having to
         // carry a handle for it.
         .manage(std::sync::Arc::new(setup::ModelAcquisition::default()))
+        // One recording at a time, so a stop from any surface reaches
+        // whichever session is running without the frontend having to
+        // carry a handle for it.
+        .manage(std::sync::Arc::new(recording::LiveRecording::default()))
         // Replaces the platform default, whose predefined quit item
         // terminates the process natively without reaching the
         // exit-request path. The item this installs carries the tray's
@@ -119,6 +124,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             commands::settings_summary,
             commands::recording_status,
             commands::recording_preflight,
+            recording::start_recording,
+            recording::stop_recording,
+            recording::acknowledge_recording,
             setup::settings_form,
             setup::apply_settings,
             setup::diagnostics_report,

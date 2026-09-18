@@ -12,7 +12,6 @@ use tokio::runtime::{Builder, Runtime};
 
 #[cfg(feature = "system-capture-mac")]
 mod bundle_launcher;
-mod capture_control;
 mod commands;
 #[cfg(target_os = "macos")]
 mod macos_bundle;

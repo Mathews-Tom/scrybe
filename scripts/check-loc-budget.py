@@ -291,7 +291,44 @@ LOC_CEILINGS: dict[str, int] = {
     # Every behavioural test for all of it is in
     # `tests/recording_preflight.rs`, which this script excludes, as
     # the note at the top recommends.
-    "scrybe-application": 7700,
+    #
+    # Raised again, to 8350, for the rest of one recording: the
+    # providers a plan names, the pipeline call, the accepted-stop
+    # signal, and the adapter registry. All four were binary-private in
+    # `scrybe-cli`, so a desktop host could resolve and check a
+    # recording and then had nothing to run one with. Continuing the
+    # sum:
+    #
+    #   7633  measured, after resolution and preflight
+    #   +388  `recording/run.rs`: the two dispatch enums over the
+    #         providers a plan can name and their construction, the
+    #         stub transcription and stub notes that used to live in
+    #         `commands/rec.rs`, the settled-consent prompter a window
+    #         answers through, the deterministic synthetic source, and
+    #         the `SessionInputs` assembly and `run_with_notes` call
+    #         every frontend now shares
+    #   +100  `recording/progress.rs`: the four ordered saving steps, a
+    #         surface renders from, and the one observer that drives the
+    #         controller from the pipeline's own boundaries. Its whole
+    #         reason for existing is the projection that refuses to
+    #         derive a step from the pipeline event carrying transcript
+    #         text, so no indicator, event, or log can come to hold what
+    #         a meeting said
+    #   + 81  `recording/capture.rs`: the adapter registry, moved
+    #         verbatim from `scrybe-cli`, and the microphone the
+    #         `mic-capture` feature buys
+    #   + 44  `recording/stop.rs`: the one route from an accepted stop
+    #         to the capture holding a recording open. It adds no
+    #         coordinator — the controller's mutex is still what decides
+    #         — and exists so six surfaces do not each write the
+    #         check-then-signal ordering themselves
+    #   + 25  the new error codes, and the module's re-exports
+    #   =8271 measured
+    #
+    # The ceiling is 8350, leaving 79 lines of margin. `scrybe-cli` went
+    # the other way over the same change, from 7074 to 6738 against an
+    # unchanged 7300, because what moved here was deleted there.
+    "scrybe-application": 8350,
     "scrybe-capture-mac": 2700,
     "scrybe-capture-linux": 2500,
     "scrybe-capture-win": 2500,
@@ -405,11 +442,52 @@ LOC_CEILINGS: dict[str, int] = {
     #   =3051 measured
     #
     # The ceiling is 3100. The last 49 lines are margin for maintenance
-    # inside this layer. Starting, stopping, and the surfaces that
-    # drive them are not in that sum and are not reserved here: the
-    # work that lands them should argue its own ceiling, as the note
-    # above already says of recording control generally.
-    "scrybe-desktop/src-tauri": 3100,
+    # inside this layer.
+    #
+    # Raised to 3350 for the main window's recording control, which is
+    # what the note above meant by work that should argue its own
+    # ceiling. Continuing the sum:
+    #
+    #   3051  measured, after the preflight surface
+    #   +181  `recording.rs`: the start and stop commands, the handle
+    #         that binds a window's control to the recording in flight,
+    #         the capture this binary can open, and the settling of a
+    #         completed or failed session back to idle. It owns no
+    #         policy — resolution, the checks, the providers, the
+    #         pipeline, and the state model are all in
+    #         `scrybe-application` — and what is here is the
+    #         translation between the WebView's IPC and them
+    #   + 50  the progress transport: the four ordered steps projected
+    #         through an exhaustive mirror of the service enum, the
+    #         payload a window renders them from, and the event name
+    #         they are published on
+    #   =3282 measured
+    #
+    # The ceiling is 3350, leaving 68 lines of margin. The tray, the
+    # floating pill, the global hotkey, the signal bridge, and the quit
+    # path are not in that sum and are not reserved here.
+    #
+    # Raised to 3450 for what review found in the window's recording
+    # control. Continuing the sum:
+    #
+    #   3282  measured, after the window's recording control
+    #   +126  honoring a stop while a recording is still being prepared,
+    #         and letting a reader see that one was saved. The capture
+    #         handle is armed before the device is opened, because
+    #         opening it is where the platform raises its own permission
+    #         prompt and a reader waiting on that dialog was the
+    #         likeliest one to press stop. The commands are generic over
+    #         the runtime so that race can be driven against a mock one.
+    #         And the host no longer acknowledges a terminal recording on
+    #         the reader's behalf, which is what made a saved recording
+    #         unannounceable: the acknowledgement is now a command, and
+    #         one watcher mounted above every route reads the outcome and
+    #         clears it, so a reader who never opens the recording
+    #         surface still returns to idle and can start again
+    #   =3408 measured
+    #
+    # The ceiling is 3450, leaving 42 lines of margin.
+    "scrybe-desktop/src-tauri": 3450,
 }
 
 

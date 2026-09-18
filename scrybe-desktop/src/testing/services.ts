@@ -47,6 +47,10 @@ export function servicesReturning(overrides: Partial<Scrybe> = {}): Scrybe {
     recordingStatus: () => Promise.resolve(idle()),
     recordingPreflight: () => Promise.resolve(clearedPreflight()),
     onRecordingTransition: () => Promise.resolve(() => undefined),
+    onRecordingProgress: () => Promise.resolve(() => undefined),
+    startRecording: () => Promise.resolve(preparing()),
+    stopRecording: () => Promise.resolve(saving()),
+    acknowledgeRecording: () => Promise.resolve(idle()),
     settingsForm: () => Promise.resolve(settingsFormFixture()),
     applySettings: () => Promise.resolve(settingsFormFixture()),
     diagnosticsReport: () => Promise.resolve(diagnostics()),
@@ -211,6 +215,28 @@ export function commandFailure(code: FailureCode, message: string): Promise<neve
  * otherwise would let a view be written against an answer the
  * application never gives.
  */
+/** A recording that has been asked for but has not opened capture yet. */
+export function preparing(): RecordingStatus {
+  return {
+    schema_version: 1,
+    state: "preparing",
+    elapsed_ms: 0,
+    stop_requested: false,
+    failure_summary: null,
+  };
+}
+
+/** A recording whose capture has ended and whose elapsed time is frozen. */
+export function saving(): RecordingStatus {
+  return {
+    schema_version: 1,
+    state: "saving",
+    elapsed_ms: 12_000,
+    stop_requested: true,
+    failure_summary: null,
+  };
+}
+
 export function clearedPreflight(
   overrides: Partial<PreflightView> = {},
 ): PreflightView {

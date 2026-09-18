@@ -34,7 +34,7 @@ path = "src/main.rs"
 # while a user who pressed `Download and verify this model` got told
 # the build carried no transport and handed a `Try again` button that
 # could never work.
-default = ["model-download", "notes-generation"]
+default = ["model-download", "notes-generation", "mic-capture"]
 # The managed model transport.
 #
 # Enabling it is the only thing in this tree that turns on
@@ -55,6 +55,14 @@ model-download = ["scrybe-application/model-download"]
 # which is what `scripts/check-app-egress-baseline.py` reads to prove
 # the gating is real rather than a label.
 notes-generation = ["scrybe-application/notes-generation"]
+# The microphone this host records through. On by default, because the
+# shipped application offers recording and a build without this can open
+# nothing but the in-process synthetic source. It stays a named feature
+# so `--no-default-features` resolves a host that links no audio device
+# binding at all, which is what makes `recording::support` a statement
+# about the build rather than a label — and a preflight on such a build
+# refuses a microphone source instead of clearing one it cannot open.
+mic-capture = ["scrybe-application/mic-capture"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -66,7 +74,17 @@ tauri-build = { version = "2", features = [] }
 # resolves the home directory a `~`-prefixed storage root expands
 # against.
 directories = "5"
+# Already resolved in this graph by `scrybe-meeting-core`, so naming it
+# here unifies onto the same version and adds no crate to the audited
+# surface. It is what ends a capture stream when a stop is accepted.
+futures = { version = "0.3", default-features = false, features = ["std"] }
 scrybe-application = { package = "scrybe-meeting-application", path = "../../scrybe-application" }
+# Already in this graph through `scrybe-application`. Named here for the
+# session identity and the start instant a recording is minted with,
+# which the host supplies because a capture diagnostic written before a
+# session starts has to name the folder that session will create.
+scrybe-core = { package = "scrybe-meeting-core", path = "../../scrybe-core" }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2", features = ["tray-icon"] }
@@ -99,3 +117,8 @@ panic = "warn"
 [dev-dependencies]
 tempfile = "3.27.0"
 toml = "0.8"
+# The mock runtime `tests/recording_stop.rs` drives the desktop entry
+# points against, without a real `WebView`. Only widens features on the
+# dependency already named above; it adds no crate this graph does not
+# already carry.
+tauri = { version = "2", features = ["test"] }
