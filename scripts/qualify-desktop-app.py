@@ -69,7 +69,7 @@ What this cannot establish, stated plainly:
   artifact written somewhere else under `~/Library` would not be seen
   by it.
 
-Three scenarios, one build. All of them compile the shape the application
+Five scenarios, one build. All of them compile the shape the application
 ships — default features, which include the model transport — and
 there is no per-scenario feature selection at all. There used to be:
 `setup` named `model-download` explicitly while the host's default set
@@ -102,10 +102,23 @@ Run locally:
     python3 scripts/qualify-desktop-app.py --hermetic --scenario lifecycle
     python3 scripts/qualify-desktop-app.py --hermetic --scenario setup
     python3 scripts/qualify-desktop-app.py --hermetic --scenario library
+    python3 scripts/qualify-desktop-app.py --hermetic --scenario recording
+    python3 scripts/qualify-desktop-app.py --hermetic --scenario installed
 
 Exit status 0 means every check held. Exit status 1 means at least one
 did not; each failing check prints what was expected and what was
 observed.
+
+One scenario cannot reach exit 0 here. `installed` drives an installed
+copy as far as an unsigned artifact allows and then stops at two walls
+it states plainly: a TCC Accessibility grant, which is a human grant
+this harness must not give itself, and a Developer ID Application
+certificate with a notarization credential, which nobody in this
+repository has. Both fail rather than skip, because a qualification that
+reported an installed application as qualified — having driven an
+artifact nobody else could install — would be worse than no
+qualification at all. A green `installed` on a machine with no
+distribution credential means a check has stopped being able to fail.
 """
 
 from __future__ import annotations
@@ -494,6 +507,46 @@ class Candidate:
         )
         return json.loads(result.stdout.strip() or "[]")
 
+    def registered_bundle_paths(self) -> list[str]:
+        """The bundle each running copy was launched from.
+
+        Every other scenario launches a bundle by path and then reasons
+        about "the application" without ever checking that the process it
+        is driving came out of that bundle. On a machine with more than
+        one copy registered — a build tree, an install root, a real
+        install — that is an assumption, and the `installed` scenario is
+        the one where it stops being safe to make.
+        """
+        script = (
+            'ObjC.import("AppKit");'
+            f'const a = $.NSRunningApplication.runningApplicationsWithBundleIdentifier("{BUNDLE_IDENTIFIER}");'
+            "JSON.stringify(Array.from({length: a.count}, (_, i) => {"
+            "const u = a.objectAtIndex(i).bundleURL;"
+            "return u.isNil() ? null : ObjC.unwrap(u.path);"
+            "}))"
+        )
+        result = subprocess.run(
+            ["osascript", "-l", "JavaScript", "-e", script],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return json.loads(result.stdout.strip() or "[]")
+
+    def install_into(self, root: Path) -> Path:
+        """Copies the bundle out of the build tree and drives that copy.
+
+        An installed application is not the directory `tauri build` left
+        in `target/`: it has been moved, its path no longer sits under a
+        build directory, and nothing about it can depend on the tree it
+        was produced in. Copying and re-pointing is what makes the rest
+        of this scenario a statement about an installed artifact.
+        """
+        installed = root / self.bundle.name
+        shutil.copytree(self.bundle, installed, symlinks=True)
+        self.bundle = installed
+        return installed
+
     def internet_sockets(self) -> list[str]:
         """Internet sockets held by any process of this application."""
         found: list[str] = []
@@ -736,6 +789,84 @@ class ModelsSampler:
         self._stop.set()
         self._thread.join(timeout=SETTLE_SECONDS)
         return self._short_destination, self._saw_partial
+
+
+def launch_services_resolution() -> str | None:
+    """The bundle Launch Services hands a launch of this identifier.
+
+    What a Dock icon, a Spotlight result, and `open -b` all resolve to.
+    Read rather than set: making an installed copy win this resolution
+    needs either a real install location or the deregistration of every
+    other copy, and both are changes to the machine this harness
+    deliberately does not make. Reading it turns an assumption into a
+    recorded fact, and a dangling registration — an entry pointing at a
+    bundle that no longer exists, which is what a removed install root
+    leaves behind — into a failure rather than a surprise.
+    """
+    script = (
+        'ObjC.import("AppKit");'
+        "const u = $.NSWorkspace.sharedWorkspace"
+        f'.URLForApplicationWithBundleIdentifier("{BUNDLE_IDENTIFIER}");'
+        "u.isNil() ? \"\" : ObjC.unwrap(u.path)"
+    )
+    result = subprocess.run(
+        ["osascript", "-l", "JavaScript", "-e", script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    resolved = result.stdout.strip()
+    return resolved or None
+
+
+def accessibility_grant() -> bool:
+    """Whether this harness may read another process's accessibility tree.
+
+    `AXIsProcessTrusted` answers for the *calling* process, which here is
+    `osascript` running under whatever terminal started the run. The
+    grant is a human checkpoint in System Settings, and on a machine
+    without it there is no supported way to read the accessible name of a
+    native control in another process — which is why the native
+    accessibility leg below stops rather than skipping.
+    """
+    script = (
+        'ObjC.import("ApplicationServices");'
+        "$.AXIsProcessTrusted() ? \"true\" : \"false\""
+    )
+    result = subprocess.run(
+        ["osascript", "-l", "JavaScript", "-e", script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.stdout.strip() == "true"
+
+
+def signed_artifact_verdict(bundle: Path) -> tuple[int, str]:
+    """Runs the signature and Gatekeeper assertions against `bundle`.
+
+    Delegated to `scripts/check-signed-artifact.py` rather than repeated
+    here, so there is one place that knows `codesign --verify` returns
+    success for an ad-hoc bundle `spctl` rejects. Exit status 3 from that
+    script means a credential is absent, which is a different answer from
+    a signed artifact that failed.
+    """
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(REPO_ROOT / "scripts" / "check-signed-artifact.py"),
+            "--bundle",
+            str(bundle),
+            "--assert",
+            "signature",
+            "--assert",
+            "gatekeeper",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode, f"{result.stdout}{result.stderr}".strip()
 
 
 def snapshot(path: Path) -> object:
@@ -2032,11 +2163,362 @@ def _library_checks(candidate: Candidate, run: Run) -> None:
 # Scenarios are registered here rather than enumerated at each call
 # site, so later work adds `recording` or `library` by adding one entry
 # and its function.
+def installed(candidate: Candidate, run: Run) -> None:
+    """The local workflow on an installed copy, up to the credential wall.
+
+    Every other scenario drives the directory `tauri build` left in
+    `target/`. This one copies it out of the build tree first and drives
+    the copy, so nothing it establishes can depend on the tree the
+    artifact was produced in, and it checks that the process it is
+    driving came out of that copy rather than assuming it — which no
+    other scenario does, and which stops being safe the moment a machine
+    has two registered copies.
+
+    What is new here rather than re-run. The recorder's own session is
+    read back through the reader. `recording` asserts what the pipeline
+    wrote to disk and `library` asserts what the reader serves for
+    sessions this file seeded; nothing has ever asserted that the reader
+    can open what the recorder produced. The handoff is where the session
+    identity, the artifact naming, and the playback-availability rule all
+    have to agree, and the availability rule is the one that shipped
+    wrong once already — it read `audio.opus` when only `playback.opus`
+    means there is something to play.
+
+    Where it stops, and why it fails rather than skips:
+
+    - **Native accessibility.** The tray is the one accessible surface of
+      this application that is not markup, and nothing asserted it.
+      Reading it means reading another process's accessibility tree,
+      which needs this harness's own host process to hold a TCC
+      Accessibility grant. That grant is a human checkpoint, and granting
+      it to a terminal grants it to everything run from that terminal, so
+      this harness must not acquire it for itself. Without the grant the
+      leg fails and names it. The window's contents are not read here and
+      do not need to be: `eslint-plugin-jsx-a11y` runs in `strict` mode
+      over the frontend and the suite already covers keyboard order,
+      state carried by text rather than by colour, and live regions.
+    - **A shippable artifact.** No Developer ID Application certificate
+      and no notarization credential exist here, so the installed copy is
+      ad-hoc signed and Gatekeeper refuses it. The assertion runs anyway
+      and fails naming the credential, because the alternative is a
+      qualification that reports an installed application as qualified
+      while the artifact it drove could not be installed by anyone else.
+
+    So this scenario does not pass today, by design. It is the only one
+    that does not, and a run that ever reports it green on a machine with
+    no distribution credential is reporting a check that stopped being
+    able to fail.
+
+    What is deliberately not here. The in-app model download has still
+    never run against Hugging Face in the shape that ships, and it is not
+    added here. `setup` already drives the real transport, with the
+    shipped feature selection, against a fixture on loopback; everything
+    that differs between that fixture and the real host is a property of
+    the real host — third-party TLS, half a gigabyte of transfer, and a
+    digest whose failure would mean the upstream artifact changed rather
+    than that Scrybe did. Putting it in a qualification makes a red run
+    ambiguous between a broken application and a slow network, and makes
+    every run depend on a third party's availability. It belongs in a
+    scheduled supply-chain lane that re-measures the catalog's URL and
+    digest, which is a different question asked of a different subject,
+    and it is not in this increment.
+    """
+    install_root = Path(tempfile.mkdtemp(prefix="scrybe-i-", dir="/tmp"))
+    untouched = [
+        ("the real configuration file", REAL_CONFIG, snapshot(REAL_CONFIG)),
+        ("the default storage root", REAL_STORAGE_ROOT, snapshot(REAL_STORAGE_ROOT)),
+    ]
+    try:
+        _installed_checks(candidate, run, install_root)
+        hermeticity(candidate, run, untouched)
+    finally:
+        shutil.rmtree(install_root, ignore_errors=True)
+
+
+def _installed_checks(candidate: Candidate, run: Run, install_root: Path) -> None:
+    """Everything that needs the installed copy."""
+    build_tree = candidate.bundle
+    installed = candidate.install_into(install_root)
+    run.assert_that(
+        "install: the bundle was copied out of the build tree",
+        installed.is_dir() and (installed / "Contents" / "MacOS" / EXECUTABLE).is_file(),
+        f"no executable at {installed / 'Contents' / 'MacOS' / EXECUTABLE}",
+    )
+    run.record(
+        "install: the copy being driven is under the build output directory",
+        False,
+        str(installed.resolve()).startswith(str(build_tree.parent.resolve())),
+    )
+
+    # The version the artifact reports about itself, read from the
+    # installed copy by the gate that owns that question. A bundle built
+    # before the propagation landed reports 0.0.0 here.
+    version_gate = subprocess.run(
+        [
+            sys.executable,
+            str(REPO_ROOT / "scripts" / "check-version-agreement.py"),
+            "--bundle",
+            str(installed),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    run.record(
+        "install: the installed copy reports the workspace version in its Info.plist",
+        0,
+        version_gate.returncode,
+    )
+
+    # A registration pointing at a bundle that is gone is what a removed
+    # install root leaves behind, and it makes every later launch of that
+    # identifier fail in a way nothing here would otherwise notice.
+    resolved = launch_services_resolution()
+    run.assert_that(
+        "install: Launch Services resolves this identifier to a bundle that is really there",
+        resolved is not None and Path(resolved).is_dir(),
+        f"the identifier resolves to {resolved!r}",
+    )
+
+    candidate.launch()
+    sockets = SocketSampler(candidate)
+    sockets.start()
+    opened = candidate.wait_for_control_socket()
+    run.assert_that(
+        "launch: the installed copy opens its control channel",
+        opened,
+        f"no control socket appeared at {candidate.root / CONTROL_SOCKET}",
+    )
+    if not opened:
+        run.record("no network: every destination the application reached", [], sockets.stop())
+        return
+    candidate.wait_for_event("window-shown")
+
+    # The check every other scenario assumes. `open` goes through Launch
+    # Services, which is free to hand the launch to any registered copy
+    # of this identifier; this is what says the process being driven came
+    # out of the copy that was installed.
+    # Resolved on both sides: macOS symlinks `/tmp` to `/private/tmp`
+    # and `NSRunningApplication` reports the resolved path, so comparing
+    # the literals fails on a correct application.
+    run.record(
+        "launch: the process being driven came out of the installed copy",
+        [str(installed.resolve())],
+        [str(Path(path).resolve()) for path in candidate.registered_bundle_paths()],
+    )
+
+    _installed_accessibility(run)
+    _installed_workflow(candidate, run)
+    _installed_shippable(run, installed)
+    run.record("no network: every destination the application reached", [], sockets.stop())
+
+
+def _installed_workflow(candidate: Candidate, run: Run) -> None:
+    """Record, stop, and read the session back through the reader."""
+    run.record("record: nothing has been recorded yet", [], session_folders(candidate.root))
+
+    candidate.control(TRAY_RECORD)
+    started = candidate.wait_for_event("recording-transition", count=2, timeout=30.0)
+    run.assert_that(
+        "record: the installed copy started a recording from the tray",
+        started,
+        f"transitions observed: {recording_transitions(candidate)}",
+    )
+    if not started:
+        return
+
+    candidate.control(TRAY_STOP)
+    saved = candidate.wait_for_event("recording-transition", count=4, timeout=120.0)
+    run.assert_that(
+        "stop: the recording finalized",
+        saved,
+        f"transitions observed: {recording_transitions(candidate)}",
+    )
+    folders = session_folders(candidate.root)
+    run.record("stop: exactly one session was written", 1, len(folders))
+    if not saved or len(folders) != 1:
+        return
+
+    folder = candidate.root / folders[0]
+    run.record(
+        "stop: the session holds everything a reader opens",
+        [],
+        sorted(
+            name
+            for name in ("transcript.md", "notes.md", "meta.toml", "audio.opus")
+            if not (folder / name).is_file()
+        ),
+    )
+
+    # The handoff. The reader is asked for the session the recorder just
+    # produced, by the identity its own folder name forms, and what it
+    # answers has to match the artifact that is really there. A reader
+    # that offered playback for a session with no `playback.opus` is the
+    # bug this asserts against — on a recorder-produced session rather
+    # than a seeded one, which is the case that was never covered.
+    # Recorded first, so a reader of the run can see which of the two
+    # answers below was the right one to expect. A conditional check
+    # whose branch is invisible is the shape that lets a branch quietly
+    # stop running, and a qualification that cannot say which arm it
+    # took is asserting something the reader cannot check.
+    # Pinned rather than merely observed. The check below has two arms
+    # and only one of them runs, so which one runs has to be a statement
+    # that can fail: a conditional whose branch changed silently is how a
+    # qualification ends up asserting nothing. `playback.opus` is written
+    # only for a two-channel capture, and the synthetic source this run
+    # configures is single-channel, so the refusal arm is the live one. If
+    # that ever stops being true this fails and says so, instead of
+    # quietly switching arms.
+    has_playback = (folder / "playback.opus").is_file()
+    run.record(
+        "read: the recorder left no playback audio, because the configured capture is mono",
+        False,
+        has_playback,
+    )
+    responses = drive(candidate, run, f"/{folder.name}/playback")
+    statuses = sorted({status for _, status, _ in responses})
+    if has_playback:
+        run.record(
+            "read: the reader serves the recorder's own session, which has playback audio",
+            [],
+            sorted(set(statuses) - set(SERVED_STATUSES)),
+        )
+        run.record(
+            "read: at least as many bytes were served as the artifact holds",
+            True,
+            sum(size for _, _, size in responses)
+            >= (folder / "playback.opus").stat().st_size,
+        )
+    else:
+        run.record(
+            "read: the reader refuses the recorder's own session, which has no playback audio",
+            [404],
+            statuses,
+        )
+
+    candidate.control(TRAY_QUIT)
+    run.assert_that(
+        "quit: the installed copy exits once nothing is in flight",
+        candidate.wait_for_exit(),
+        "the application was still running after quit",
+    )
+
+
+# What `scripts/check-signed-artifact.py` means by each exit status, so a
+# refusal here says which wall was hit rather than guessing at one.
+SIGNED_ARTIFACT_STATUS = {
+    0: "every assertion held",
+    1: "the artifact failed an assertion",
+    2: "an assertion could not be measured at all",
+    3: "a required credential is absent, so nothing was attempted",
+}
+
+
+def _installed_accessibility(run: Run) -> None:
+    """What a screen reader is told about the running application.
+
+    The window's contents are not asserted here and do not need to be:
+    `eslint-plugin-jsx-a11y` runs in `strict` mode over the frontend, and
+    the suite already covers keyboard order, state carried by text rather
+    than by colour, and live regions. What nothing covered is the one
+    accessible surface that is not markup — the tray — and the only way
+    to read it is the accessibility tree of the running process.
+
+    The floating panel is deliberately not read here. It belongs to the
+    command-line frontend: the desktop host depends on `scrybe-widgets`
+    for the global hotkey alone and never builds a panel, so a panel
+    assertion in this file would be a check that cannot pass and would
+    say nothing about either application.
+    """
+    trusted = accessibility_grant()
+    run.assert_that(
+        "accessibility: this harness may read the application's accessibility tree",
+        trusted,
+        "AXIsProcessTrusted() is false for the process running this script, so no "
+        "accessible name in another process can be read from here. What is missing is "
+        "a TCC Accessibility grant, which is a human grant in System Settings > "
+        "Privacy & Security > Accessibility. This harness must not acquire it for "
+        "itself: granting Accessibility to a terminal grants it to everything run "
+        "from that terminal, which is a far larger grant than this check is worth.",
+    )
+    if not trusted:
+        return
+    names = tray_menu_item_names()
+    run.record(
+        "accessibility: every tray action is announced by name",
+        ["Record now", "Stop  save", "Open Scrybe", "Quit Scrybe"],
+        names,
+    )
+
+
+def _installed_shippable(run: Run, installed: Path) -> None:
+    """The credential wall, failing rather than skipping."""
+    status, said = signed_artifact_verdict(installed)
+    meaning = SIGNED_ARTIFACT_STATUS.get(status, "an unrecognized status")
+    run.assert_that(
+        "shippable: the installed copy carries a Developer ID identity Gatekeeper admits",
+        status == 0,
+        f"scripts/check-signed-artifact.py exited {status} against {installed} — "
+        f"{meaning}. No Developer ID Application certificate and no notarization "
+        "credential exist here, so the copy is ad-hoc signed; `spctl` will not even "
+        "return a verdict for a bundle `codesign` has never sealed at bundle level, "
+        "which is what `tauri build --bundles app` leaves behind. This is the wall, "
+        "not a defect, and it is a failure rather than a skip because a qualification "
+        "that reported an installed application as qualified, having driven an "
+        "artifact nobody else could install, would be worse than no qualification at "
+        f"all. What the assertions said:\n{indent(said)}",
+    )
+
+
+def indent(text: str) -> str:
+    return "\n".join(f"      {line}" for line in text.splitlines())
+
+
+def tray_menu_item_names() -> list[str]:
+    """Every name the tray's menu exposes to the accessibility tree.
+
+    This reads the running application's own accessibility tree, not a
+    string this repository holds. Comparing a constant here against the
+    same constant in Rust would pass for any value written in both
+    places, which is the shape of a check that cannot fail — and a
+    release has already shipped one of those.
+
+    The tray is the second menu bar the process owns, identified by the
+    `status menu` description the platform gives a status item rather
+    than by index. Separators come back as `null` and are dropped.
+
+    The names are the platform's, not the source's: `Stop & save` is
+    announced as `Stop  save`, because the accessibility layer strips
+    the ampersand that would otherwise read as a mnemonic. Expecting the
+    source string here would fail against a correct application.
+    """
+    script = (
+        'const se = Application("System Events");'
+        f'const proc = se.processes.byName("{BUNDLE_NAME.removesuffix(".app")}");'
+        "const names = [];"
+        "proc.menuBars().forEach(bar => bar.menuBarItems().forEach(item => {"
+        'if (item.description() !== "status menu") { return; }'
+        "item.menus().forEach(menu => menu.menuItems().forEach(entry => {"
+        "const name = entry.name(); if (name) { names.push(name); }"
+        "}));"
+        "}));"
+        "JSON.stringify(names)"
+    )
+    result = subprocess.run(
+        ["osascript", "-l", "JavaScript", "-e", script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return json.loads(result.stdout.strip() or "[]")
+
+
 SCENARIOS: dict[str, Callable[[Candidate, Run], None]] = {
     "lifecycle": lifecycle,
     "setup": setup,
     "library": library,
     "recording": recording,
+    "installed": installed,
 }
 
 
@@ -2067,6 +2549,13 @@ SCENARIO_COVERAGE: dict[str, str] = {
         "all, every path the player never builds aimed at a file that is really "
         "there, a disposable storage root, the shipped content security policy, "
         "and every socket the process opened"
+    ),
+    "installed": (
+        "a copy driven from outside the build tree, the version that copy reports "
+        "in its own Info.plist, the identity of the process being driven, one "
+        "recording read back through the reader that has never been asked for the "
+        "recorder's own output, the native accessibility grant this harness must "
+        "not give itself, and the distribution credential nobody here has"
     ),
 }
 
@@ -2120,7 +2609,15 @@ def main() -> int:
 
     print()
     if run.failures:
-        print(f"desktop {arguments.scenario} qualification FAILED — {len(run.failures)} checks:")
+        # The total as well as the count that failed. A reader of a
+        # failing run otherwise cannot tell one refusal out of forty from
+        # one out of three, and the `installed` scenario is designed to
+        # end here, so its coverage would never be printed at all.
+        print(
+            f"desktop {arguments.scenario} qualification FAILED — "
+            f"{len(run.failures)} of {len(run.entries)} checks, across "
+            f"{SCENARIO_COVERAGE[arguments.scenario]}:"
+        )
         for entry in run.failures:
             print(f"  {entry.check}")
             print(f"    expected: {entry.expected}")

@@ -239,11 +239,14 @@ python3 scripts/qualify-desktop-app.py --hermetic --scenario lifecycle
 python3 scripts/qualify-desktop-app.py --hermetic --scenario setup
 python3 scripts/qualify-desktop-app.py --hermetic --scenario library
 python3 scripts/qualify-desktop-app.py --hermetic --scenario recording
+python3 scripts/qualify-desktop-app.py --hermetic --scenario installed
 ```
 
 Each drives the shipped shape of the application against a disposable storage root and configuration, and reports what it observed rather than what it assumed. `library` is the one that answers a question no unit test can: whether the webview may load a `scrybe-audio://` URL at all. That is decided by the content security policy, and the policy check in that script compares the built artifact against a constant the same file declares — so it passes for any string written in both places. Driving the real webview at a real URL and reading back what the protocol handler served is what tells a correctly-admitted scheme from one admitted under a directive that does nothing.
 
 `recording` answers a different one. Every surface a recording is stopped from is a platform event, and the dispatch behind each is reachable from a unit test — but that the built application wires them to it is not. A tray item built disabled, a command missing from a capability file, a permission absent from the generated manifest: each leaves the unit tests passing and the application inert. That scenario records a real session through the synthetic source and the stub providers, so it needs no device, no permission grant and no network, and asserts on the session the pipeline actually wrote.
+
+`installed` is the only one that does not pass, and it is meant not to. It copies the bundle out of the build tree and drives the copy, checks that the process it is driving really came out of that copy rather than some other registered one, records a session and then asks the reader for that session — the handoff from recorder to reader that neither `recording` nor `library` covers, because one asserts what was written and the other reads sessions this harness seeded. It then reads the tray's accessible names out of the running application's accessibility tree, and stops at the wall: no Developer ID Application certificate and no notarization credential exist here, so the copy is ad-hoc signed and cannot be qualified as installable by anyone else. That last check fails rather than skipping. A qualification reporting an installed application as qualified, having driven an artifact nobody else could install, would be worse than no qualification — so a green `installed` on a machine with no distribution credential means a check has stopped being able to fail.
 
 Project docs:
 
