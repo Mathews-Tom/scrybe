@@ -1,6 +1,6 @@
 [package]
 name = "scrybe-meeting-capture-mic"
-version = "1.6.0"
+version.workspace = true
 description = "Cross-platform microphone capture adapter for the Scrybe meeting recorder."
 publish = true
 authors.workspace = true

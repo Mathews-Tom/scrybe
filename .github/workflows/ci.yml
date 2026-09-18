@@ -316,6 +316,24 @@ jobs:
       - name: enforce per-crate LoC ceilings
         run: python3 scripts/check-loc-budget.py
 
+  # The source-only half of the version gate. It reads manifests and one
+  # JSON literal, so it runs on the cheapest leg and needs no macOS.
+  # The artifact half — what a built bundle reports in its `Info.plist` —
+  # cannot run here, because nothing on this leg builds a bundle; it runs
+  # from `scripts/qualify-desktop-app.py`'s own build on macOS and is
+  # named in `docs/RELEASE.md` as a pre-authorization step.
+  version-agreement:
+    name: version-agreement (one version, every surface that repeats it)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95.0
+      - uses: Swatinem/rust-cache@v2
+      - name: assert every version surface agrees with the workspace
+        run: python3 scripts/check-version-agreement.py
+
   egress-audit:
     name: egress-audit (no-default-feature graph has no network crates)
     runs-on: ubuntu-latest

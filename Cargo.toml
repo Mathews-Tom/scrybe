@@ -13,6 +13,14 @@ members = [
 ]
 
 [workspace.package]
+# The one place a Scrybe version number is written. Every workspace member
+# takes it with `version.workspace = true`; none of them restates it. The
+# two surfaces Cargo inheritance cannot reach — `scrybe-desktop/src-tauri`,
+# which is a workspace of its own, and `tauri.conf.json`, which is a JSON
+# literal — are propagated from here by
+# `scripts/check-version-agreement.py --write` and held to this value by
+# the same script's default check.
+version = "1.6.0"
 authors = ["Mathews Tom"]
 edition = "2021"
 homepage = "https://github.com/Mathews-Tom/scrybe"
