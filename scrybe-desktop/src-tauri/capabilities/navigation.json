@@ -8,6 +8,7 @@
   "permissions": [
     "core:event:allow-listen",
     "core:event:allow-unlisten",
-    "allow-recording-status"
+    "allow-recording-status",
+    "allow-recording-preflight"
   ]
 }

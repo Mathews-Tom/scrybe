@@ -36,7 +36,10 @@ pub use detail::{
     SessionDetail, SessionNotes, SessionProviders, SessionRepair, TranscriptWindow,
 };
 pub use error::{CommandFailure, FailureCode};
-pub use recording::{RecordingState, RecordingStatus, RecordingTransition, TRANSITION_EVENT};
+pub use recording::{
+    CheckOutcomeView, PreflightCheckView, PreflightFindingView, PreflightView, RecordingState,
+    RecordingStatus, RecordingTransition, TRANSITION_EVENT,
+};
 pub use session::{SessionProgress, SessionRow, SessionRows};
 pub use settings::{SettingsSummary, SettingsWarning, WarningSeverity};
 pub use setup::{
@@ -81,6 +84,10 @@ contract![
     RecordingState,
     RecordingStatus,
     RecordingTransition,
+    PreflightCheckView,
+    CheckOutcomeView,
+    PreflightFindingView,
+    PreflightView,
     WarningSeverity,
     SettingsWarning,
     SettingsSummary,
@@ -202,6 +209,10 @@ mod tests {
                 "RecordingState",
                 "RecordingStatus",
                 "RecordingTransition",
+                "PreflightCheckView",
+                "CheckOutcomeView",
+                "PreflightFindingView",
+                "PreflightView",
                 "WarningSeverity",
                 "SettingsWarning",
                 "SettingsSummary",

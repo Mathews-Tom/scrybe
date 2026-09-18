@@ -20,17 +20,7 @@ use scrybe_core::config::Config;
 
 /// Expand a `~/...`-prefixed path against the user's home directory.
 pub fn expand_root(root: &Path) -> PathBuf {
-    let path_str = root.to_string_lossy();
-    if let Some(rest) = path_str.strip_prefix("~/") {
-        if let Some(home) = dirs_home() {
-            return home.join(rest);
-        }
-    } else if path_str == "~" {
-        if let Some(home) = dirs_home() {
-            return home;
-        }
-    }
-    root.to_path_buf()
+    scrybe_application::recording::expand_tilde(root, dirs_home().as_deref())
 }
 
 fn dirs_home() -> Option<PathBuf> {

@@ -59,6 +59,24 @@ export type RecordingTransition = { schema_version: number,
  */
 sequence: number, from: RecordingState, to: RecordingState, elapsed_ms: number, failure_summary: string | null, };
 
+export type PreflightCheckView = "configuration" | "permissions" | "device" | "provider" | "model" | "storage" | "capture";
+
+export type CheckOutcomeView = "passed" | "unverified" | "failed";
+
+export type PreflightFindingView = { check: PreflightCheckView, outcome: CheckOutcomeView, summary: string, };
+
+export type PreflightView = { 
+/**
+ * The service layer's preflight schema version, forwarded
+ * unchanged so a frontend can refuse a payload it was not built
+ * for.
+ */
+schema_version: number, 
+/**
+ * Whether every check that can block passed.
+ */
+can_record: boolean, findings: Array<PreflightFindingView>, };
+
 export type WarningSeverity = "info" | "warning" | "error";
 
 export type SettingsWarning = { severity: WarningSeverity, message: string, };

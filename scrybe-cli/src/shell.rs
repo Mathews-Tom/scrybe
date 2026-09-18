@@ -24,7 +24,9 @@ use scrybe_core::config::{ShellConfig, ShellIndicator};
 use tokio::runtime::Runtime;
 use tokio::sync::watch;
 
-use crate::commands::rec::{monitor_signals, run_with_stop, Args, RECORDING_FAILURE_SUMMARY};
+use crate::commands::rec::{
+    begin_recording, monitor_signals, run_with_stop, Args, RECORDING_FAILURE_SUMMARY,
+};
 #[cfg(target_os = "macos")]
 use crate::floating_panel::{prepare_application, reduce_motion_enabled, FloatingPanel};
 use crate::hotkey::{HotkeyEvent, HotkeyListener, DEFAULT_STOP_ACCELERATOR};
@@ -253,10 +255,13 @@ pub fn run_record_with_shell(args: Args, runtime: &Runtime) -> Result<()> {
     // rather than constructed here; see `rec::run` for the same.
     let controller = Arc::clone(application(args.root.as_deref())?.recording());
 
-    // Constructing the native surfaces and registering the hotkey is
-    // this shell's preflight: if either fails, no session folder is
-    // ever created.
-    controller.begin_preparing().map_err(anyhow::Error::from)?;
+    // The shared preflight first — resolution and the seven checks —
+    // and only then this shell's own two: constructing the native
+    // surfaces and registering the hotkey. Both run while the
+    // controller is `Preparing`, and a failure in either leaves no
+    // session folder behind, because none is created until the session
+    // run further down.
+    let plan = begin_recording(&controller, &args)?;
     let stop = ShellStop::new(Arc::clone(&controller), stop_tx);
     let mut surfaces = match NativeSurfaces::start(&cfg.shell, &accelerator, stop.view()) {
         Ok(surfaces) => surfaces,
@@ -282,7 +287,12 @@ pub fn run_record_with_shell(args: Args, runtime: &Runtime) -> Result<()> {
     // entry into `Saving` from the controller it is handed. Marking
     // recording at this point made every preflight failure inside
     // `run_with_stop` look like a capture failure.
-    let task = runtime.spawn(run_with_stop(args, stop_rx, Some(Arc::clone(&controller))));
+    let task = runtime.spawn(run_with_stop(
+        args,
+        plan,
+        stop_rx,
+        Some(Arc::clone(&controller)),
+    ));
 
     let surface_result = pump_until_finished(&mut surfaces, &hotkey, &signal_rx, &stop, &task);
     let recording_result = runtime.block_on(task);

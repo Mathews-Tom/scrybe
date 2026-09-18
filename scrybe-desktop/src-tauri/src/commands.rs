@@ -35,13 +35,14 @@
 #![allow(clippy::needless_pass_by_value)]
 
 use scrybe_application::paging::PageRequest;
+use scrybe_application::recording::{CaptureCapability, CaptureSupport, RecordingOverrides};
 use scrybe_application::sessions::{ConfiguredNotesGenerator, SearchRequest};
 use scrybe_application::{ApplicationError, ErrorCode, SessionRef};
 use tauri::{Manager, State};
 
 use crate::contract::{
-    CommandFailure, NotesRegeneration, RecordingStatus, SessionDetail, SessionNotes, SessionRepair,
-    SessionRows, SettingsSummary, TranscriptWindow,
+    CommandFailure, NotesRegeneration, PreflightView, RecordingStatus, SessionDetail, SessionNotes,
+    SessionRepair, SessionRows, SettingsSummary, TranscriptWindow,
 };
 use crate::state::Desktop;
 
@@ -64,6 +65,7 @@ pub const COMMANDS: &[&str] = &[
     "copy_transcript",
     "settings_summary",
     "recording_status",
+    "recording_preflight",
 ];
 
 /// Every command the host registers, reads and setup together.
@@ -396,4 +398,51 @@ pub fn settings_summary(desktop: State<'_, Desktop>) -> Result<SettingsSummary, 
 #[tauri::command]
 pub fn recording_status(desktop: State<'_, Desktop>) -> RecordingStatus {
     desktop.application().recording().snapshot().into()
+}
+
+/// Whether this installation could record right now, check by check.
+///
+/// Reads the configuration and the filesystem and starts nothing, so a
+/// surface may call it whenever it renders. It is `async` for the same
+/// reason the session reads are: it stats the storage root's nearest
+/// existing ancestor, and doing that on the thread the `WebView` draws
+/// on is a window that stops responding for the duration.
+///
+/// The support this passes is what this host actually linked, not what
+/// the product can do: the desktop binary carries no capture adapter
+/// and no transcription runtime, so a reader asking for a microphone
+/// source is told this build cannot open one rather than being allowed
+/// to start a recording that would fail at the device.
+///
+/// # Errors
+///
+/// An unreadable configuration file, or one naming a source, adapter,
+/// or notes backend this release does not define.
+#[tauri::command(async)]
+pub fn recording_preflight(desktop: State<'_, Desktop>) -> Result<PreflightView, CommandFailure> {
+    scrybe_application::recording::check(
+        desktop.application().config(),
+        crate::state::home_directory().as_deref(),
+        host_support(),
+        None,
+        &RecordingOverrides::default(),
+    )
+    .map(|(_, report)| report.into())
+    .map_err(Into::into)
+}
+
+/// What this host linked.
+///
+/// Every field is a statement about this binary, derived from the same
+/// conditions the code that would use them is written under. Capture is
+/// [`CaptureCapability::SyntheticOnly`] because this crate depends on
+/// no capture adapter at all, and the transcription runtime is absent
+/// for the same reason — saying otherwise here would let preflight
+/// clear a recording this host cannot perform.
+const fn host_support() -> CaptureSupport {
+    CaptureSupport {
+        capture: CaptureCapability::SyntheticOnly,
+        transcription_model: false,
+        notes_provider: cfg!(feature = "notes-generation"),
+    }
 }

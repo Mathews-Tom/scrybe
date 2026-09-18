@@ -249,7 +249,49 @@ LOC_CEILINGS: dict[str, int] = {
     # recommends; only the catalog's own whole-file duplicate rule and
     # the free-space probe's two cases stayed inline, because neither
     # is reachable through the public surface.
-    "scrybe-application": 7000,
+    #
+    # Raised to 7700 for the recording orchestration every surface now
+    # resolves and checks through. It is a build rather than an
+    # adaptation: before it, the invocation policy lived binary-private
+    # in `scrybe-cli`'s `commands/rec.rs`, six of the seven preflight
+    # checks were written inline in its `run_with_stop`, and
+    # `ErrorCode::PreflightFailed` was a variant nothing produced.
+    # Itemized from what the measured figure did, not rounded:
+    #
+    #   6967  before any of it
+    #   +212  `recording/plan.rs`: the four kinds a recording is
+    #         described by, the override record a surface fills in, and
+    #         the resolution itself — capture source, system-audio
+    #         adapter, input device, transcription model, notes
+    #         backend, consent mode, and the storage root with its `~`
+    #         expansion, which the command-line tool and the desktop
+    #         host had each been doing for themselves
+    #   +357  `recording/preflight.rs`: seven checks, each with its own
+    #         outcome, the report and the refusal it converts to, and
+    #         the build-capability record a frontend passes in —
+    #         passed in rather than read from a `cfg!` here, because
+    #         the capture adapters live in crates this one does not
+    #         depend on
+    #   + 84  `recording/orchestration.rs`: the one path from "a
+    #         surface asked to record" to "capture may begin" — the
+    #         already-running refusal that runs no preflight, the
+    #         check, the visible settle through `Preparing` and back to
+    #         idle, and the boxed refusal carrying the report and the
+    #         plan a surface renders them against
+    #   + 13  the module's re-exports
+    #   =7633 measured
+    #
+    # The ceiling is 7700. The last 67 lines are margin for maintenance
+    # inside this layer, not a reservation for anything named. The
+    # capture construction and the `scrybe_core::session` call are
+    # deliberately not in that sum and are not reserved for here: they
+    # name per-platform capture adapters this crate does not depend on,
+    # and the work that moves them should argue its own ceiling.
+    #
+    # Every behavioural test for all of it is in
+    # `tests/recording_preflight.rs`, which this script excludes, as
+    # the note at the top recommends.
+    "scrybe-application": 7700,
     "scrybe-capture-mac": 2700,
     "scrybe-capture-linux": 2500,
     "scrybe-capture-win": 2500,
@@ -345,7 +387,29 @@ LOC_CEILINGS: dict[str, int] = {
     # The frontend is deliberately out of scope: this script measures
     # Rust only, and the TypeScript surface is governed by review rather
     # than by this gate.
-    "scrybe-desktop/src-tauri": 3000,
+    #
+    # Raised to 3100 for the recording preflight this host now reports.
+    # Continuing the sum above:
+    #
+    #   2981  measured, before any of it
+    #   + 96  the preflight surface: `contract/recording.rs`'s four new
+    #         projected types and their two exhaustive mirrors of the
+    #         service enums, the `recording_preflight` command, and the
+    #         record of what this binary actually linked — which is
+    #         synthetic capture and no transcription runtime, because
+    #         this crate depends on no capture adapter, and saying
+    #         otherwise would let a preflight clear a recording this
+    #         host cannot perform. Net of the four lines `expand_home`
+    #         lost when it became a call into the shared expansion the
+    #         orchestration owns.
+    #   =3051 measured
+    #
+    # The ceiling is 3100. The last 49 lines are margin for maintenance
+    # inside this layer. Starting, stopping, and the surfaces that
+    # drive them are not in that sum and are not reserved here: the
+    # work that lands them should argue its own ceiling, as the note
+    # above already says of recording control generally.
+    "scrybe-desktop/src-tauri": 3100,
 }
 
 
