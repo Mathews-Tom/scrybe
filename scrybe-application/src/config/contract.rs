@@ -239,6 +239,9 @@ pub struct ConfigForm {
     pub capture_hotkey: Option<String>,
     pub storage_audio_format: String,
     pub storage_audio_bitrate_kbps: u32,
+    /// Days a deleted session stays in `trash/` before the sweep at
+    /// launch removes it permanently.
+    pub storage_trash_retention_days: u32,
     pub record_source: String,
     pub record_system_backend: String,
     pub record_llm: String,
@@ -268,6 +271,7 @@ impl From<&Config> for ConfigForm {
             capture_hotkey: config.capture.hotkey.clone(),
             storage_audio_format: config.storage.audio_format.clone(),
             storage_audio_bitrate_kbps: config.storage.audio_bitrate_kbps,
+            storage_trash_retention_days: config.storage.trash_retention_days,
             record_source: config.record.source.clone(),
             record_system_backend: config.record.system_backend.clone(),
             record_llm: config.record.llm.clone(),

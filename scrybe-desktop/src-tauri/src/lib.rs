@@ -25,6 +25,7 @@ pub mod lifecycle;
 pub mod playback;
 pub mod queries;
 pub mod recording;
+pub mod retention;
 pub mod setup;
 pub mod state;
 
@@ -96,6 +97,12 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         .on_menu_event(|app, event| tray::activate(app, event.id.as_ref()))
         .setup(|app| {
             let handle = app.handle();
+            // Before the window exists, so it cannot race the first
+            // listing: `commands::list_sessions` is reachable only from
+            // a frontend, and no frontend is running yet. Synchronous
+            // for the same reason — a spawned sweep could remove a
+            // folder the reader is already looking at.
+            retention::sweep_at_launch(handle);
             crate::note!(handle, "launched");
             forward_recording_transitions(handle);
             tray::build(handle)?;

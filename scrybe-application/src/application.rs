@@ -20,12 +20,13 @@ use crate::diagnostics::DiagnosticsService;
 use crate::identity::StorageRoot;
 use crate::models::ModelManager;
 use crate::recording::RecordingController;
-use crate::sessions::{SessionReader, SessionRepository};
+use crate::sessions::{RetentionService, SessionReader, SessionRepository};
 
 /// Every application service, over one storage root and one
 /// configuration file.
 pub struct ScrybeApplication {
     sessions: SessionRepository,
+    retention: RetentionService,
     recording: Arc<RecordingController>,
     config: ConfigService,
     diagnostics: DiagnosticsService,
@@ -68,6 +69,7 @@ impl ScrybeApplication {
     fn assemble(root: StorageRoot, config: ConfigService, models_dir: PathBuf) -> Self {
         Self {
             sessions: SessionRepository::new(root.clone()),
+            retention: RetentionService::new(root.clone()),
             recording: Arc::new(RecordingController::new()),
             config,
             diagnostics: DiagnosticsService::new(root),
@@ -106,6 +108,17 @@ impl ScrybeApplication {
     #[must_use]
     pub const fn config(&self) -> &ConfigService {
         &self.config
+    }
+
+    /// Moving a session out of the listing, and sweeping the trash.
+    ///
+    /// The sweep is not called from here. It runs once, at launch,
+    /// before the first listing is served — a frontend that could ask
+    /// for it at any moment could delete a reader's data while they
+    /// were looking at it.
+    #[must_use]
+    pub const fn retention(&self) -> &RetentionService {
+        &self.retention
     }
 
     /// Read-only diagnosis, and explicitly requested repairs.
