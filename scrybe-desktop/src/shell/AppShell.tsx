@@ -2,6 +2,7 @@ import { useCallback, useState } from "react";
 
 import { useScrybe } from "../ipc/ScrybeProvider";
 import { NavigationProvider } from "./navigation";
+import { RecordingWatcher } from "./recording/RecordingWatcher";
 import { ROUTES, SETUP_ROUTE_ID, defaultRoute } from "./routes";
 import { useQuery, type Query } from "./useQuery";
 import type { SettingsSummary } from "../generated/bindings";
@@ -61,34 +62,36 @@ export function AppShell() {
   }, []);
 
   return (
-    <NavigationProvider value={navigate}>
-      <div className="app-shell">
-      <nav className="app-shell__sidebar" aria-label="Primary">
-        <ul className="app-shell__nav">
-          {ROUTES.map((route) => (
-            <li key={route.id}>
-              <button
-                type="button"
-                className="app-shell__nav-item"
-                aria-current={route.id === active.id ? "page" : undefined}
-                onClick={() => {
-                  navigate(route.id);
-                }}
-              >
-                {route.label}
-              </button>
-            </li>
-          ))}
-        </ul>
-        <p className="app-shell__status">
-          <span aria-hidden="true" className="app-shell__status-dot" />
-          {statusText(settings)}
-        </p>
-      </nav>
-        <main className="app-shell__main" aria-labelledby="view-heading">
-          {active.render()}
-        </main>
-      </div>
-    </NavigationProvider>
+    <RecordingWatcher>
+      <NavigationProvider value={navigate}>
+        <div className="app-shell">
+        <nav className="app-shell__sidebar" aria-label="Primary">
+          <ul className="app-shell__nav">
+            {ROUTES.map((route) => (
+              <li key={route.id}>
+                <button
+                  type="button"
+                  className="app-shell__nav-item"
+                  aria-current={route.id === active.id ? "page" : undefined}
+                  onClick={() => {
+                    navigate(route.id);
+                  }}
+                >
+                  {route.label}
+                </button>
+              </li>
+            ))}
+          </ul>
+          <p className="app-shell__status">
+            <span aria-hidden="true" className="app-shell__status-dot" />
+            {statusText(settings)}
+          </p>
+        </nav>
+          <main className="app-shell__main" aria-labelledby="view-heading">
+            {active.render()}
+          </main>
+        </div>
+      </NavigationProvider>
+    </RecordingWatcher>
   );
 }
