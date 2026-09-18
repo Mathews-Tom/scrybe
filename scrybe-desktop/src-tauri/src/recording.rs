@@ -141,6 +141,24 @@ pub fn start_recording(
     app: tauri::AppHandle,
     title: Option<String>,
 ) -> Result<RecordingStatus, CommandFailure> {
+    start(&app, title).map_err(Into::into)
+}
+
+/// Resolves, checks, and starts one recording, for any surface.
+///
+/// The command above is one caller; the tray item and the global hotkey
+/// are the others. They share this rather than each assembling a start,
+/// so a recording begun from the menu bar is the same recording begun
+/// from the window.
+///
+/// # Errors
+///
+/// The preflight refusal, a state conflict when a recording is already
+/// in flight, or a capture device that could not be opened.
+pub fn start(
+    app: &tauri::AppHandle,
+    title: Option<String>,
+) -> Result<RecordingStatus, ApplicationError> {
     let desktop = app.state::<Desktop>();
     let live = app.state::<Arc<LiveRecording>>();
     let controller = Arc::clone(desktop.application().recording());
@@ -165,15 +183,14 @@ pub fn start_recording(
             // The controller is `Preparing` and nothing is on disk;
             // settle it so the next attempt can start.
             settle_failed(&controller);
-            return Err(error.into());
+            return Err(error);
         }
     };
 
     let (stop, watch) = Stop::new();
     live.arm(stop);
-    let config = desktop.application().config().load().map_err(|error| {
+    let config = desktop.application().config().load().inspect_err(|_| {
         settle_failed(&controller);
-        CommandFailure::from(error)
     })?;
     let status = controller.snapshot().into();
 

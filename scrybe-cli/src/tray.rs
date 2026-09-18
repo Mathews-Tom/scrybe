@@ -6,7 +6,7 @@
 
 //! Deterministic status-bar rendering for an active recording shell.
 
-use std::{io::Cursor, time::Duration};
+use std::io::Cursor;
 
 use anyhow::{ensure, Context, Result};
 use crossbeam_channel::Receiver;
@@ -15,25 +15,15 @@ use tray_icon::{
     Icon, TrayIcon, TrayIconBuilder,
 };
 
-use crate::shell::{ShellState, ShellView};
-
-const WAVEFORM_SIZE: u32 = 18;
-const BRAND_SIZE: u32 = 18;
-const BRAND_GAP: u32 = 3;
-const FRAME_PERIOD: Duration = Duration::from_millis(250);
-const STATIC_FRAME_INDEX: usize = 4;
-const WAVEFORM_HEIGHTS: [[u8; 5]; 8] = [
-    [4, 8, 14, 8, 4],
-    [6, 12, 8, 16, 6],
-    [10, 6, 4, 12, 16],
-    [6, 12, 16, 12, 6],
-    [4, 10, 16, 8, 12],
-    [12, 6, 10, 16, 8],
-    [16, 10, 6, 12, 4],
-    [8, 14, 10, 6, 12],
-];
-const RED_MIX: [u8; 8] = [0, 64, 128, 192, 255, 192, 128, 64];
-const RECORDING_RED: [u8; 3] = [215, 68, 56];
+// The geometry, the animation sequence, and the colour blend live in
+// `scrybe-widgets`, where the desktop host's own status indicator draws
+// from them too. What stays here is the `tray-icon` object this binary
+// builds and the image it rasterises into.
+use scrybe_widgets::status::{
+    frame_index, status_width, waveform_color, BRAND_GAP, BRAND_SIZE, RED_MIX, WAVEFORM_HEIGHTS,
+    WAVEFORM_SIZE,
+};
+use scrybe_widgets::{ShellState, ShellView};
 const BRAND_PNG: &[u8] = include_bytes!("../assets/scrybe-status.png");
 
 /// Commands surfaced by the status-bar menu.
@@ -162,18 +152,6 @@ fn menu_state_text(view: ShellView) -> String {
     format!("{state}  {}", view.elapsed_label())
 }
 
-fn frame_index(view: ShellView, reduce_motion: bool, show_waveform: bool) -> usize {
-    if !show_waveform {
-        return 0;
-    }
-    if reduce_motion || view.state == ShellState::Saving {
-        return STATIC_FRAME_INDEX;
-    }
-    let frame = (view.elapsed.as_millis() / FRAME_PERIOD.as_millis())
-        % u128::try_from(WAVEFORM_HEIGHTS.len()).unwrap_or(1);
-    usize::try_from(frame).unwrap_or(STATIC_FRAME_INDEX)
-}
-
 fn build_status_frames(
     show_waveform: bool,
     show_brand: bool,
@@ -216,15 +194,6 @@ fn build_status_frames(
         .collect()
 }
 
-const fn status_width(show_waveform: bool, show_brand: bool) -> u32 {
-    match (show_waveform, show_brand) {
-        (true, true) => WAVEFORM_SIZE + BRAND_GAP + BRAND_SIZE,
-        (true, false) => WAVEFORM_SIZE,
-        (false, true) => BRAND_SIZE,
-        (false, false) => 0,
-    }
-}
-
 fn decode_brand_rgba() -> Result<Vec<u8>> {
     let decoder = png::Decoder::new(Cursor::new(BRAND_PNG));
     let mut reader = decoder
@@ -258,21 +227,6 @@ fn blit_brand(canvas: &mut [u8], canvas_width: u32, offset_x: u32, brand: &[u8])
         canvas[destination..destination + brand_size * 4]
             .copy_from_slice(&brand[source..source + brand_size * 4]);
     }
-}
-
-fn waveform_color(adaptive_foreground: [u8; 3], red_mix: u8) -> [u8; 4] {
-    let red_mix = u16::from(red_mix);
-    let adaptive_mix = 255 - red_mix;
-    let blend = |adaptive: u8, red: u8| {
-        u8::try_from((u16::from(adaptive) * adaptive_mix + u16::from(red) * red_mix) / 255)
-            .unwrap_or(red)
-    };
-    [
-        blend(adaptive_foreground[0], RECORDING_RED[0]),
-        blend(adaptive_foreground[1], RECORDING_RED[1]),
-        blend(adaptive_foreground[2], RECORDING_RED[2]),
-        255,
-    ]
 }
 
 #[cfg(test)]
@@ -325,6 +279,8 @@ const fn adaptive_status_foreground() -> [u8; 3] {
 #[cfg(test)]
 #[allow(clippy::panic)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     fn view(state: ShellState, millis: u64) -> ShellView {
@@ -335,24 +291,15 @@ mod tests {
         }
     }
 
+    /// The frame sequence itself is `scrybe-widgets`' and is asserted
+    /// there. What this binary owns is the rasterisation of one frame
+    /// into pixels, so that is what stays asserted here: two different
+    /// frames must produce different images, and one frame must fill
+    /// exactly the bars its heights describe.
     #[test]
-    fn waveform_uses_a_fixed_eight_frame_four_hertz_sequence() {
-        assert_eq!(WAVEFORM_HEIGHTS.len(), 8);
-        assert_eq!(FRAME_PERIOD, Duration::from_millis(250));
-        assert_eq!(frame_index(view(ShellState::Recording, 0), false, true), 0);
-        assert_eq!(
-            frame_index(view(ShellState::Recording, 249), false, true),
-            0
-        );
-        assert_eq!(
-            frame_index(view(ShellState::Recording, 250), false, true),
-            1
-        );
-        assert_eq!(
-            frame_index(view(ShellState::Recording, 2_000), false, true),
-            0
-        );
+    fn each_waveform_frame_rasterises_to_the_bars_its_heights_describe() {
         let adaptive = [255, 255, 255, 255];
+
         assert_ne!(
             waveform_rgba(WAVEFORM_HEIGHTS[0], adaptive),
             waveform_rgba(WAVEFORM_HEIGHTS[1], adaptive)
@@ -363,29 +310,21 @@ mod tests {
             .iter()
             .filter(|pixel| pixel[3] == 255)
             .count();
-        assert_eq!(opaque_pixels, 76);
-    }
-
-    #[test]
-    fn reduce_motion_and_saving_hold_the_static_middle_frame() {
         assert_eq!(
-            frame_index(view(ShellState::Recording, 1_750), true, true),
-            STATIC_FRAME_INDEX
-        );
-        assert_eq!(
-            frame_index(view(ShellState::Saving, 1_750), false, true),
-            STATIC_FRAME_INDEX
-        );
-        assert_eq!(
-            frame_index(view(ShellState::Recording, 1_750), false, false),
-            0
+            opaque_pixels,
+            usize::from(
+                WAVEFORM_HEIGHTS[0]
+                    .iter()
+                    .copied()
+                    .map(u16::from)
+                    .sum::<u16>()
+            ) * 2,
+            "each bar is two points wide, so the lit pixels are twice the summed heights"
         );
     }
 
     #[test]
     fn brand_replaces_status_text_while_elapsed_stays_in_the_menu() {
-        assert_eq!(status_width(true, true), 39);
-        assert_eq!(status_width(false, true), BRAND_SIZE);
         let Ok(brand) = decode_brand_rgba() else {
             panic!("embedded brand asset must decode");
         };
@@ -396,15 +335,6 @@ mod tests {
         assert_eq!(
             menu_state_text(view(ShellState::Recording, 65_000)),
             "Recording  01:05"
-        );
-    }
-
-    #[test]
-    fn waveform_color_cycles_from_adaptive_foreground_to_recording_red() {
-        assert_eq!(waveform_color([255, 255, 255], 0), [255, 255, 255, 255]);
-        assert_eq!(
-            waveform_color([255, 255, 255], 255),
-            [RECORDING_RED[0], RECORDING_RED[1], RECORDING_RED[2], 255]
         );
     }
 }

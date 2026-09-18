@@ -9,6 +9,7 @@ members = [
     "scrybe-capture-win",
     "scrybe-capture-mic",
     "scrybe-android",
+    "scrybe-widgets",
 ]
 
 [workspace.package]

@@ -17,7 +17,7 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{MainThreadMarker, NSObject, NSPoint, NSRect, NSSize, NSString};
 
-use crate::shell::{ShellState, ShellView};
+use crate::view::{ShellState, ShellView};
 
 const PANEL_WIDTH: f64 = 240.0;
 const PANEL_HEIGHT: f64 = 44.0;
@@ -216,6 +216,7 @@ impl FloatingPanel {
     }
 
     /// Whether the Stop & save button was pressed.
+    #[must_use]
     pub fn poll_stop(&self) -> bool {
         self.stop_events.try_recv().is_ok()
     }
@@ -228,6 +229,7 @@ impl Drop for FloatingPanel {
 }
 
 /// Read the current macOS Reduce Motion preference.
+#[must_use]
 pub fn reduce_motion_enabled() -> bool {
     NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion()
 }

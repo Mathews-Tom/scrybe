@@ -22,16 +22,19 @@
 pub mod channel;
 #[cfg(debug_assertions)]
 pub mod control;
+pub mod hotkey;
 pub mod menu;
 #[cfg(debug_assertions)]
 pub mod model_probe;
 pub mod navigation;
 #[cfg(debug_assertions)]
 pub mod playback_probe;
+#[cfg(unix)]
+pub mod signals;
 pub mod tray;
 pub mod window;
 
-use scrybe_application::recording::RecordingState;
+use scrybe_application::recording::{RecordingState, StopSource};
 use tauri::Manager as _;
 
 use crate::state::Desktop;
@@ -99,13 +102,14 @@ pub fn keep_running_without_a_window(app: &tauri::AppHandle, event: tauri::RunEv
 pub enum Quit {
     /// Nothing is in flight. Exit now.
     Now,
-    /// A recording is in flight. Exiting would abandon it.
+    /// A recording is in flight. Stop it, and exit once it is durable.
     ///
-    /// The confirmation this would offer a user — stop and save, or
-    /// cancel — belongs with the recording controls, which this host
-    /// does not yet have. Until then the honest behavior is to refuse
-    /// loudly rather than to lose the recording quietly.
-    Refused(RecordingState),
+    /// Not a refusal: a reader who asks a recorder to quit is asking it
+    /// to finish, not to argue. Not an immediate exit either — the
+    /// session is recoverable at this point but not complete, and a
+    /// process that left now would hand the reader a folder they have
+    /// to repair rather than a session they can read.
+    Deferred(RecordingState),
 }
 
 /// Whether the process may exit right now.
@@ -115,11 +119,25 @@ pub const fn quit_decision(state: RecordingState) -> Quit {
         RecordingState::Idle | RecordingState::Completed | RecordingState::Failed => Quit::Now,
         in_flight @ (RecordingState::Preparing
         | RecordingState::Recording
-        | RecordingState::Saving) => Quit::Refused(in_flight),
+        | RecordingState::Saving) => Quit::Deferred(in_flight),
     }
 }
 
-/// Exits if nothing is in flight; otherwise reports why it did not.
+/// Exits if nothing is in flight; otherwise stops the recording and
+/// exits once it is durable.
+///
+/// What is on disk at the moment of a quit during `Saving`: the session
+/// folder exists, the journal under it holds every accepted transcript
+/// chunk, and the audio has been written but may not yet be merged,
+/// encoded, or described by a `meta.toml`. That is precisely the state
+/// `scrybe repair` reconstructs a session from — so the work is
+/// recoverable, not lost, even if the process is killed here. Deferring
+/// the exit is what turns "recoverable" into "already finished", and it
+/// is why this waits rather than exiting and relying on the repair.
+///
+/// Nothing on this path deletes, truncates, or renames anything. The
+/// only action it takes on a recording is to request a stop, which is
+/// the same request the window's `Stop & save` makes.
 pub fn request_quit(app: &tauri::AppHandle) {
     let state = app
         .state::<Desktop>()
@@ -133,14 +151,58 @@ pub fn request_quit(app: &tauri::AppHandle) {
             crate::note!(app, "quit-accepted");
             app.exit(0);
         }
-        Quit::Refused(in_flight) => {
+        Quit::Deferred(in_flight) => {
             let label = state_label(in_flight);
-            crate::note!(app, "quit-refused", label);
-            eprintln!(
-                "scrybe-desktop: refusing to quit while {label}; \
-                 stop the recording first"
-            );
+            crate::note!(app, "quit-deferred", label);
+            eprintln!("scrybe-desktop: finishing the recording before quitting ({label})");
+            // A stop from the termination source. Idempotent: if the
+            // reader already pressed `Stop & save`, the controller
+            // reports `AlreadyStopping` and this changes nothing.
+            let _ = crate::recording::request_stop(app, StopSource::Termination);
+            // The exit itself is not taken here. `exit_when_settled`,
+            // attached to the transition observer, exits the moment the
+            // recording reaches a terminal state — so the process
+            // leaves when the session is durable rather than when a
+            // timer says it probably is.
+            app.state::<PendingQuit>().arm();
         }
+    }
+}
+
+/// Whether a quit is waiting for a recording to finish.
+#[derive(Default)]
+pub struct PendingQuit {
+    armed: std::sync::atomic::AtomicBool,
+}
+
+impl PendingQuit {
+    fn arm(&self) {
+        self.armed.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Whether a quit was deferred, clearing the flag.
+    ///
+    /// Taken rather than read so two terminal transitions in one
+    /// process — a failed attempt followed by a successful one — cannot
+    /// exit twice.
+    fn take(&self) -> bool {
+        self.armed.swap(false, std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+/// Exits if a quit was deferred and the recording has now settled.
+///
+/// Called from the transition observer. `Completed` and `Failed` are
+/// both terminal: a failed recording has nothing left to finish, and
+/// holding the process open for one would leave a reader who asked to
+/// quit with a window they cannot close.
+pub fn exit_when_settled(app: &tauri::AppHandle, state: RecordingState) {
+    if !state.is_terminal() {
+        return;
+    }
+    if app.state::<PendingQuit>().take() {
+        crate::note!(app, "quit-accepted", state_label(state));
+        app.exit(0);
     }
 }
 
@@ -167,15 +229,36 @@ mod tests {
         assert_eq!(quit_decision(RecordingState::Idle), Quit::Now);
     }
 
+    /// A quit while something is in flight does not refuse and does not
+    /// exit. It stops the recording and waits — the only choice that
+    /// neither strands the reader nor destroys work they believe they
+    /// have.
     #[test]
-    fn test_quit_while_a_recording_is_in_flight_is_refused() {
+    fn test_quit_while_a_recording_is_in_flight_waits_for_it() {
         for state in [
             RecordingState::Preparing,
             RecordingState::Recording,
             RecordingState::Saving,
         ] {
-            assert_eq!(quit_decision(state), Quit::Refused(state));
+            assert_eq!(quit_decision(state), Quit::Deferred(state));
         }
+    }
+
+    /// A deferred quit fires once. Two terminal transitions in one
+    /// process — a refused attempt, then a real recording — must not
+    /// exit twice.
+    #[test]
+    fn test_a_deferred_quit_is_taken_exactly_once() {
+        let pending = PendingQuit::default();
+        pending.arm();
+
+        assert!(pending.take());
+        assert!(!pending.take());
+    }
+
+    #[test]
+    fn test_a_quit_that_was_never_deferred_does_not_fire() {
+        assert!(!PendingQuit::default().take());
     }
 
     #[test]

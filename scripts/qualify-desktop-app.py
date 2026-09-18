@@ -907,8 +907,8 @@ def lifecycle(candidate: Candidate, run: Run) -> None:
     run.record("launch: tray items created", 1, candidate.events().count("tray-ready"))
     run.record("launch: windows shown", 1, candidate.events().count("window-shown"))
     run.record(
-        "launch: `Record now` is present and not yet available",
-        "record:disabled,open:enabled,quit:enabled",
+        "launch: the tray offers a recording and refuses a stop with nothing running",
+        "record:enabled,stop:disabled,open:enabled,quit:enabled",
         candidate.detail_of("tray-ready"),
     )
 

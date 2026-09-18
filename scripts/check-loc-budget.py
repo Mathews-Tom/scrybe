@@ -339,6 +339,31 @@ LOC_CEILINGS: dict[str, int] = {
     # device-listing surface is added.
     "scrybe-capture-mic": 1500,
     "scrybe-android": 2500,
+    # The native macOS indicators a running recording is shown on. A
+    # crate of its own for two reasons that are not organisational: the
+    # modules were private to a `[[bin]]` that declares no `[lib]`, so
+    # nothing could reach them; and `scrybe-desktop/src-tauri` sets
+    # `unsafe_code = "forbid"`, which a local `#![allow]` cannot
+    # override, so the floating panel's `msg_send!` blocks can never be
+    # inlined into the desktop host. Unpublished, like the parked
+    # platform crates.
+    #
+    #   218  `floating_panel.rs`, moved verbatim from `scrybe-cli`
+    #   123  `hotkey.rs`, moved verbatim
+    #   133  `status.rs`: the waveform geometry, the eight-frame
+    #        sequence, and the colour blend, taken out of `tray.rs` —
+    #        which keeps its `tray-icon` object, because the desktop
+    #        host has a Tauri-native one of its own
+    #    26  `view.rs`: the rendering-independent snapshot every
+    #        indicator takes, which had to leave `shell.rs` for the
+    #        panel to compile anywhere else
+    #     6  the module declarations
+    #   =506 measured
+    #
+    # The ceiling is 600. The 94 lines of headroom are for the Tauri
+    # side of the same widgets, not a reservation for a second surface:
+    # `scrybe-cli` fell 6685 -> 6235 over the same change.
+    "scrybe-widgets": 600,
     # The desktop host: the Tauri process that owns windowing, the tray,
     # single-instance activation, and the translation between the
     # WebView's IPC and the shared application services. It lives in its
@@ -463,10 +488,31 @@ LOC_CEILINGS: dict[str, int] = {
     #         they are published on
     #   =3282 measured
     #
-    # The ceiling is 3350, leaving 68 lines of margin. The tray, the
-    # floating pill, the global hotkey, the signal bridge, and the quit
-    # path are not in that sum and are not reserved here.
-    "scrybe-desktop/src-tauri": 3350,
+    # The ceiling is 3350, leaving 68 lines of margin.
+    #
+    # Raised to 3500 for four of the six surfaces a recording is stopped
+    # from, and the quit path they made possible. Continuing the sum:
+    #
+    #   3282  measured, after the window's recording control
+    #   + 31  `lifecycle/hotkey.rs`: registering the accelerator on the
+    #         thread the platform pins its handler to, and draining its
+    #         presses from a thread that is not that one
+    #   + 32  `lifecycle/signals.rs`: the first terminating signal read
+    #         as a quit request, and the second deliberately left to the
+    #         platform
+    #   + 37  the tray's two recording items, the state they are enabled
+    #         and disabled from, and the dispatch behind each verb
+    #   + 34  the deferred quit: the decision, the flag one is pending,
+    #         and the exit taken when the recording becomes durable —
+    #         replacing the refusal that used to strand a reader with a
+    #         window they could not close
+    #   =3416 measured
+    #
+    # The ceiling is 3500, leaving 84 lines of margin. The floating pill
+    # is not in that sum and is not reserved here: it is the one native
+    # surface this work does not wire, and the work that wires it should
+    # argue for it.
+    "scrybe-desktop/src-tauri": 3500,
 }
 
 

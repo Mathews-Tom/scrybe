@@ -24,12 +24,14 @@ use scrybe_core::config::{ShellConfig, ShellIndicator};
 use tokio::runtime::Runtime;
 use tokio::sync::watch;
 
+#[cfg(target_os = "macos")]
+use scrybe_widgets::floating_panel::{prepare_application, reduce_motion_enabled, FloatingPanel};
+use scrybe_widgets::hotkey::{HotkeyEvent, HotkeyListener, DEFAULT_STOP_ACCELERATOR};
+use scrybe_widgets::{ShellState, ShellView};
+
 use crate::commands::rec::{
     begin_recording, monitor_signals, run_with_stop, Args, RECORDING_FAILURE_SUMMARY,
 };
-#[cfg(target_os = "macos")]
-use crate::floating_panel::{prepare_application, reduce_motion_enabled, FloatingPanel};
-use crate::hotkey::{HotkeyEvent, HotkeyListener, DEFAULT_STOP_ACCELERATOR};
 use crate::runtime::{application, config_service};
 use crate::tray::{RecordingIndicator, TrayCommand};
 
@@ -38,60 +40,31 @@ use crate::tray::{RecordingIndicator, TrayCommand};
 /// `thread::sleep` between event polls.
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 
-/// Recording-shell lifecycle shown by every configured surface.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum ShellState {
-    Recording,
-    Saving,
-}
-
-/// One rendering-independent snapshot for all shell surfaces.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct ShellView {
-    pub state: ShellState,
-    pub elapsed: Duration,
-    pub stop_enabled: bool,
-}
-
-impl ShellView {
-    pub fn elapsed_label(self) -> String {
-        let total_seconds = self.elapsed.as_secs();
-        let seconds = total_seconds % 60;
-        let minutes = (total_seconds / 60) % 60;
-        let hours = total_seconds / 3_600;
-        if hours == 0 {
-            format!("{minutes:02}:{seconds:02}")
-        } else {
-            format!("{hours:02}:{minutes:02}:{seconds:02}")
-        }
-    }
-}
-
-impl From<&RecordingSnapshot> for ShellView {
-    /// Projects the shared recording state onto the two states these
-    /// native surfaces render.
-    ///
-    /// `Preparing` reads as recording, not as saving. The controller
-    /// sits in it for the whole of `run_with_stop`'s preflight, and
-    /// these surfaces are already up and being rendered during it, so
-    /// projecting it as saving would show a `Saving…` tray label, a
-    /// pinned waveform, and a dimmed pill dot until capture starts. It
-    /// also accepts a stop, which is what `stop_enabled` reports, and
-    /// the surfaces' fixtures take `stop_enabled` to imply a live
-    /// recording.
-    ///
-    /// Everything after capture — finalizing, completed, settled —
-    /// reads as saving, because that is what the surfaces show until
-    /// they are torn down.
-    fn from(snapshot: &RecordingSnapshot) -> Self {
-        Self {
-            state: match snapshot.state {
-                RecordingState::Preparing | RecordingState::Recording => ShellState::Recording,
-                _ => ShellState::Saving,
-            },
-            elapsed: Duration::from_millis(snapshot.elapsed_ms),
-            stop_enabled: snapshot.stop_enabled(),
-        }
+/// Projects the shared recording state onto what a native indicator
+/// renders.
+///
+/// A free function rather than a `From` impl: `ShellView` belongs to
+/// `scrybe-widgets`, which deliberately depends on no service layer, so
+/// neither type is this crate's to write a conversion between.
+/// `Preparing` reads as recording, not as saving. The controller sits
+/// in it for the whole of the preflight, and these surfaces are already
+/// up and being rendered during it, so projecting it as saving would
+/// show a `Saving…` tray label, a pinned waveform, and a dimmed pill dot
+/// until capture starts. It also accepts a stop, which is what
+/// `stop_enabled` reports, and the surfaces' fixtures take
+/// `stop_enabled` to imply a live recording.
+///
+/// Everything after capture — finalizing, completed, settled — reads as
+/// saving, because that is what the surfaces show until they are torn
+/// down.
+const fn shell_view(snapshot: &RecordingSnapshot) -> ShellView {
+    ShellView {
+        state: match snapshot.state {
+            RecordingState::Preparing | RecordingState::Recording => ShellState::Recording,
+            _ => ShellState::Saving,
+        },
+        elapsed: Duration::from_millis(snapshot.elapsed_ms),
+        stop_enabled: snapshot.stop_enabled(),
     }
 }
 
@@ -127,7 +100,7 @@ impl ShellStop {
     }
 
     fn view(&self) -> ShellView {
-        ShellView::from(&self.controller.snapshot())
+        shell_view(&self.controller.snapshot())
     }
 }
 
@@ -627,7 +600,7 @@ mod tests {
         let controller = Arc::clone(application(Some(dir.path())).unwrap().recording());
         controller.begin_preparing().unwrap();
 
-        let view = ShellView::from(&controller.snapshot());
+        let view = shell_view(&controller.snapshot());
 
         assert_eq!(view.state, ShellState::Recording);
         // `Preparing` satisfies `accepts_stop`, so projecting it as
