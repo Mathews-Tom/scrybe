@@ -74,10 +74,10 @@ Nothing on the quit path deletes, truncates, or renames. The only action it take
 | Boundary | What is on disk | What a surface is told |
 | --- | --- | --- |
 | Preflight | Nothing. Not even the storage root, if it did not already exist. | `preflight_failed`, naming every check that blocked. |
-| Capture | The session folder, holding its journal. | `Capture` — the failure kind whose documented meaning is that a recoverable journal may exist. |
+| Capture | Not settled here. The pipeline creates the session folder before it reports the progress that moves the controller into `Recording`, so a journal should exist by the time this label is reachable — but the only test that produces this label fails the controller directly without running a pipeline, so it proves the label and nothing about the bytes. | `Capture` — the failure kind whose documented meaning is that a recoverable journal may exist. |
 | Finalization | The session folder, and whatever the pipeline finished writing. | `Finalization` — audio exists and the session is repairable. |
 
-The kind is derived from the state the controller was in when the failure arrived, never from where in a call stack it was raised, so the label cannot disagree with what is actually on disk.
+The kind is derived from the state the controller was in when the failure arrived, never from where in a call stack it was raised. That is what keeps the label honest about ordering: a failure cannot be called `Capture` once finalisation has begun. It is not the same as proving the disk matches — only the `Finalization` row is settled that way, by a test that induces a real mid-stream capture failure and then enumerates the session folder.
 
 **A capture source that fails part-way does not abandon the recording.** The frames already captured are finalised in full — transcript, notes, encoded audio and `meta.toml` all written — and the capture error is surfaced afterwards as the returned error's source. A reader whose microphone is unplugged mid-meeting keeps everything that was said before it was. Because the pipeline has reached finalisation by then, that failure is labelled `Finalization` rather than `Capture`, which is accurate: the audio does exist.
 

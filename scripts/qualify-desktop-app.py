@@ -1726,6 +1726,21 @@ def recording(candidate: Candidate, run: Run) -> None:
     driving the shipped bundle's own control surface shows the
     difference.
 
+    How much of this is proven, and how much is only read. Six of these
+    checks have been made to fail by mutating the thing each claims to
+    protect: the tray's record arm wired to nothing, the stop-source
+    attribution dropped from the transition detail, and the two
+    independent double-start guards bypassed together — which is the
+    interesting one, because bypassing either alone leaves all of them
+    passing, and only bypassing both writes two session folders from one
+    click and trips `stop: exactly one session was written`. The rest
+    were judged real by reading. None of them restates a constant this
+    file defines, which is the shape that produces a check incapable of
+    failing, and three releases running have shipped one of those. The
+    two worth mutating first, because they encode an ordering or a
+    clearing rather than an existence, are `record: prepared then began
+    capturing` and `stop: settled to idle carrying nothing`.
+
     The recording it drives is real. The candidate's configuration
     selects the synthetic source, which is the one this host can open
     with no device and no permission grant, and the stub providers,

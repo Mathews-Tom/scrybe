@@ -326,8 +326,11 @@ LOC_CEILINGS: dict[str, int] = {
     #   =8271 measured
     #
     # The ceiling is 8350, leaving 79 lines of margin. `scrybe-cli` went
-    # the other way over the same change, from 7074 to 6738 against an
-    # unchanged 7300, because what moved here was deleted there.
+    # the other way over the same change, from 7074 to 6684 against an
+    # unchanged 7300, because what moved here was deleted there. It
+    # reads 6241 now rather than 6684: the widgets left for their own
+    # crate afterwards, which this sum does not cover and did not pay
+    # for.
     "scrybe-application": 8350,
     "scrybe-capture-mac": 2700,
     "scrybe-capture-linux": 2500,
@@ -512,7 +515,39 @@ LOC_CEILINGS: dict[str, int] = {
     # is not in that sum and is not reserved here: it is the one native
     # surface this work does not wire, and the work that wires it should
     # argue for it.
-    "scrybe-desktop/src-tauri": 3500,
+    #
+    # Raised to 3700 for two defects review found in the work above, both
+    # of which cost more to fix correctly than the code they corrected.
+    # Continuing the sum:
+    #
+    #   3416  measured, after the four surfaces and the deferred quit
+    #   +100  honoring a stop while a recording is still being prepared.
+    #         The capture handle is now armed before the device is
+    #         opened rather than after, because opening it is where the
+    #         platform raises its own permission prompt and a reader
+    #         waiting on that dialog was the likeliest one to press
+    #         stop. The commands are generic over the runtime so the
+    #         race can be driven against a mock one, and the terminal
+    #         outcome is no longer acknowledged by the host on the
+    #         reader's behalf, which is what made a saved recording
+    #         unannounceable
+    #   +123  the deferred quit's read-then-arm window, extracted into a
+    #         function that takes no application handle so the race can
+    #         be exercised at all, and the channel-synchronized test
+    #         that holds one thread between the read and the arm while
+    #         another drives a real controller to a terminal state.
+    #         Both halves are counted here: the extraction exists only
+    #         because the defect was untestable in place
+    #   =3639 measured
+    #
+    # The ceiling is 3700, leaving 61 lines of margin. The tests for the
+    # deferred quit stay in `src/` and are counted deliberately. The note
+    # at the top recommends moving a dominant test footprint to `tests/`,
+    # and that is the right move when the code under test is already
+    # public — but `defer_quit` is private, and widening it purely to
+    # relocate its own test would be shaping this crate's API around the
+    # measurement rather than around its callers.
+    "scrybe-desktop/src-tauri": 3700,
 }
 
 
