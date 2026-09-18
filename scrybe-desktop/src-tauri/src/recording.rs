@@ -202,6 +202,15 @@ where
         None,
         &RecordingOverrides {
             title,
+            // The root this host already reads through, rather than
+            // whatever the configuration file happens to name. They are
+            // the same value for a real installation, because that root
+            // was built from that configuration — but a caller that
+            // constructs a `Desktop` over one root and no configuration
+            // file would otherwise write somewhere else entirely, which
+            // is how a test suite came to leave recordings in a
+            // reader's own storage root on every run.
+            root: Some(desktop.application().sessions().root().path().to_path_buf()),
             ..RecordingOverrides::default()
         },
     )
