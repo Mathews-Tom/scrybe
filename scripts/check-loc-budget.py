@@ -493,10 +493,32 @@ LOC_CEILINGS: dict[str, int] = {
     #
     # The ceiling is 3350, leaving 68 lines of margin.
     #
-    # Raised to 3500 for four of the six surfaces a recording is stopped
-    # from, and the quit path they made possible. Continuing the sum:
+    # Raised to 3450 for what review found in the window's recording
+    # control. Continuing the sum:
     #
     #   3282  measured, after the window's recording control
+    #   +126  honoring a stop while a recording is still being prepared,
+    #         and letting a reader see that one was saved. The capture
+    #         handle is armed before the device is opened, because
+    #         opening it is where the platform raises its own permission
+    #         prompt and a reader waiting on that dialog was the
+    #         likeliest one to press stop. The commands are generic over
+    #         the runtime so that race can be driven against a mock one.
+    #         And the host no longer acknowledges a terminal recording on
+    #         the reader's behalf, which is what made a saved recording
+    #         unannounceable: the acknowledgement is now a command, and
+    #         one watcher mounted above every route reads the outcome and
+    #         clears it, so a reader who never opens the recording
+    #         surface still returns to idle and can start again
+    #   =3408 measured
+    #
+    # The ceiling is 3450, leaving 42 lines of margin.
+    #
+    # Raised to 3700 for four of the six surfaces a recording is stopped
+    # from, the quit path they made possible, and the lost wakeup review
+    # found in it. Continuing the sum:
+    #
+    #   3408  measured, after the window's repaired recording control
     #   + 31  `lifecycle/hotkey.rs`: registering the accelerator on the
     #         thread the platform pins its handler to, and draining its
     #         presses from a thread that is not that one
@@ -509,44 +531,19 @@ LOC_CEILINGS: dict[str, int] = {
     #         and the exit taken when the recording becomes durable —
     #         replacing the refusal that used to strand a reader with a
     #         window they could not close
-    #   =3416 measured
+    #   + 78  closing the read-then-arm window in the deferred quit,
+    #         which review found could lose a wakeup and strand the
+    #         process. The sequence is extracted into a function that
+    #         takes no application handle, because in place it could not
+    #         be raced at all, and the test that races it holds one
+    #         thread between the read and the arm while another drives a
+    #         real controller to a terminal state
+    #   =3620 measured
     #
-    # The ceiling is 3500, leaving 84 lines of margin. The floating pill
+    # The ceiling is 3700, leaving 80 lines of margin. The floating pill
     # is not in that sum and is not reserved here: it is the one native
     # surface this work does not wire, and the work that wires it should
     # argue for it.
-    #
-    # Raised to 3700 for two defects review found in the work above, both
-    # of which cost more to fix correctly than the code they corrected.
-    # Continuing the sum:
-    #
-    #   3416  measured, after the four surfaces and the deferred quit
-    #   +100  honoring a stop while a recording is still being prepared.
-    #         The capture handle is now armed before the device is
-    #         opened rather than after, because opening it is where the
-    #         platform raises its own permission prompt and a reader
-    #         waiting on that dialog was the likeliest one to press
-    #         stop. The commands are generic over the runtime so the
-    #         race can be driven against a mock one, and the terminal
-    #         outcome is no longer acknowledged by the host on the
-    #         reader's behalf, which is what made a saved recording
-    #         unannounceable
-    #   +123  the deferred quit's read-then-arm window, extracted into a
-    #         function that takes no application handle so the race can
-    #         be exercised at all, and the channel-synchronized test
-    #         that holds one thread between the read and the arm while
-    #         another drives a real controller to a terminal state.
-    #         Both halves are counted here: the extraction exists only
-    #         because the defect was untestable in place
-    #   =3639 measured
-    #
-    # The ceiling is 3700, leaving 61 lines of margin. The tests for the
-    # deferred quit stay in `src/` and are counted deliberately. The note
-    # at the top recommends moving a dominant test footprint to `tests/`,
-    # and that is the right move when the code under test is already
-    # public — but `defer_quit` is private, and widening it purely to
-    # relocate its own test would be shaping this crate's API around the
-    # measurement rather than around its callers.
     "scrybe-desktop/src-tauri": 3700,
 }
 

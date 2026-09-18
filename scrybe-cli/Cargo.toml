@@ -111,7 +111,7 @@ scrybe-core = { package = "scrybe-meeting-core", path = "../scrybe-core", versio
 # private modules are unreachable and because the desktop host forbids
 # the unsafe the floating panel needs. Unpublished, so this edge is a
 # path dependency with no version requirement.
-scrybe-widgets = { path = "../scrybe-widgets", optional = true }
+scrybe-widgets = { path = "../scrybe-widgets", version = "=1.6.0", optional = true }
 serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "fs", "io-util", "sync", "time"] }

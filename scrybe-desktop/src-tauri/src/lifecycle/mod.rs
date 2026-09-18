@@ -169,6 +169,12 @@ pub fn request_quit(app: &tauri::AppHandle) {
                 },
                 || {},
             );
+            // `state` names the outcome for the debug channel only. The
+            // release expansion of `note!` consumes the handle and
+            // discards everything else on purpose, so that no shipped
+            // build carries these labels — which leaves this binding
+            // genuinely unused there rather than accidentally so.
+            #[cfg_attr(not(debug_assertions), allow(unused_variables))]
             if let Some(state) = settled {
                 crate::note!(app, "quit-accepted", state_label(state));
                 app.exit(0);
