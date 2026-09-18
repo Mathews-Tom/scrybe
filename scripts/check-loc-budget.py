@@ -331,7 +331,28 @@ LOC_CEILINGS: dict[str, int] = {
     # reads 6241 now rather than 6684: the widgets left for their own
     # crate afterwards, which this sum does not cover and did not pay
     # for.
-    "scrybe-application": 8350,
+    #
+    # Raised again, to 9600, for session retention. The initial service
+    # moved sessions and swept an indexed folder; review established
+    # that an irreversible filesystem path also needs durable ownership,
+    # crash recovery, and cross-process collision guarantees. Continuing
+    # the sum:
+    #
+    #   8279  measured, before retention
+    #   +1155 `sessions/retention.rs`: delete and archive moves; a
+    #         per-entry persisted window; random ownership markers;
+    #         atomic no-replace renames on macOS, Linux, and Windows;
+    #         serialized index transitions; fail-closed corrupt-index
+    #         handling; durable purge authorization; resumable staging;
+    #         and focused regressions covering the irreversible path
+    #   + 90  recording/retention exclusion, canonical reserved-path
+    #         filtering, application composition, and module exports
+    #   =9524 measured
+    #
+    # The ceiling is 9600, leaving 76 lines of margin. The Tauri
+    # commands and capability grants that reach this service live in
+    # the desktop host and are counted against its own ceiling.
+    "scrybe-application": 9600,
     "scrybe-capture-mac": 2700,
     "scrybe-capture-linux": 2500,
     "scrybe-capture-win": 2500,
@@ -540,11 +561,32 @@ LOC_CEILINGS: dict[str, int] = {
     #         real controller to a terminal state
     #   =3620 measured
     #
-    # The ceiling is 3700, leaving 80 lines of margin. The floating pill
+    # The ceiling was 3700, leaving 80 lines of margin. The floating pill
     # is not in that sum and is not reserved here: it is the one native
     # surface this work does not wire, and the work that wires it should
     # argue for it.
-    "scrybe-desktop/src-tauri": 3700,
+    #
+    # Raised to 3800 for session retention. Continuing the sum:
+    #
+    #   3677  measured, before the retention commands
+    #   + 25  `contract/retention.rs`: the destination and the outcome.
+    #         The outcome carries the retention window so a confirmation
+    #         and its acknowledgement name the same number without the
+    #         frontend holding a copy of a configuration value — a
+    #         surface with seven hardcoded would go on saying seven
+    #         after a reader changed it
+    #   + 49  the two commands and the one route they share in
+    #         `commands.rs`, which resolves the identity first, then
+    #         checks the recording state, then moves. The state check is
+    #         here rather than in the service because a confirmation
+    #         dialog cannot know what happened while it was open, and
+    #         the contract's declared transport set, command list, and
+    #         access-control manifest each gain two entries
+    #   =3751 measured
+    #
+    # The ceiling is 3800, leaving 49 lines of margin. The launch sweep
+    # itself was paid for in the preceding increment.
+    "scrybe-desktop/src-tauri": 3800,
 }
 
 

@@ -17,6 +17,7 @@ mod contract;
 mod generator;
 mod reader;
 mod repository;
+mod retention;
 mod scan;
 
 pub use contract::{
@@ -28,3 +29,4 @@ pub use contract::{
 pub use generator::ConfiguredNotesGenerator;
 pub use reader::SessionReader;
 pub use repository::{NotesGenerationRequest, NotesGenerator, SessionRepository};
+pub use retention::{Destination, RetentionService, SweepOutcome, ARCHIVE_DIR, TRASH_DIR};
