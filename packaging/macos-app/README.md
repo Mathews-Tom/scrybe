@@ -10,7 +10,8 @@ Source-checkout tooling for wrapping the `scrybe` CLI into a macOS application b
 |---|---|
 | `../../scrybe-cli/assets/macos/Info.plist.template` | Bundle metadata. Carries `NSAudioCaptureUsageDescription` and `NSMicrophoneUsageDescription`, the strings TCC reads when surfacing consent. `{{VERSION}}` is replaced at build time with the version reported by `scrybe --version`. |
 | `../../scrybe-cli/assets/macos/entitlements.plist` | Code-signing entitlements. Declares `com.apple.security.device.audio-input` for tap delivery under the hardened runtime, plus the JIT/library-validation relaxations whisper-rs needs at inference time. |
-| `build-app.sh` | Renders the template, copies the binary into `Contents/MacOS/`, optionally code-signs against either a real Developer ID identity or a self-signed Keychain identity, and runs `codesign --verify`. |
+| `build-app.sh` | Renders the template, copies the binary into `Contents/MacOS/`, and code-signs. Exactly one signing mode is required — `--sign` for a Developer ID, `--sign-self` for local development, `--unsigned` for a deliberately unsigned local bundle — and there is no default. A `--sign` build is then put through `../../scripts/check-signed-artifact.py`, which reads the signing authority by name. |
+| `../../scripts/check-signed-artifact.py` | The signature, Gatekeeper, and notarization assertions. Reads `Authority` and `TeamIdentifier` out of `codesign -dvvv`, parses the verdict word out of `spctl`, and reads Apple's own submission status and a stapled ticket. Never `codesign --verify`, and never an exit status. |
 
 ## Why Core Audio Tap requires a bundle
 
@@ -73,7 +74,27 @@ packaging/macos-app/build-app.sh \
     --sign "Developer ID Application: Your Name (TEAMID)"
 ```
 
-The Developer ID requires a paid Apple Developer membership ($99/year). Notarization is a separate step and is currently out of scope for the v1 release line.
+The Developer ID requires a paid Apple Developer membership ($99/year).
+
+`--sign` is the only mode that produces a shippable bundle, and the script asserts that afterwards rather than trusting that signing happened:
+
+```sh
+python3 scripts/check-signed-artifact.py --bundle ./scrybe.app
+```
+
+Three assertions, none of which can pass on a machine with no distribution credential:
+
+- **Signature.** A Developer ID Application authority read by name out of `codesign -dvvv`, with a ten-character team identifier that the authority line and the `TeamIdentifier` field agree on.
+- **Gatekeeper.** The verdict word parsed out of `spctl -a -vv --type execute`, required to be `accepted` from a notarized source.
+- **Notarization.** The status Apple returns for a submission, required to be exactly `Accepted`, plus a ticket Apple issued stapled to the bundle.
+
+`codesign --verify` is deliberately absent from all three. Measured on this repository's own output: an ad-hoc-signed bundle returns exit 0 from `codesign --verify --deep --strict` while `spctl` reports `rejected`. A gate built on it certifies an artifact Gatekeeper will not run. `spctl`'s own exit status is no better — the same `rejected` verdict was measured at exit 3 here and at exit 0 earlier — so the verdict is read from the text.
+
+### Why no signing mode is the default any more
+
+The script used to make signing optional: with no flags it printed a warning, built the bundle anyway, and finished with `codesign --verify`. So the ordinary way to run it produced an unsigned bundle that nothing downstream refused, and the last line of output was a verification that could not have caught it. Choosing a mode is now required, and the two development modes state on stdout that their output is not shippable.
+
+Notarization is a separate step from signing and needs its own credential; the assertion for it exists and fails naming what is missing.
 
 ## Iteration loop
 
