@@ -456,8 +456,13 @@ fn test_a_refused_recording_creates_no_session_and_no_storage_root() {
     std::fs::write(
         &config_path,
         format!(
-            "[storage]\nroot = \"{}\"\n[record]\nsource = \"mic\"\n",
-            root.display()
+            // Serialised as a TOML value rather than interpolated. A
+            // Windows path is full of backslashes, and a backslash in a
+            // basic TOML string starts an escape — so the raw form
+            // produces a file that does not parse, and the refusal
+            // under test becomes an unreadable configuration instead.
+            "[storage]\nroot = {}\n[record]\nsource = \"mic\"\n",
+            toml::Value::from(root.to_str().unwrap())
         ),
     )
     .unwrap();
