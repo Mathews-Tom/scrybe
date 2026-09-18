@@ -4,6 +4,8 @@ All notable changes to scrybe are documented here. The format follows [Keep a Ch
 
 ## [Unreleased]
 
+## [2.1.0] — 2026-09-18
+
 ### Added
 
 - Native macOS DMG packaging with a stable Scrybe community signing identity, explicit self-signed and unnotarized trust checks, signed updater archives, and a user-initiated in-app update flow that defers installation while recording.
@@ -211,7 +213,9 @@ This release completes the macOS capture-liveness train. A dead or wrong input d
 
 - 8 crates. Publish posture unchanged: `scrybe` is the crates.io placeholder; distribution uses cargo-dist release artifacts.
 
-[Unreleased]: https://github.com/Mathews-Tom/scrybe/compare/v1.6.0...HEAD
+[Unreleased]: https://github.com/Mathews-Tom/scrybe/compare/v2.1.0...HEAD
+[2.1.0]: https://github.com/Mathews-Tom/scrybe/compare/v2.0.0...v2.1.0
+[2.0.0]: https://github.com/Mathews-Tom/scrybe/releases/tag/v2.0.0
 [1.6.0]: https://github.com/Mathews-Tom/scrybe/releases/tag/v1.6.0
 [1.5.0]: https://github.com/Mathews-Tom/scrybe/releases/tag/v1.5.0
 [1.4.0]: https://github.com/Mathews-Tom/scrybe/releases/tag/v1.4.0

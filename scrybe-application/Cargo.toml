@@ -69,8 +69,8 @@ chrono.workspace = true
 futures.workspace = true
 libc.workspace = true
 reqwest = { workspace = true, optional = true }
-scrybe-capture-mic = { package = "scrybe-meeting-capture-mic", path = "../scrybe-capture-mic", version = "=2.0.0", optional = true }
-scrybe-core = { package = "scrybe-meeting-core", path = "../scrybe-core", version = "=2.0.0" }
+scrybe-capture-mic = { package = "scrybe-meeting-capture-mic", path = "../scrybe-capture-mic", version = "=2.1.0", optional = true }
+scrybe-core = { package = "scrybe-meeting-core", path = "../scrybe-core", version = "=2.1.0" }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
