@@ -62,6 +62,16 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         // because the main window is created from configuration before
         // any of this crate's code runs.
         .plugin(navigation::guard())
+        // Update archives carry a minisign signature verified against
+        // the public key in tauri.conf.json. This authentication is
+        // independent of the app bundle's macOS code-signing profile:
+        // the community distribution is self-signed and unnotarized,
+        // while a downloaded update still fails closed if its archive
+        // was not produced by this project's updater key.
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        // macOS applies an installed update on relaunch. Only that one
+        // process operation is granted to the main window capability.
+        .plugin(tauri_plugin_process::init())
         // The one scheme this application registers, and the only way
         // an `<audio>` element can name a file under the storage root.
         // Registered as `playback::serve` itself rather than through a

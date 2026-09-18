@@ -94,28 +94,35 @@ const FORBIDDEN_NAMESPACES = [
   "core:path",
 ];
 
-// Core permissions that are narrow enough to grant but still worth
-// naming, so an unexpected one fails rather than passes quietly.
+// Framework and plugin permissions that are narrow enough to grant but
+// still worth naming, so an unexpected one fails rather than passes
+// quietly.
 //
 // Everything else a capability may name has to be a grant for one of
 // this application's own commands, which `build.rs` emits as
 // `allow-<command>`. That pairing is the rule below, and it is an
 // allow-list over the whole permission space rather than a second
 // denylist: `FORBIDDEN_NAMESPACES` can only reject a namespace someone
-// thought to write down, so on its own it lets a plugin surface arrive
-// through any namespace it has not heard of — `clipboard-manager` is
-// on the list, `notification` and `nfc` are not, and neither is
-// whatever the next plugin is called.
-const ALLOWED_CORE_PERMISSIONS = ["core:event:allow-listen", "core:event:allow-unlisten"];
+// thought to write down.
+const ALLOWED_FRAMEWORK_PERMISSIONS = [
+  "core:event:allow-listen",
+  "core:event:allow-unlisten",
+  // The updater may check, download, and install only archives whose
+  // minisign signature matches the public key compiled into the host.
+  "updater:default",
+  // The process plugin grants only the relaunch required after a macOS
+  // update. It does not grant arbitrary process execution or exit.
+  "process:allow-restart",
+];
 
-// Tauri plugins this application is allowed to depend on.
-//
-// `single-instance` registers no command, so it widens nothing the
-// frontend can reach; it exists so a second launch activates this
-// process instead of creating a second owner of the same storage root.
-// Every other capability the application needs is a command it defines
-// itself.
-const ALLOWED_PLUGINS = ["tauri-plugin-single-instance"];
+// Tauri plugins this application is allowed to depend on. Every entry
+// has an exact frontend permission above or, for `single-instance`, no
+// frontend command at all.
+const ALLOWED_PLUGINS = [
+  "tauri-plugin-process",
+  "tauri-plugin-single-instance",
+  "tauri-plugin-updater",
+];
 
 // The manifest tables that make a crate a dependency of this host.
 //
@@ -516,13 +523,19 @@ function auditCapability(where, capability, sets) {
       const forbidden = FORBIDDEN_NAMESPACES.find(
         (namespace) => permission === namespace || permission.startsWith(`${namespace}:`),
       );
-      if (forbidden !== undefined) {
-        fail(reached, `no \`${forbidden}\` capability`, permission);
+      if (
+        forbidden !== undefined &&
+        !ALLOWED_FRAMEWORK_PERMISSIONS.includes(permission)
+      ) {
+        fail(reached, `no \`${forbidden}\` capability outside the exact allow-list`, permission);
       }
-      if (!ALLOWED_CORE_PERMISSIONS.includes(permission) && !permission.startsWith("allow-")) {
+      if (
+        !ALLOWED_FRAMEWORK_PERMISSIONS.includes(permission) &&
+        !permission.startsWith("allow-")
+      ) {
         fail(
           reached,
-          `a core permission from [${ALLOWED_CORE_PERMISSIONS.join(", ")}] ` +
+          `a framework permission from [${ALLOWED_FRAMEWORK_PERMISSIONS.join(", ")}] ` +
             "or an `allow-<command>` grant for a command this application registers",
           permission,
         );
@@ -622,8 +635,8 @@ console.log(
   `capability audit: ok — ${audited.length.toString()} capability/capabilities audited ` +
     `from ${capabilityFiles.length.toString()} file(s) under capabilities/ and from ` +
     `[${configFiles.join(", ")}], ${sets.size.toString()} permission set(s) expanded, ` +
-    "no shell, filesystem, network, process, or path grant, " +
-    "every permission either a named core one or a grant for this " +
+    "no shell, filesystem, general-purpose network/process, or path grant, " +
+    "every permission either an exact framework allow-list entry or a grant for this " +
     "application's own commands, " +
-    "no wildcard window or webview label, no broad plugin",
+    "no wildcard window or webview label, no unapproved plugin",
 );

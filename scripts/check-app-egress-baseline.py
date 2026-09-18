@@ -13,7 +13,7 @@ This one does, and it asks a different question, because the desktop
 host is the only build in the tree that may legitimately carry an HTTP
 client at all.
 
-Three things are asserted.
+Four things are asserted.
 
 1. The **shipped** graph — the host built with default features, which
    is what `tauri build` produces and what a user installs — carries
@@ -27,25 +27,26 @@ Three things are asserted.
 
    This is also the assertion `scripts/qualify-desktop-app.py
    --scenario lifecycle` makes about the running application, for the
-   same reason: the shipped application offers an in-app model
-   download and regenerates notes through a configured provider, so
-   "no HTTP client anywhere in the graph" is not a property it can
-   have, and asserting it over a configuration nobody
-   ships would read as a guarantee while covering nothing.
+   same reason: the shipped application offers authenticated updates,
+   an in-app model download, and notes regeneration through a configured
+   provider. "No HTTP client anywhere in the graph" is not a property it
+   can have.
 
-2. The host built with `--no-default-features` carries none of the
-   denylisted crates at all. Nobody ships that configuration and this
-   gate does not pretend otherwise. It is checked because it is what
-   proves the gating is real: `model-download` and `notes-generation`
-   genuinely control whether a transport is linked, rather than naming
-   a dependency that arrives through some other edge regardless. If
-   that stops being true, the features are labels and the first check
-   above is no longer measuring what it claims.
+2. The host built with `--no-default-features` still carries exactly that
+   approved HTTPS stack. The updater is an unconditional product capability:
+   Tauri validates its permission manifest while building the host, and every
+   shipped application must be able to authenticate and retrieve updates.
+   This minimum-graph check prevents another client, TLS implementation,
+   WebSocket, QUIC, or DNS resolver from arriving through that baseline.
 
-3. The checked-in model catalog names exactly one destination, over
-   HTTPS, at the approved host, pinned to a revision its own URL
-   carries. The transport buys the capability to reach one place; this
-   is the check that the catalog only ever points there.
+3. The updater configuration names exactly the project's HTTPS release
+   manifest on GitHub. The updater transport is permanent, so its destination
+   is a reviewed supply-chain boundary rather than an arbitrary URL.
+
+4. The checked-in model catalog names exactly one destination, over HTTPS, at
+   the approved host, pinned to a revision its own URL carries. The transport
+   buys the capability to reach one place; this is the check that the catalog
+   only ever points there.
 
 Run locally:
 
@@ -53,7 +54,7 @@ Run locally:
 
 Run in CI: see `.github/workflows/ci.yml` job `desktop-host`.
 
-Exit status 0 means all three held. Exit status 1 means at least one
+Exit status 0 means all four held. Exit status 1 means at least one
 did not, and the difference is printed. Exit status 2 means the audit
 could not run, which is a failure too — a gate that cannot resolve a
 graph must not report a clean one.
@@ -61,6 +62,7 @@ graph must not report a clean one.
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 import sys
@@ -70,18 +72,18 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 HOST_MANIFEST = REPO_ROOT / "scrybe-desktop" / "src-tauri" / "Cargo.toml"
 CATALOG = REPO_ROOT / "scrybe-application" / "models.toml"
+TAURI_CONFIG = REPO_ROOT / "scrybe-desktop" / "src-tauri" / "tauri.conf.json"
 
-# Every feature that buys the host an HTTP client. Both are on by
-# default, because the shipped application performs an in-app model
-# download and regenerates notes through a configured provider; both are
-# still named features, so that turning them off resolves a graph with
-# no transport at all, which is what check 2 reads.
+# Every optional application feature that uses the approved HTTPS stack. Both
+# are on by default because the shipped application downloads its model and
+# regenerates notes through a configured provider. The updater plugin is the
+# unconditional transport baseline and is therefore not listed as a feature.
 #
-# Listed rather than singular because a second feature arriving here and
-# not in this tuple is the failure mode that would matter: check 2 would
-# keep passing on a graph that still linked a client, and its claim
-# would quietly become "no transport except the one nobody listed".
-TRANSPORT_FEATURES = ("model-download", "notes-generation")
+# Listed rather than singular because another optional feature arriving here
+# and not in this tuple is the failure mode that would matter: the manifest
+# check would keep passing while the feature audit quietly stopped describing
+# every product capability using the client.
+OPTIONAL_TRANSPORT_FEATURES = ("model-download", "notes-generation")
 
 # Mirrors the denylist the library gate and the lifecycle qualification
 # apply. Kept as a literal here rather than imported, because a gate
@@ -102,7 +104,7 @@ NETWORK_DENYLIST: frozenset[str] = frozenset(
 # implementation beneath it; `rustls`, `rustls-webpki`, and
 # `tokio-rustls` are the TLS stack. No OpenSSL, no QUIC, no WebSocket
 # transport, no async DNS resolver.
-APPROVED_WITH_DOWNLOAD: frozenset[str] = frozenset(
+APPROVED_NETWORK_STACK: frozenset[str] = frozenset(
     {
         "reqwest",
         "hyper",
@@ -116,6 +118,9 @@ APPROVED_WITH_DOWNLOAD: frozenset[str] = frozenset(
 # The one host the catalog may name. A model destination is a supply
 # chain, and widening it is a decision, not a configuration change.
 APPROVED_MODEL_HOST = "huggingface.co"
+APPROVED_UPDATER_ENDPOINT = (
+    "https://github.com/Mathews-Tom/scrybe/releases/latest/download/latest.json"
+)
 
 PACKAGE_LINE = re.compile(r"^([A-Za-z0-9_.-]+) v[0-9]")
 
@@ -155,20 +160,29 @@ def host_graph(features: list[str] | None = None, *, no_default_features: bool =
     return packages
 
 
-def transport_features_shipped_and_still_named() -> list[str]:
-    """Which transport-bearing features are both declared and default.
+def optional_transport_features_shipped_and_still_named() -> list[str]:
+    """Which optional transport-using features are both declared and default.
 
-    Two properties per feature, because neither is sufficient alone. It
-    must be in the default feature set, or the shipped application
-    cannot do the thing the feature exists for and the documentation
-    saying it can is wrong. And it must still be a named feature, or the
-    two graphs below are the same graph and the second check stops
-    asking anything.
+    Two properties per feature, because neither is sufficient alone. It must
+    be in the default feature set, or the shipped application cannot do the
+    thing the feature exists for and the documentation saying it can is wrong.
+    It must also remain named so the minimum graph continues to isolate the
+    unconditional updater baseline.
     """
     manifest = tomllib.loads(HOST_MANIFEST.read_text())
     features = manifest.get("features", {})
     default = features.get("default", [])
-    return [name for name in TRANSPORT_FEATURES if name in features and name in default]
+    return [
+        name
+        for name in OPTIONAL_TRANSPORT_FEATURES
+        if name in features and name in default
+    ]
+
+
+def updater_endpoints() -> list[str]:
+    """Every updater endpoint in the Tauri configuration."""
+    config = json.loads(TAURI_CONFIG.read_text())
+    return config["plugins"]["updater"]["endpoints"]
 
 
 def catalog_destinations() -> list[tuple[str, str, str]]:
@@ -196,29 +210,37 @@ def main() -> int:
     if not CATALOG.is_file():
         print(f"app egress audit: no model catalog at {CATALOG}", file=sys.stderr)
         return 2
+    if not TAURI_CONFIG.is_file():
+        print(f"app egress audit: no Tauri config at {TAURI_CONFIG}", file=sys.stderr)
+        return 2
 
     try:
         shipped_graph = host_graph([])
-        transportless_graph = host_graph(no_default_features=True)
+        minimum_graph = host_graph(no_default_features=True)
     except RuntimeError as error:
         print(f"app egress audit: {error}", file=sys.stderr)
         return 2
 
     held = [
         report(
-            "the host ships the transport and still names every feature that buys it",
-            list(TRANSPORT_FEATURES),
-            transport_features_shipped_and_still_named(),
+            "the host ships every optional transport-using feature",
+            list(OPTIONAL_TRANSPORT_FEATURES),
+            optional_transport_features_shipped_and_still_named(),
         ),
         report(
-            "the shipped host graph carries exactly the approved transport and nothing more",
-            sorted(APPROVED_WITH_DOWNLOAD),
+            "the shipped host graph carries exactly the approved network stack",
+            sorted(APPROVED_NETWORK_STACK),
             sorted(NETWORK_DENYLIST & shipped_graph),
         ),
         report(
-            "the host built with no transport-bearing feature carries no transport at all",
-            [],
-            sorted(NETWORK_DENYLIST & transportless_graph),
+            "the minimum host graph carries only the updater network stack",
+            sorted(APPROVED_NETWORK_STACK),
+            sorted(NETWORK_DENYLIST & minimum_graph),
+        ),
+        report(
+            "the updater names exactly the approved release manifest",
+            [APPROVED_UPDATER_ENDPOINT],
+            updater_endpoints(),
         ),
     ]
 
@@ -242,7 +264,7 @@ def main() -> int:
     if all(held):
         print(
             f"app egress audit: ok — {len(shipped_graph)} crates in the shipped graph, "
-            f"{len(transportless_graph)} with no transport-bearing feature, "
+            f"{len(minimum_graph)} in the updater-only minimum graph, "
             f"{len(catalog_destinations())} approved model destination(s)"
         )
         return 0

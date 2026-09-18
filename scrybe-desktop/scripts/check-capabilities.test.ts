@@ -202,6 +202,26 @@ describe("capability audit", () => {
     expect(status).toBe(1);
   });
 
+  it("test_an_unapproved_command_in_an_allowed_plugin_namespace_is_rejected", () => {
+    // Granting the one relaunch operation must not turn `process` into
+    // an allowed namespace. A neighbouring command remains outside the
+    // exact framework permission allow-list.
+    const { status, output } = audit(
+      hostRoot({
+        files: {
+          "capabilities/sessions.json": JSON.stringify({
+            ...SOUND_CAPABILITY,
+            permissions: ["allow-list-sessions", "process:allow-exit"],
+          }),
+        },
+      }),
+    );
+
+    expect(output).toContain("no `process` capability outside the exact allow-list");
+    expect(output).toContain("process:allow-exit");
+    expect(status).toBe(1);
+  });
+
   it("test_a_capability_inlined_in_a_platform_config_file_is_audited", () => {
     // Tauri merges `tauri.macos.conf.json` over the base configuration
     // as an RFC 7396 patch, which replaces an array outright. A
