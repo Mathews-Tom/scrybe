@@ -477,6 +477,7 @@ jobs:
           -p scrybe-meeting-application
           -p scrybe-meeting-capture-mac
           -p scrybe-meeting-capture-mic
+          -p scrybe-widgets
           -p scrybe
           --locked
           --no-verify

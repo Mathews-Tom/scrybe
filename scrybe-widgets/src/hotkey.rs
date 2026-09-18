@@ -77,8 +77,63 @@ impl HotkeyListener {
     /// Drain pending hotkey events without blocking, returning the
     /// first stop request that matches the registered ID and press
     /// half-cycle. Returns `None` when the queue is empty.
+    #[must_use]
+    pub fn poll(&self) -> Option<HotkeyEvent> {
+        self.presses().poll()
+    }
+
+    /// A handle to this hotkey's presses that can leave this thread.
+    ///
+    /// The listener cannot: `GlobalHotKeyManager` is `!Send` on macOS,
+    /// because its Carbon event handler is keyed to the thread that
+    /// created it. The press queue is a different thing — an ordinary
+    /// `crossbeam` receiver — and a host whose event loop is not its
+    /// own needs to read it from somewhere other than the thread the
+    /// listener is pinned to. Registration stays where it must be;
+    /// reading moves.
+    #[must_use]
+    pub fn presses(&self) -> Presses {
+        Presses {
+            hotkey_id: self.hotkey_id,
+            events: self.events.clone(),
+        }
+    }
+}
+
+/// The press queue of one registered accelerator, readable from any
+/// thread.
+#[derive(Clone, Debug)]
+pub struct Presses {
+    hotkey_id: u32,
+    events: Receiver<GlobalHotKeyEvent>,
+}
+
+impl Presses {
+    /// The next stop request, or `None` when the queue is empty.
+    ///
+    /// Only the press half-cycle counts. Acting on the release as well
+    /// would make one keystroke two stop requests — harmless against
+    /// the controller, which accepts one, but it would put a spurious
+    /// "already stopping" in the record of every hotkey stop.
+    #[must_use]
     pub fn poll(&self) -> Option<HotkeyEvent> {
         while let Ok(event) = self.events.try_recv() {
+            if event.id == self.hotkey_id && event.state == HotKeyState::Pressed {
+                return Some(HotkeyEvent::StopRequested);
+            }
+        }
+        None
+    }
+
+    /// The next stop request, waiting up to `timeout` for one.
+    ///
+    /// What a host with its own event loop drains on: it parks the
+    /// thread between presses instead of spinning, and the timeout is
+    /// only what lets it notice the process going away.
+    #[must_use]
+    pub fn poll_for(&self, timeout: std::time::Duration) -> Option<HotkeyEvent> {
+        let deadline = std::time::Instant::now() + timeout;
+        while let Ok(event) = self.events.recv_deadline(deadline) {
             if event.id == self.hotkey_id && event.state == HotKeyState::Pressed {
                 return Some(HotkeyEvent::StopRequested);
             }

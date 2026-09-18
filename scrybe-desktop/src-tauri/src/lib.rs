@@ -33,7 +33,7 @@ use std::sync::Arc;
 use tauri::{Emitter, Manager};
 
 use crate::contract::{RecordingTransition, TRANSITION_EVENT};
-use crate::lifecycle::{menu, navigation, tray, window};
+use crate::lifecycle::{hotkey, menu, navigation, signals, tray, window};
 use crate::state::Desktop;
 
 /// Starts the desktop application and blocks until it exits.
@@ -76,6 +76,10 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         // whichever session is running without the frontend having to
         // carry a handle for it.
         .manage(std::sync::Arc::new(recording::LiveRecording::default()))
+        // Whether a quit is waiting for a recording to become durable.
+        // One flag for the process, so a quit asked for from the tray
+        // and one asked for from the menu are the same deferred exit.
+        .manage(lifecycle::PendingQuit::default())
         // Replaces the platform default, whose predefined quit item
         // terminates the process natively without reaching the
         // exit-request path. The item this installs carries the tray's
@@ -95,6 +99,23 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             crate::note!(handle, "launched");
             forward_recording_transitions(handle);
             tray::build(handle)?;
+            // On the main thread, as the platform requires: the hotkey
+            // manager's event handler is keyed to the thread that
+            // created it, and this closure is that thread. A failure is
+            // reported and the process continues — a reader with no
+            // accelerator still has the window, the tray and the menu,
+            // and refusing to launch over a combination another
+            // application happens to hold would be a worse trade.
+            match hotkey::serve(handle) {
+                Ok(listener) => hotkey::hold(listener),
+                Err(error) => {
+                    eprintln!(
+                        "scrybe-desktop: the global stop accelerator is unavailable: {error}"
+                    );
+                    crate::note!(handle, "hotkey-unavailable");
+                }
+            }
+            signals::serve(handle);
             #[cfg(debug_assertions)]
             menu::note_quit_identity(handle);
             #[cfg(debug_assertions)]
@@ -162,5 +183,15 @@ fn forward_recording_transitions(app: &tauri::AppHandle) {
             if let Err(error) = handle.emit(TRANSITION_EVENT, transition) {
                 eprintln!("scrybe-desktop: could not emit a recording transition: {error}");
             }
+            // Both of these are bounded and take no lock the controller
+            // could be waiting on: enabling a `muda` menu item, and
+            // reading one atomic. That matters because this observer
+            // runs on whichever thread drove the transition, which for
+            // a stop from the tray is the main thread — the one AppKit
+            // requires and the one the `WebView` draws on. A blocking
+            // call here against anything the controller holds would
+            // present as a hang with no diagnosis.
+            tray::reflect(&handle, event.to);
+            lifecycle::exit_when_settled(&handle, event.to);
         }));
 }

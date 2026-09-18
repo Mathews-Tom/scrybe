@@ -3335,8 +3335,6 @@ dependencies = [
  "crossbeam-channel",
  "directories",
  "futures",
- "global-hotkey",
- "keyboard-types 0.8.3",
  "libc",
  "objc2",
  "objc2-app-kit",
@@ -3347,6 +3345,7 @@ dependencies = [
  "scrybe-meeting-capture-mac",
  "scrybe-meeting-capture-mic",
  "scrybe-meeting-core",
+ "scrybe-widgets",
  "serde",
  "serde_json",
  "tempfile",
@@ -3496,6 +3495,19 @@ dependencies = [
  "whisper-rs",
  "windows-sys 0.59.0",
  "wiremock",
+]
+
+[[package]]
+name = "scrybe-widgets"
+version = "1.6.0"
+dependencies = [
+ "anyhow",
+ "crossbeam-channel",
+ "global-hotkey",
+ "keyboard-types 0.8.3",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
 ]
 
 [[package]]

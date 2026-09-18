@@ -18,10 +18,6 @@ mod macos_bundle;
 mod prompter;
 mod runtime;
 
-#[cfg(all(feature = "cli-shell", target_os = "macos"))]
-mod floating_panel;
-#[cfg(feature = "cli-shell")]
-mod hotkey;
 #[cfg(feature = "cli-shell")]
 mod shell;
 #[cfg(feature = "cli-shell")]

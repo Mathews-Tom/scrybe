@@ -148,12 +148,12 @@ fn open(
 /// Resolves, checks, and starts one recording, opening capture through
 /// `open` rather than always the real one.
 ///
-/// Extracted from [`start_recording`] so a test can hold capture open
-/// behind a controllable gate instead of racing a real device or a real
-/// permission prompt. The production command always passes [`open`]
-/// itself; `scrybe-desktop/src-tauri/tests/recording_stop.rs` passes one
-/// that blocks on a channel, which is what makes the `Preparing` window
-/// below reproducible rather than timing-dependent.
+/// Extracted from [`start`] — the shared entry every surface reaches —
+/// so a test can hold capture open behind a controllable gate instead of
+/// racing a real device or a real permission prompt. Production always
+/// passes [`open`] itself; `scrybe-desktop/src-tauri/tests/recording_stop.rs`
+/// passes one that blocks on a channel, which is what makes the
+/// `Preparing` window below reproducible rather than timing-dependent.
 ///
 /// # Errors
 ///
@@ -278,22 +278,39 @@ where
     Ok(status)
 }
 
-/// Resolves, checks, and starts one recording.
+/// Resolves, checks, and starts one recording, for any surface.
 ///
-/// Returns as soon as the recording is under way — the session runs on
-/// the runtime, and the window learns what happened from the transition
-/// events it is already subscribed to.
+/// The command below is one caller; the tray item and the global hotkey
+/// are the others. They share this rather than each assembling a start,
+/// so a recording begun from the menu bar is the same recording begun
+/// from the window.
 ///
 /// # Errors
 ///
 /// The preflight refusal, a state conflict when a recording is already
 /// in flight, or a capture device that could not be opened.
+pub fn start<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    title: Option<String>,
+) -> Result<RecordingStatus, CommandFailure> {
+    start_recording_with(app, title, open)
+}
+
+/// Starts one recording from this window's own command.
+///
+/// Thin: [`start`] is the shared entry every surface reaches, so a
+/// recording begun here is the same recording the tray item and the
+/// global hotkey would begin.
+///
+/// # Errors
+///
+/// Whatever [`start`] refuses with.
 #[tauri::command(async)]
 pub fn start_recording<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     title: Option<String>,
 ) -> Result<RecordingStatus, CommandFailure> {
-    start_recording_with(&app, title, open)
+    start(&app, title)
 }
 
 /// Asks the recording in flight to stop and save.

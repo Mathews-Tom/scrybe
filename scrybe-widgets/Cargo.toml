@@ -1,0 +1,54 @@
+[package]
+name = "scrybe-widgets"
+version = "1.6.0"
+description = "Native macOS recording indicators: the floating panel, the global hotkey, and the status-bar rendering."
+# Unpublished, like `scrybe-capture-linux`, `scrybe-capture-win`, and
+# `scrybe-android`. These are a frontend's presentation surfaces, not a
+# library anyone outside this repository has a use for, and publishing
+# them would make every `pub` item here a SemVer commitment.
+# Published, unlike the platform capture crates, because the CLI is
+# public and names this one. A public manifest cannot carry a bare path
+# dependency, so the CLI pins an exact version — and that pin only
+# resolves if this crate is in the same packaged set, which requires it
+# to be publishable. Keeping it unpublished made `cargo package -p
+# scrybe` fail with `no matching package named scrybe-widgets`.
+publish = true
+authors.workspace = true
+edition.workspace = true
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "scrybe_widgets"
+
+[dependencies]
+anyhow = "1"
+crossbeam-channel = "0.5"
+global-hotkey = "0.7"
+keyboard-types = "0.8"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2.workspace = true
+# The workspace feature set, plus what this crate's own AppKit calls
+# need. Declared here rather than left to unification: in `scrybe-cli`
+# this code compiled only because `tray-icon` happened to pull the same
+# crate with these features on, and a crate that depends on a sibling's
+# feature selection is a crate that stops compiling the day the sibling
+# changes it.
+objc2-app-kit = { workspace = true, features = [
+    # `NSApplicationActivationPolicy`, which puts the process in the
+    # menu bar without a Dock tile.
+    "NSRunningApplication",
+    "NSCell",
+    "NSImage",
+    # Every `CGFloat`-typed setter — the panel's corner radius, its
+    # border width, and the two `NSColor` constructors it tints with —
+    # is gated on this. Without it those methods do not exist at all.
+    "objc2-core-foundation",
+] }
+objc2-foundation = { workspace = true, features = ["NSGeometry"] }
+
+[lints]
+workspace = true
