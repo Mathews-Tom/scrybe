@@ -131,3 +131,8 @@ panic = "warn"
 [dev-dependencies]
 tempfile = "3.27.0"
 toml = "0.8"
+# The mock runtime `tests/recording_stop.rs` drives the desktop entry
+# points against, without a real `WebView`. Only widens features on the
+# dependency already named above; it adds no crate this graph does not
+# already carry.
+tauri = { version = "2", features = ["test"] }

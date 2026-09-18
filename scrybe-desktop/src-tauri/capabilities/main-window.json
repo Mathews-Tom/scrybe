@@ -24,6 +24,7 @@
     "allow-recording-preflight",
     "allow-start-recording",
     "allow-stop-recording",
+    "allow-acknowledge-recording",
     "allow-settings-form",
     "allow-apply-settings",
     "allow-diagnostics-report",

@@ -147,6 +147,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             commands::recording_preflight,
             recording::start_recording,
             recording::stop_recording,
+            recording::acknowledge_recording,
             setup::settings_form,
             setup::apply_settings,
             setup::diagnostics_report,

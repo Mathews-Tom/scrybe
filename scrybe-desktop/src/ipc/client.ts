@@ -43,6 +43,7 @@ export const COMMANDS = [
   "recording_preflight",
   "start_recording",
   "stop_recording",
+  "acknowledge_recording",
   ...SETUP_COMMANDS,
 ] as const;
 
@@ -177,6 +178,19 @@ export function startRecording(title: string | null): Promise<RecordingStatus> {
  */
 export function stopRecording(): Promise<RecordingStatus> {
   return invoke<RecordingStatus>("stop_recording");
+}
+
+/**
+ * Acknowledges a terminal recording once this surface has rendered its
+ * outcome, returning the host to idle.
+ *
+ * Idempotent: called with nothing terminal, it changes nothing. A view
+ * calls this after reading a `completed` or `failed` transition's
+ * refreshed status, not before — acknowledging first would return the
+ * host to idle before the read that is supposed to observe the outcome.
+ */
+export function acknowledgeRecording(): Promise<RecordingStatus> {
+  return invoke<RecordingStatus>("acknowledge_recording");
 }
 
 /**

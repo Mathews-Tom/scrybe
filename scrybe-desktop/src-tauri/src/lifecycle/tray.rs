@@ -144,7 +144,10 @@ fn start(app: &tauri::AppHandle) {
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         if let Err(error) = crate::recording::start(&handle, None) {
-            eprintln!("scrybe-desktop: the tray could not start a recording: {error}");
+            eprintln!(
+                "scrybe-desktop: the tray could not start a recording: {}",
+                error.message
+            );
         }
     });
 }
