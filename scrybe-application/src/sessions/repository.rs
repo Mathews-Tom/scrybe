@@ -58,6 +58,7 @@ use crate::sessions::contract::{
     SearchPage, SearchRequest, SessionDetail, SessionPage, SessionState, SessionSummary,
     TranscriptCursor, TranscriptDocument, TranscriptPage,
 };
+use crate::sessions::retention;
 use crate::sessions::scan::{
     classify, Classified, FolderView, ScannedSession, AUDIO_FILE, JOURNAL_DIR,
     JOURNAL_MANIFEST_FILE, META_FILE, NOTES_FILE, PLAYBACK_FILE, TRANSCRIPT_FILE,
@@ -562,10 +563,12 @@ impl SessionRepository {
             let Some(name) = entry.file_name().to_str().map(ToString::to_string) else {
                 continue;
             };
+            let entry_path = entry.path();
+            if retention::is_reserved_path(root, &entry_path, &name) {
+                continue;
+            }
             let modified = entry.metadata().and_then(|meta| meta.modified()).ok();
-            let view = DirectoryView {
-                folder: entry.path(),
-            };
+            let view = DirectoryView { folder: entry_path };
             let journal_modified = std::fs::metadata(view.folder.join(JOURNAL_DIR))
                 .and_then(|meta| meta.modified())
                 .ok();
@@ -662,8 +665,8 @@ impl StdError for BoxedGeneratorError {
     }
 }
 
-struct DirectoryView {
-    folder: PathBuf,
+pub(super) struct DirectoryView {
+    pub(super) folder: PathBuf,
 }
 
 impl FolderView for DirectoryView {

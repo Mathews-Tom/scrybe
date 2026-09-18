@@ -67,6 +67,7 @@ chrono.workspace = true
 # normal race when another surface stopped first, which an observer
 # cannot propagate and which must not be dropped in silence.
 futures.workspace = true
+libc.workspace = true
 reqwest = { workspace = true, optional = true }
 scrybe-capture-mic = { package = "scrybe-meeting-capture-mic", path = "../scrybe-capture-mic", version = "=2.0.0", optional = true }
 scrybe-core = { package = "scrybe-meeting-core", path = "../scrybe-core", version = "=2.0.0" }
@@ -90,6 +91,7 @@ toml_edit.workspace = true
 # dependency already turns on.
 tokio = { version = "1.42", default-features = false, features = ["sync"] }
 url.workspace = true
+ulid.workspace = true
 
 [dev-dependencies]
 pretty_assertions = "1"

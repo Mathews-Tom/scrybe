@@ -138,10 +138,18 @@ pub struct StorageConfig {
     pub audio_format: String,
     #[serde(default = "default_audio_bitrate_kbps")]
     pub audio_bitrate_kbps: u32,
+    /// Days a deleted session stays in `trash/` before the sweep at
+    /// launch removes it permanently.
+    #[serde(default = "default_trash_retention_days")]
+    pub trash_retention_days: u32,
 }
 
 fn default_storage_root() -> PathBuf {
     PathBuf::from("~/scrybe")
+}
+
+const fn default_trash_retention_days() -> u32 {
+    7
 }
 
 fn default_audio_format() -> String {
@@ -158,6 +166,7 @@ impl Default for StorageConfig {
             root: default_storage_root(),
             audio_format: default_audio_format(),
             audio_bitrate_kbps: default_audio_bitrate_kbps(),
+            trash_retention_days: default_trash_retention_days(),
         }
     }
 }
