@@ -6,6 +6,12 @@ description = "Native macOS recording indicators: the floating panel, the global
 # `scrybe-android`. These are a frontend's presentation surfaces, not a
 # library anyone outside this repository has a use for, and publishing
 # them would make every `pub` item here a SemVer commitment.
+# Unpublished, like the platform capture crates. The CLI names it with
+# an exact version anyway, because the CLI is public and cargo refuses
+# a public manifest carrying a bare path dependency. Whether this crate
+# has to be published before the CLI can be is a release question, and
+# the work that assigns a version owns it — this crate is not the first
+# unpublished one the CLI depends on.
 publish = false
 authors.workspace = true
 edition.workspace = true
