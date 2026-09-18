@@ -212,6 +212,31 @@ Expected v1.6.0 asset names include:
 - `scrybe-sbom.cdx.json`
 - `SHA256SUMS.txt`
 
+## Signed Artifacts
+
+No step in this runbook can produce a signed, notarized macOS artifact today, and this section exists so that is a stated stop rather than something discovered late. The assertions that would check one are written and reviewable; they cannot pass, and they say why.
+
+```sh
+python3 scripts/check-signed-artifact.py --bundle ./scrybe.app
+```
+
+Three assertions, in order:
+
+- **Signature** reads the `Authority` and `TeamIdentifier` lines out of `codesign -dvvv` and requires a Developer ID Application identity whose two statements of its own team agree.
+- **Gatekeeper** parses the verdict word out of `spctl -a -vv --type execute` and requires `accepted` from a notarized source.
+- **Notarization** reads the status Apple returns for a submission from `xcrun notarytool info`, requires exactly `Accepted`, and requires a ticket Apple issued to be stapled to the bundle.
+
+`codesign --verify` appears in none of them. An ad-hoc-signed bundle built from this repository returned exit 0 from `codesign --verify --deep --strict` while `spctl` reported `rejected`: it answers whether a signature is internally consistent, never who signed. `spctl`'s exit status is not used either — the same `rejected` verdict was measured at exit 3 in one environment and exit 0 in another, so an assertion written against it would have passed in one of them.
+
+Exit statuses are distinct on purpose. `1` means the artifact failed an assertion. `2` means an assertion could not be measured. `3` means a required credential is absent, so nothing was attempted. A pipeline must not collapse `3` into `1` or into success: "nobody has configured signing" and "this signed artifact is bad" call for different responses, and treating either as a pass is how an unsigned bundle acquires a claim it was checked.
+
+What is blocked on the maintainer, and on nothing in this repository:
+
+- A **Developer ID Application** certificate, which requires an Apple Developer Program membership. Without it `packaging/macos-app/build-app.sh --sign` refuses before it signs anything, naming the absent certificate.
+- A **notarization credential** — a `notarytool` keychain profile, an App Store Connect API key, or an Apple ID with an app-specific password — and a submission identifier from the upload. Without one, the notarization assertion names every variable it wanted and asserts nothing.
+
+Until both exist, the macOS artifacts this workflow publishes are unsigned, as `.github/workflows/release.yml` and `INSTALL.md` already state, and users strip the quarantine attribute by hand. `packaging/macos-app/build-app.sh` requires an explicit signing mode with no default, so a bundle can no longer become unsigned by nobody choosing.
+
 ## Recovery
 
 If a crates.io upload succeeds, that package version cannot be replaced. Yank a defective version only to prevent new resolution:
