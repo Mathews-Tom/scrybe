@@ -466,7 +466,28 @@ LOC_CEILINGS: dict[str, int] = {
     # The ceiling is 3350, leaving 68 lines of margin. The tray, the
     # floating pill, the global hotkey, the signal bridge, and the quit
     # path are not in that sum and are not reserved here.
-    "scrybe-desktop/src-tauri": 3350,
+    #
+    # Raised to 3450 for what review found in the window's recording
+    # control. Continuing the sum:
+    #
+    #   3282  measured, after the window's recording control
+    #   +126  honoring a stop while a recording is still being prepared,
+    #         and letting a reader see that one was saved. The capture
+    #         handle is armed before the device is opened, because
+    #         opening it is where the platform raises its own permission
+    #         prompt and a reader waiting on that dialog was the
+    #         likeliest one to press stop. The commands are generic over
+    #         the runtime so that race can be driven against a mock one.
+    #         And the host no longer acknowledges a terminal recording on
+    #         the reader's behalf, which is what made a saved recording
+    #         unannounceable: the acknowledgement is now a command, and
+    #         one watcher mounted above every route reads the outcome and
+    #         clears it, so a reader who never opens the recording
+    #         surface still returns to idle and can start again
+    #   =3408 measured
+    #
+    # The ceiling is 3450, leaving 42 lines of margin.
+    "scrybe-desktop/src-tauri": 3450,
 }
 
 
