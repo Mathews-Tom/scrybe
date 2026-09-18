@@ -148,8 +148,16 @@ fn default_storage_root() -> PathBuf {
     PathBuf::from("~/scrybe")
 }
 
+/// Days a deleted session stays in `trash/` by default.
+///
+/// Public because the application layer builds its retention service
+/// from a configuration snapshot and needs the same value when no
+/// configuration file has been written yet. Two literals would be two
+/// defaults.
+pub const DEFAULT_TRASH_RETENTION_DAYS: u32 = 7;
+
 const fn default_trash_retention_days() -> u32 {
-    7
+    DEFAULT_TRASH_RETENTION_DAYS
 }
 
 fn default_audio_format() -> String {
