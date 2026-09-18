@@ -69,16 +69,10 @@ What this cannot establish, stated plainly:
   artifact written somewhere else under `~/Library` would not be seen
   by it.
 
-Six scenarios, one build. All of them compile the shape the application
-ships — default features, which include the model transport — and
-there is no per-scenario feature selection at all. There used to be:
-`setup` named `model-download` explicitly while the host's default set
-did not carry it, and the effect was that the only artifact ever built
-with a transport was a qualification candidate. A scenario that
-qualifies a binary nobody installs establishes nothing about the one
-they do, so the selection is gone and the candidate differs from the
-shipped bundle only in the `--debug` profile that makes the control
-channel reachable.
+Seven scenarios, one default-feature application shape. Qualification
+disables updater-archive emission because it exercises the application rather
+than publishing it. The debug profile exposes the private control channel; the
+production code path and default feature selection are unchanged.
 
 What differs is what each run drives, and therefore what its socket
 observations mean.
@@ -97,10 +91,16 @@ weaker one: every destination observed must be the local fixture, on
 loopback, on the fixture's own port, with a separate assertion that
 some socket was seen at all so the check cannot pass by vacuity.
 
+`model-download-live` is the release-only network proof. It reads the checked-in
+production catalog and downloads its pinned Hugging Face artifact into a
+disposable model root. It is intentionally excluded from routine CI: the
+artifact is about 488 MB and depends on a third-party service.
+
 Run locally:
 
     python3 scripts/qualify-desktop-app.py --hermetic --scenario lifecycle
     python3 scripts/qualify-desktop-app.py --hermetic --scenario setup
+    python3 scripts/qualify-desktop-app.py --hermetic --scenario model-download-live
     python3 scripts/qualify-desktop-app.py --hermetic --scenario library
     python3 scripts/qualify-desktop-app.py --hermetic --scenario recording
     python3 scripts/qualify-desktop-app.py --hermetic --scenario installed
@@ -110,16 +110,12 @@ Exit status 0 means every check held. Exit status 1 means at least one
 did not; each failing check prints what was expected and what was
 observed.
 
-One scenario cannot reach exit 0 here. `installed` drives an installed
-copy as far as an unsigned artifact allows and then stops at two walls
-it states plainly: a TCC Accessibility grant, which is a human grant
-this harness must not give itself, and a Developer ID Application
-certificate with a notarization credential, which nobody in this
-repository has. Both fail rather than skip, because a qualification that
-reported an installed application as qualified — having driven an
-artifact nobody else could install — would be worse than no
-qualification at all. A green `installed` on a machine with no
-distribution credential means a check has stopped being able to fail.
+The ``installed`` scenario defaults to the community trust profile: a stable
+project-controlled certificate, expected Gatekeeper rejection, and no
+notarization ticket. Pass ``--trust-profile apple-trusted`` to retain the
+Developer ID, notarization, and Gatekeeper-accepted gate. Its native
+accessibility leg still requires a human-granted TCC Accessibility permission;
+the harness never acquires that broad terminal permission for itself.
 """
 
 from __future__ import annotations
@@ -137,6 +133,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import tomllib
 import threading
 import time
 from collections.abc import Callable
@@ -146,6 +143,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DESKTOP = REPO_ROOT / "scrybe-desktop"
 HOST = DESKTOP / "src-tauri"
+COMMUNITY_POLICY = REPO_ROOT / "packaging" / "macos-app" / "community-release.json"
+MODEL_CATALOG = REPO_ROOT / "scrybe-application" / "models.toml"
 
 BUNDLE_IDENTIFIER = "dev.scrybe.desktop"
 BUNDLE_NAME = "Scrybe.app"
@@ -266,11 +265,35 @@ MODELS_SAMPLE_SECONDS = 0.05
 # graph; the desktop host is a separate workspace that gate cannot see.
 NETWORK_DENYLIST = frozenset(
     {
-        "reqwest", "hyper", "hyper-util", "h2", "h3", "ureq", "attohttpc", "isahc",
-        "surf", "tonic", "tokio-tungstenite", "tungstenite", "rustls", "rustls-pemfile",
-        "rustls-webpki", "tokio-rustls", "tokio-native-tls", "native-tls", "openssl",
-        "openssl-sys", "boring", "boring-sys", "trust-dns-resolver", "trust-dns-proto",
-        "hickory-resolver", "hickory-proto", "quinn", "quinn-proto", "quinn-udp",
+        "reqwest",
+        "hyper",
+        "hyper-util",
+        "h2",
+        "h3",
+        "ureq",
+        "attohttpc",
+        "isahc",
+        "surf",
+        "tonic",
+        "tokio-tungstenite",
+        "tungstenite",
+        "rustls",
+        "rustls-pemfile",
+        "rustls-webpki",
+        "tokio-rustls",
+        "tokio-native-tls",
+        "native-tls",
+        "openssl",
+        "openssl-sys",
+        "boring",
+        "boring-sys",
+        "trust-dns-resolver",
+        "trust-dns-proto",
+        "hickory-resolver",
+        "hickory-proto",
+        "quinn",
+        "quinn-proto",
+        "quinn-udp",
     }
 )
 
@@ -384,7 +407,9 @@ class Run:
 
     def assert_that(self, check: str, condition: bool, detail: str) -> None:
         self.entries.append(
-            Evidence(check, "holds", detail if condition else f"FAILED: {detail}", condition)
+            Evidence(
+                check, "holds", detail if condition else f"FAILED: {detail}", condition
+            )
         )
 
     @property
@@ -392,15 +417,29 @@ class Run:
         return [entry for entry in self.entries if not entry.ok]
 
 
-def build_candidate() -> Path:
-    """Builds the bundle a double-click opens, and returns its path.
+def build_candidate(scenario: str, trust_profile: str) -> Path:
+    """Build the exact default-feature application shape each scenario drives.
 
-    Default features, and no way to ask for anything else. That is the
-    point: the candidate every scenario drives differs from the bundle
-    a user installs only in the `--debug` profile, which is what makes
-    the debug-only control channel reachable. No scenario can qualify a
-    feature selection nobody ships.
+    Qualification does not publish an updater archive, so it disables that
+    release-only side effect explicitly. The installed scenario signs with the
+    selected trust profile; every other debug scenario remains unsigned.
     """
+    environment = os.environ.copy()
+    environment.pop("APPLE_SIGNING_IDENTITY", None)
+    environment.pop("TAURI_SIGNING_PRIVATE_KEY", None)
+    environment.pop("TAURI_SIGNING_PRIVATE_KEY_PASSWORD", None)
+    if scenario == "installed":
+        if trust_profile == "community":
+            policy = json.loads(COMMUNITY_POLICY.read_text())
+            environment["APPLE_SIGNING_IDENTITY"] = str(policy["identity"])
+        else:
+            identity = os.environ.get("APPLE_SIGNING_IDENTITY")
+            if not identity:
+                raise RuntimeError(
+                    "APPLE_SIGNING_IDENTITY is required for the apple-trusted profile"
+                )
+            environment["APPLE_SIGNING_IDENTITY"] = identity
+
     subprocess.run(
         ["pnpm", "--dir", str(DESKTOP), "install", "--frozen-lockfile"],
         cwd=REPO_ROOT,
@@ -408,11 +447,21 @@ def build_candidate() -> Path:
     )
     subprocess.run(
         [
-            "pnpm", "--dir", str(DESKTOP), "exec",
-            "tauri", "build", "--debug", "--bundles", "app",
+            "pnpm",
+            "--dir",
+            str(DESKTOP),
+            "exec",
+            "tauri",
+            "build",
+            "--debug",
+            "--bundles",
+            "app",
+            "--config",
+            json.dumps({"bundle": {"createUpdaterArtifacts": False}}),
         ],
         cwd=REPO_ROOT,
         check=True,
+        env=environment,
     )
     bundle = CANDIDATE_BUNDLE
     if not bundle.is_dir():
@@ -430,8 +479,14 @@ def build_release_binary() -> Path:
     """
     subprocess.run(
         [
-            "cargo", "build", "--manifest-path", str(HOST / "Cargo.toml"),
-            "--release", "--bin", EXECUTABLE, "--locked",
+            "cargo",
+            "build",
+            "--manifest-path",
+            str(HOST / "Cargo.toml"),
+            "--release",
+            "--bin",
+            EXECUTABLE,
+            "--locked",
         ],
         cwd=REPO_ROOT,
         check=True,
@@ -442,9 +497,10 @@ def build_release_binary() -> Path:
 class Candidate:
     """The running application, and the facts observable about it."""
 
-    def __init__(self, bundle: Path, workspace: Path) -> None:
+    def __init__(self, bundle: Path, workspace: Path, trust_profile: str) -> None:
         self.bundle = bundle
         self.workspace = workspace
+        self.trust_profile = trust_profile
         self.root = workspace / "sessions"
         self.models = workspace / "models"
         self.config = workspace / "config.toml"
@@ -559,7 +615,9 @@ class Candidate:
                 text=True,
                 check=False,
             )
-            found.extend(line for line in result.stdout.splitlines()[1:] if line.strip())
+            found.extend(
+                line for line in result.stdout.splitlines()[1:] if line.strip()
+            )
         return found
 
     # -- the application's own record --------------------------------
@@ -568,7 +626,9 @@ class Candidate:
         path = self.root / LIFECYCLE_RECORD
         if not path.exists():
             return []
-        return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+        return [
+            json.loads(line) for line in path.read_text().splitlines() if line.strip()
+        ]
 
     def events(self) -> list[str]:
         return [record["event"] for record in self.records()]
@@ -598,9 +658,7 @@ class Candidate:
     def launch(self) -> None:
         """Opens the bundle the way a double-click does."""
         environment = dict(os.environ, SCRYBE_CONFIG=str(self.config))
-        subprocess.run(
-            ["open", "-n", str(self.bundle)], env=environment, check=True
-        )
+        subprocess.run(["open", "-n", str(self.bundle)], env=environment, check=True)
 
     def control(self, verb: str) -> None:
         """Sends one control verb and waits for the process to settle."""
@@ -711,7 +769,9 @@ class FixtureServer:
                 pause = FIXTURE_SERVE_SECONDS / chunks
                 for start in range(0, len(outer.body), FIXTURE_CHUNK_BYTES):
                     try:
-                        self.wfile.write(outer.body[start : start + FIXTURE_CHUNK_BYTES])
+                        self.wfile.write(
+                            outer.body[start : start + FIXTURE_CHUNK_BYTES]
+                        )
                         self.wfile.flush()
                     except (BrokenPipeError, ConnectionResetError):
                         # A cancelled download closes the connection
@@ -778,7 +838,11 @@ class ModelsSampler:
                 size = target.stat().st_size
                 if size != self._size:
                     self._short_destination.append(size)
-            if any(self._directory.glob("*.partial")) if self._directory.is_dir() else False:
+            if (
+                any(self._directory.glob("*.partial"))
+                if self._directory.is_dir()
+                else False
+            ):
                 self._saw_partial = True
             self._stop.wait(MODELS_SAMPLE_SECONDS)
 
@@ -809,7 +873,7 @@ def launch_services_resolution() -> str | None:
         'ObjC.import("AppKit");'
         "const u = $.NSWorkspace.sharedWorkspace"
         f'.URLForApplicationWithBundleIdentifier("{BUNDLE_IDENTIFIER}");'
-        "u.isNil() ? \"\" : ObjC.unwrap(u.path)"
+        'u.isNil() ? "" : ObjC.unwrap(u.path)'
     )
     result = subprocess.run(
         ["osascript", "-l", "JavaScript", "-e", script],
@@ -832,8 +896,7 @@ def accessibility_grant() -> bool:
     accessibility leg below stops rather than skipping.
     """
     script = (
-        'ObjC.import("ApplicationServices");'
-        "$.AXIsProcessTrusted() ? \"true\" : \"false\""
+        'ObjC.import("ApplicationServices");$.AXIsProcessTrusted() ? "true" : "false"'
     )
     result = subprocess.run(
         ["osascript", "-l", "JavaScript", "-e", script],
@@ -844,17 +907,25 @@ def accessibility_grant() -> bool:
     return result.stdout.strip() == "true"
 
 
-def signed_artifact_verdict(bundle: Path) -> tuple[int, str]:
-    """Runs the signature and Gatekeeper assertions against `bundle`.
+def signed_artifact_verdict(bundle: Path, trust_profile: str) -> tuple[int, str]:
+    """Run the selected distribution-trust contract against ``bundle``.
 
-    Delegated to `scripts/check-signed-artifact.py` rather than repeated
-    here, so there is one place that knows `codesign --verify` returns
-    success for an ad-hoc bundle `spctl` rejects. Exit status 3 from that
-    script means a credential is absent, which is a different answer from
-    a signed artifact that failed.
+    The community checker requires the stable project certificate while
+    explicitly expecting Gatekeeper rejection and no notarization ticket.
+    The Apple-trusted checker preserves the stronger Developer ID, notarization,
+    and Gatekeeper-accepted contract for a future paid release profile.
     """
-    result = subprocess.run(
-        [
+    if trust_profile == "community":
+        command = [
+            sys.executable,
+            str(REPO_ROOT / "scripts" / "check-community-artifact.py"),
+            "--bundle",
+            str(bundle),
+            "--policy",
+            str(COMMUNITY_POLICY),
+        ]
+    else:
+        command = [
             sys.executable,
             str(REPO_ROOT / "scripts" / "check-signed-artifact.py"),
             "--bundle",
@@ -863,7 +934,9 @@ def signed_artifact_verdict(bundle: Path) -> tuple[int, str]:
             "signature",
             "--assert",
             "gatekeeper",
-        ],
+        ]
+    result = subprocess.run(
+        command,
         capture_output=True,
         text=True,
         check=False,
@@ -884,8 +957,16 @@ def host_dependency_graph() -> set[str]:
     """Every crate the desktop host links."""
     result = subprocess.run(
         [
-            "cargo", "tree", "--manifest-path", str(HOST / "Cargo.toml"),
-            "--edges", "normal", "--prefix", "none", "--format", "{p}",
+            "cargo",
+            "tree",
+            "--manifest-path",
+            str(HOST / "Cargo.toml"),
+            "--edges",
+            "normal",
+            "--prefix",
+            "none",
+            "--format",
+            "{p}",
         ],
         capture_output=True,
         text=True,
@@ -893,7 +974,10 @@ def host_dependency_graph() -> set[str]:
     )
     return {
         match.group(1)
-        for match in (re.match(r"^([A-Za-z0-9_.-]+) v", line.strip()) for line in result.stdout.splitlines())
+        for match in (
+            re.match(r"^([A-Za-z0-9_.-]+) v", line.strip())
+            for line in result.stdout.splitlines()
+        )
         if match is not None
     }
 
@@ -946,7 +1030,9 @@ def shipped_policies(binary: Path) -> list[str]:
     return found
 
 
-def hermeticity(candidate: Candidate, run: Run, untouched: list[tuple[str, Path, object]]) -> None:
+def hermeticity(
+    candidate: Candidate, run: Run, untouched: list[tuple[str, Path, object]]
+) -> None:
     """Whether the run stayed inside the root it was given.
 
     Runs on every exit from the scenario, including the early one. The
@@ -1037,8 +1123,14 @@ def lifecycle(candidate: Candidate, run: Run) -> None:
         return
     candidate.wait_for_event("window-shown")
 
-    run.record("launch: processes running the executable", 1, len(candidate.process_ids()))
-    run.record("launch: processes registered under the bundle identifier", 1, len(candidate.registered_process_ids()))
+    run.record(
+        "launch: processes running the executable", 1, len(candidate.process_ids())
+    )
+    run.record(
+        "launch: processes registered under the bundle identifier",
+        1,
+        len(candidate.registered_process_ids()),
+    )
     run.record("launch: tray items created", 1, candidate.events().count("tray-ready"))
     run.record("launch: windows shown", 1, candidate.events().count("window-shown"))
     run.record(
@@ -1057,7 +1149,11 @@ def lifecycle(candidate: Candidate, run: Run) -> None:
         "the application recorded no `window-hidden`",
     )
     run.record("close: processes still running", 1, len(candidate.process_ids()))
-    run.record("close: still registered under the bundle identifier", 1, len(candidate.registered_process_ids()))
+    run.record(
+        "close: still registered under the bundle identifier",
+        1,
+        len(candidate.registered_process_ids()),
+    )
 
     candidate.control(TRAY_OPEN)
     run.assert_that(
@@ -1072,7 +1168,8 @@ def lifecycle(candidate: Candidate, run: Run) -> None:
     candidate.control("destroy-window")
     run.assert_that(
         "destroyed window: the process does not exit with it",
-        candidate.wait_for_event("implicit-exit-prevented") and bool(candidate.process_ids()),
+        candidate.wait_for_event("implicit-exit-prevented")
+        and bool(candidate.process_ids()),
         "the process exited when its last window was destroyed",
     )
     candidate.control(TRAY_OPEN)
@@ -1081,7 +1178,9 @@ def lifecycle(candidate: Candidate, run: Run) -> None:
         candidate.wait_for_event("window-recreated"),
         "the application recorded no `window-recreated`",
     )
-    run.record("window recreation: processes still running", 1, len(candidate.process_ids()))
+    run.record(
+        "window recreation: processes still running", 1, len(candidate.process_ids())
+    )
 
     # (c) A second launch activates the first process.
     candidate.launch()
@@ -1091,8 +1190,16 @@ def lifecycle(candidate: Candidate, run: Run) -> None:
         "the application recorded no `second-launch-activated`",
     )
     time.sleep(SETTLE_SECONDS)
-    run.record("second launch: processes running the executable", 1, len(candidate.process_ids()))
-    run.record("second launch: processes registered under the bundle identifier", 1, len(candidate.registered_process_ids()))
+    run.record(
+        "second launch: processes running the executable",
+        1,
+        len(candidate.process_ids()),
+    )
+    run.record(
+        "second launch: processes registered under the bundle identifier",
+        1,
+        len(candidate.registered_process_ids()),
+    )
     run.record(
         "second launch: the original process is still the owner",
         [launched_pid],
@@ -1174,9 +1281,19 @@ def lifecycle(candidate: Candidate, run: Run) -> None:
         candidate.wait_for_exit(),
         f"{len(candidate.process_ids())} process(es) still running",
     )
-    run.record("quit: processes registered under the bundle identifier", [], candidate.registered_process_ids())
-    run.record("quit: the exit was the one the application asked for", True, "quit-accepted" in candidate.events())
-    run.record("quit: the run loop reported its exit", True, "exited" in candidate.events())
+    run.record(
+        "quit: processes registered under the bundle identifier",
+        [],
+        candidate.registered_process_ids(),
+    )
+    run.record(
+        "quit: the exit was the one the application asked for",
+        True,
+        "quit-accepted" in candidate.events(),
+    )
+    run.record(
+        "quit: the run loop reported its exit", True, "exited" in candidate.events()
+    )
 
     # (h) Disposable-root confinement.
     written = sorted(path.name for path in candidate.root.iterdir())
@@ -1254,7 +1371,11 @@ def lifecycle(candidate: Candidate, run: Run) -> None:
 
     # (h) The policy the bundle ships, read back out of it.
     policies = shipped_policies(shipped / EXECUTABLE)
-    run.record("policy: the bundle carries exactly one content security policy", 1, len(policies))
+    run.record(
+        "policy: the bundle carries exactly one content security policy",
+        1,
+        len(policies),
+    )
     run.record(
         "policy: the policy the bundle carries is the expected one, directive for directive",
         EXPECTED_CSP,
@@ -1321,7 +1442,6 @@ def strings_in(binary: Path) -> str:
         ["strings", "-a", str(binary)], capture_output=True, text=True, check=True
     )
     return result.stdout
-
 
 
 def setup(candidate: Candidate, run: Run) -> None:
@@ -1391,7 +1511,11 @@ def setup(candidate: Candidate, run: Run) -> None:
     # from `lifecycle` deliberately: with a network client compiled in,
     # what the WebView itself may reach matters more, not less.
     policies = shipped_policies(candidate.bundle / "Contents" / "MacOS" / EXECUTABLE)
-    run.record("policy: the bundle carries exactly one content security policy", 1, len(policies))
+    run.record(
+        "policy: the bundle carries exactly one content security policy",
+        1,
+        len(policies),
+    )
     run.record(
         "policy: the policy the bundle carries is the expected one, directive for directive",
         EXPECTED_CSP,
@@ -1411,7 +1535,9 @@ def _setup_checks(candidate: Candidate, run: Run, server: FixtureServer) -> None
         f"no control socket appeared at {candidate.root / CONTROL_SOCKET}",
     )
     if not opened:
-        run.record("no network: every destination the application reached", [], sockets.stop())
+        run.record(
+            "no network: every destination the application reached", [], sockets.stop()
+        )
         return
     candidate.wait_for_event("window-shown")
 
@@ -1762,7 +1888,9 @@ def seed_library(candidate: Candidate) -> None:
     (playable / "notes.md").write_text("## TL;DR\n- covered widgets\n")
     (playable / "transcript.md").write_text(
         "# Acme sync\n*2026-04-29 14:30*\n\n"
-        + "".join(f"[00:00:{line % 60:02}] Speaker: line {line}\n" for line in range(4000))
+        + "".join(
+            f"[00:00:{line % 60:02}] Speaker: line {line}\n" for line in range(4000)
+        )
     )
 
     mono = candidate.root / NO_PLAYBACK
@@ -1909,7 +2037,9 @@ def _recording_checks(candidate: Candidate, run: Run) -> None:
         f"no control socket appeared at {candidate.root / CONTROL_SOCKET}",
     )
     if not opened:
-        run.record("no network: every destination the application reached", [], sockets.stop())
+        run.record(
+            "no network: every destination the application reached", [], sockets.stop()
+        )
         return
 
     run.record(
@@ -1929,7 +2059,9 @@ def _recording_checks(candidate: Candidate, run: Run) -> None:
         f"transitions observed: {recording_transitions(candidate)}",
     )
     if not started:
-        run.record("no network: every destination the application reached", [], sockets.stop())
+        run.record(
+            "no network: every destination the application reached", [], sockets.stop()
+        )
         return
     run.record(
         "record: the recording prepared and then began capturing",
@@ -2033,7 +2165,9 @@ def _recording_checks(candidate: Candidate, run: Run) -> None:
         candidate.events().count("quit-deferred"),
     )
 
-    run.record("no network: every destination the application reached", [], sockets.stop())
+    run.record(
+        "no network: every destination the application reached", [], sockets.stop()
+    )
 
 
 def library(candidate: Candidate, run: Run) -> None:
@@ -2074,7 +2208,11 @@ def library(candidate: Candidate, run: Run) -> None:
     # The policy the bundle ships, read back out of it. The behavioural
     # checks above are what give this one meaning.
     policies = shipped_policies(candidate.bundle / "Contents" / "MacOS" / EXECUTABLE)
-    run.record("policy: the bundle carries exactly one content security policy", 1, len(policies))
+    run.record(
+        "policy: the bundle carries exactly one content security policy",
+        1,
+        len(policies),
+    )
     run.record(
         "policy: the policy the bundle carries is the expected one, directive for directive",
         EXPECTED_CSP,
@@ -2094,7 +2232,9 @@ def _library_checks(candidate: Candidate, run: Run) -> None:
         f"no control socket appeared at {candidate.root / CONTROL_SOCKET}",
     )
     if not opened:
-        run.record("no network: every destination the application reached", [], sockets.stop())
+        run.record(
+            "no network: every destination the application reached", [], sockets.stop()
+        )
         return
 
     # (a) The one URL the player builds, for the one session that has
@@ -2160,7 +2300,9 @@ def _library_checks(candidate: Candidate, run: Run) -> None:
     # (f) Nothing on this path reaches the network. Reading a session
     # and playing it are filesystem work; a socket opened during either
     # would be a capability this surface has no mandate for.
-    run.record("no network: every destination the application reached", [], sockets.stop())
+    run.record(
+        "no network: every destination the application reached", [], sockets.stop()
+    )
 
     candidate.control(TRAY_QUIT)
     run.assert_that(
@@ -2174,64 +2316,18 @@ def _library_checks(candidate: Candidate, run: Run) -> None:
 # site, so later work adds `recording` or `library` by adding one entry
 # and its function.
 def installed(candidate: Candidate, run: Run) -> None:
-    """The local workflow on an installed copy, up to the credential wall.
+    """Drive a signed copy from outside the build tree.
 
-    Every other scenario drives the directory `tauri build` left in
-    `target/`. This one copies it out of the build tree first and drives
-    the copy, so nothing it establishes can depend on the tree the
-    artifact was produced in, and it checks that the process it is
-    driving came out of that copy rather than assuming it — which no
-    other scenario does, and which stops being safe the moment a machine
-    has two registered copies.
+    The scenario records and reads back a session through the installed copy,
+    verifies the native tray through macOS Accessibility, and applies the
+    selected distribution trust profile. ``community`` requires the stable
+    project-controlled certificate while explicitly preserving Gatekeeper's
+    expected rejection and the absence of notarization. ``apple-trusted``
+    preserves the Developer ID and notarization gate for a future paid profile.
 
-    What is new here rather than re-run. The recorder's own session is
-    read back through the reader. `recording` asserts what the pipeline
-    wrote to disk and `library` asserts what the reader serves for
-    sessions this file seeded; nothing has ever asserted that the reader
-    can open what the recorder produced. The handoff is where the session
-    identity, the artifact naming, and the playback-availability rule all
-    have to agree, and the availability rule is the one that shipped
-    wrong once already — it read `audio.opus` when only `playback.opus`
-    means there is something to play.
-
-    Where it stops, and why it fails rather than skips:
-
-    - **Native accessibility.** The tray is the one accessible surface of
-      this application that is not markup, and nothing asserted it.
-      Reading it means reading another process's accessibility tree,
-      which needs this harness's own host process to hold a TCC
-      Accessibility grant. That grant is a human checkpoint, and granting
-      it to a terminal grants it to everything run from that terminal, so
-      this harness must not acquire it for itself. Without the grant the
-      leg fails and names it. The window's contents are not read here and
-      do not need to be: `eslint-plugin-jsx-a11y` runs in `strict` mode
-      over the frontend and the suite already covers keyboard order,
-      state carried by text rather than by colour, and live regions.
-    - **A shippable artifact.** No Developer ID Application certificate
-      and no notarization credential exist here, so the installed copy is
-      ad-hoc signed and Gatekeeper refuses it. The assertion runs anyway
-      and fails naming the credential, because the alternative is a
-      qualification that reports an installed application as qualified
-      while the artifact it drove could not be installed by anyone else.
-
-    So this scenario does not pass today, by design. It is the only one
-    that does not, and a run that ever reports it green on a machine with
-    no distribution credential is reporting a check that stopped being
-    able to fail.
-
-    What is deliberately not here. The in-app model download has still
-    never run against Hugging Face in the shape that ships, and it is not
-    added here. `setup` already drives the real transport, with the
-    shipped feature selection, against a fixture on loopback; everything
-    that differs between that fixture and the real host is a property of
-    the real host — third-party TLS, half a gigabyte of transfer, and a
-    digest whose failure would mean the upstream artifact changed rather
-    than that Scrybe did. Putting it in a qualification makes a red run
-    ambiguous between a broken application and a slow network, and makes
-    every run depend on a third party's availability. It belongs in a
-    scheduled supply-chain lane that re-measures the catalog's URL and
-    digest, which is a different question asked of a different subject,
-    and it is not in this increment.
+    The accessibility observation still needs the calling terminal to have a
+    human-granted TCC Accessibility permission. The harness never grants that
+    broad permission to itself and fails the leg instead of silently skipping it.
     """
     install_root = Path(tempfile.mkdtemp(prefix="scrybe-i-", dir="/tmp"))
     untouched = [
@@ -2251,7 +2347,8 @@ def _installed_checks(candidate: Candidate, run: Run, install_root: Path) -> Non
     installed = candidate.install_into(install_root)
     run.assert_that(
         "install: the bundle was copied out of the build tree",
-        installed.is_dir() and (installed / "Contents" / "MacOS" / EXECUTABLE).is_file(),
+        installed.is_dir()
+        and (installed / "Contents" / "MacOS" / EXECUTABLE).is_file(),
         f"no executable at {installed / 'Contents' / 'MacOS' / EXECUTABLE}",
     )
     run.record(
@@ -2300,7 +2397,9 @@ def _installed_checks(candidate: Candidate, run: Run, install_root: Path) -> Non
         f"no control socket appeared at {candidate.root / CONTROL_SOCKET}",
     )
     if not opened:
-        run.record("no network: every destination the application reached", [], sockets.stop())
+        run.record(
+            "no network: every destination the application reached", [], sockets.stop()
+        )
         return
     candidate.wait_for_event("window-shown")
 
@@ -2319,13 +2418,17 @@ def _installed_checks(candidate: Candidate, run: Run, install_root: Path) -> Non
 
     _installed_accessibility(run)
     _installed_workflow(candidate, run)
-    _installed_shippable(run, installed)
-    run.record("no network: every destination the application reached", [], sockets.stop())
+    _installed_shippable(candidate, run, installed)
+    run.record(
+        "no network: every destination the application reached", [], sockets.stop()
+    )
 
 
 def _installed_workflow(candidate: Candidate, run: Run) -> None:
     """Record, stop, and read the session back through the reader."""
-    run.record("record: nothing has been recorded yet", [], session_folders(candidate.root))
+    run.record(
+        "record: nothing has been recorded yet", [], session_folders(candidate.root)
+    )
 
     candidate.control(TRAY_RECORD)
     started = candidate.wait_for_event("recording-transition", count=2, timeout=30.0)
@@ -2453,7 +2556,12 @@ def _installed_accessibility(run: Run) -> None:
     )
     if not trusted:
         return
-    names = tray_menu_item_names()
+    status_name, names = tray_accessibility()
+    run.record(
+        "accessibility: the menu-bar status item is announced by product name",
+        "Scrybe",
+        status_name,
+    )
     run.record(
         "accessibility: every tray action is announced by name",
         ["Record now", "Stop  save", "Open Scrybe", "Quit Scrybe"],
@@ -2461,22 +2569,22 @@ def _installed_accessibility(run: Run) -> None:
     )
 
 
-def _installed_shippable(run: Run, installed: Path) -> None:
-    """The credential wall, failing rather than skipping."""
-    status, said = signed_artifact_verdict(installed)
+def _installed_shippable(candidate: Candidate, run: Run, installed: Path) -> None:
+    """Verify the installed copy against the selected distribution profile."""
+    status, said = signed_artifact_verdict(installed, candidate.trust_profile)
     meaning = SIGNED_ARTIFACT_STATUS.get(status, "an unrecognized status")
+    if candidate.trust_profile == "community":
+        contract = (
+            "the stable Scrybe community identity, expected Gatekeeper rejection, "
+            "and no notarization ticket"
+        )
+    else:
+        contract = "a Developer ID identity, notarization, and Gatekeeper acceptance"
     run.assert_that(
-        "shippable: the installed copy carries a Developer ID identity Gatekeeper admits",
+        f"shippable: the installed copy satisfies {candidate.trust_profile} trust",
         status == 0,
-        f"scripts/check-signed-artifact.py exited {status} against {installed} — "
-        f"{meaning}. No Developer ID Application certificate and no notarization "
-        "credential exist here, so the copy is ad-hoc signed; `spctl` will not even "
-        "return a verdict for a bundle `codesign` has never sealed at bundle level, "
-        "which is what `tauri build --bundles app` leaves behind. This is the wall, "
-        "not a defect, and it is a failure rather than a skip because a qualification "
-        "that reported an installed application as qualified, having driven an "
-        "artifact nobody else could install, would be worse than no qualification at "
-        f"all. What the assertions said:\n{indent(said)}",
+        f"the {contract} contract failed: verifier exited {status} against "
+        f"{installed} — {meaning}. Assertions:\n{indent(said)}",
     )
 
 
@@ -2484,35 +2592,20 @@ def indent(text: str) -> str:
     return "\n".join(f"      {line}" for line in text.splitlines())
 
 
-def tray_menu_item_names() -> list[str]:
-    """Every name the tray's menu exposes to the accessibility tree.
-
-    This reads the running application's own accessibility tree, not a
-    string this repository holds. Comparing a constant here against the
-    same constant in Rust would pass for any value written in both
-    places, which is the shape of a check that cannot fail — and a
-    release has already shipped one of those.
-
-    The tray is the second menu bar the process owns, identified by the
-    `status menu` description the platform gives a status item rather
-    than by index. Separators come back as `null` and are dropped.
-
-    The names are the platform's, not the source's: `Stop & save` is
-    announced as `Stop  save`, because the accessibility layer strips
-    the ampersand that would otherwise read as a mnemonic. Expecting the
-    source string here would fail against a correct application.
-    """
+def tray_accessibility() -> tuple[str, list[str]]:
+    """Return the native status item's name and its menu-entry names."""
     script = (
         'const se = Application("System Events");'
         f'const proc = se.processes.byName("{BUNDLE_NAME.removesuffix(".app")}");'
-        "const names = [];"
+        'const result = { status: "", entries: [] };'
         "proc.menuBars().forEach(bar => bar.menuBarItems().forEach(item => {"
         'if (item.description() !== "status menu") { return; }'
+        'result.status = item.name() || "";'
         "item.menus().forEach(menu => menu.menuItems().forEach(entry => {"
-        "const name = entry.name(); if (name) { names.push(name); }"
+        "const name = entry.name(); if (name) { result.entries.push(name); }"
         "}));"
         "}));"
-        "JSON.stringify(names)"
+        "JSON.stringify(result)"
     )
     result = subprocess.run(
         ["osascript", "-l", "JavaScript", "-e", script],
@@ -2520,8 +2613,8 @@ def tray_menu_item_names() -> list[str]:
         text=True,
         check=False,
     )
-    return json.loads(result.stdout.strip() or "[]")
-
+    observed = json.loads(result.stdout.strip() or '{"status":"","entries":[]}')
+    return str(observed["status"]), [str(name) for name in observed["entries"]]
 
 
 def seed_retention(candidate: Candidate) -> None:
@@ -2666,9 +2759,90 @@ def retention(candidate: Candidate, run: Run) -> None:
     hermeticity(candidate, run, untouched)
 
 
+def model_download_live(candidate: Candidate, run: Run) -> None:
+    """Download the production catalog artifact through the shipped transport."""
+    catalog = tomllib.loads(MODEL_CATALOG.read_text(encoding="utf-8"))
+    models = catalog.get("model", [])
+    matches = [model for model in models if model.get("id") == "whisper-small-en"]
+    run.record("catalog: one production whisper-small-en entry exists", 1, len(matches))
+    if len(matches) != 1:
+        return
+    model = matches[0]
+    source_url = str(model["source_url"])
+    source_revision = str(model["source_revision"])
+    destination_name = str(model["destination"])
+    expected_size = int(model["size_bytes"])
+    expected_digest = str(model["sha256"])
+    destination = candidate.models / destination_name
+    partial = destination.with_name(f"{destination.name}.partial")
+    untouched = [
+        ("the real configuration file", REAL_CONFIG, snapshot(REAL_CONFIG)),
+        ("the default storage root", REAL_STORAGE_ROOT, snapshot(REAL_STORAGE_ROOT)),
+        ("the platform model directory", PLATFORM_MODELS, snapshot(PLATFORM_MODELS)),
+    ]
+
+    run.record(
+        "catalog: the production URL is pinned to its declared immutable revision",
+        True,
+        f"/resolve/{source_revision}/" in source_url,
+    )
+    candidate.launch()
+    run.record(
+        "launch: the application reached its control socket",
+        True,
+        candidate.wait_for_control_socket(),
+    )
+    candidate.control(
+        f"probe-model-install {source_url} {expected_size} {expected_digest} "
+        f"{destination_name} confirmed"
+    )
+    completed = candidate.wait_for_event("probe-model-install", timeout=1800.0)
+    run.assert_that(
+        "download: the production artifact completed within 30 minutes",
+        completed,
+        "no model-install outcome was recorded before the release-only timeout",
+    )
+    if completed:
+        run.record(
+            "download: the application atomically promoted the verified artifact",
+            "ready:promoted=true",
+            candidate.last_detail_of("probe-model-install"),
+        )
+    run.record("download: the destination exists", True, destination.is_file())
+    if destination.is_file():
+        run.record(
+            "download: the installed byte count matches the production catalog",
+            expected_size,
+            destination.stat().st_size,
+        )
+        digest = hashlib.sha256()
+        with destination.open("rb") as stream:
+            for block in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(block)
+        run.record(
+            "download: the installed digest matches the production catalog",
+            expected_digest,
+            digest.hexdigest(),
+        )
+    run.record("download: no partial file remains", False, partial.exists())
+    run.record(
+        "confinement: the installed model is under the disposable model root",
+        True,
+        destination.resolve().is_relative_to(candidate.models.resolve()),
+    )
+    candidate.control("quit")
+    run.assert_that(
+        "quit: the process exits after the production download",
+        candidate.wait_for_exit(),
+        "the application was still running after quit",
+    )
+    hermeticity(candidate, run, untouched)
+
+
 SCENARIOS: dict[str, Callable[[Candidate, Run], None]] = {
     "lifecycle": lifecycle,
     "setup": setup,
+    "model-download-live": model_download_live,
     "library": library,
     "recording": recording,
     "installed": installed,
@@ -2691,6 +2865,11 @@ SCENARIO_COVERAGE: dict[str, str] = {
         "existing-model preservation, disposable model and configuration roots, "
         "the shipped content security policy, and every socket the process opened"
     ),
+    "model-download-live": (
+        "the production catalog pin, a real Hugging Face TLS transfer, exact byte "
+        "count and SHA-256 verification, atomic promotion, disposable model and "
+        "configuration roots, and clean exit"
+    ),
     "recording": (
         "preflight, starting and stopping a recording from the tray, "
         "the artifacts it leaves, the convergence of two stop sources on one "
@@ -2710,11 +2889,9 @@ SCENARIO_COVERAGE: dict[str, str] = {
         "and every socket the process opened"
     ),
     "installed": (
-        "a copy driven from outside the build tree, the version that copy reports "
-        "in its own Info.plist, the identity of the process being driven, one "
-        "recording read back through the reader that has never been asked for the "
-        "recorder's own output, the native accessibility grant this harness must "
-        "not give itself, and the distribution credential nobody here has"
+        "a copy driven from outside the build tree, its Info.plist version and "
+        "process identity, recorder-to-reader handoff, the menu-bar item's native "
+        "accessible name and actions, and the selected distribution trust profile"
     ),
 }
 
@@ -2733,10 +2910,18 @@ def main() -> int:
         required=True,
         help="which qualification scenario to run",
     )
+    parser.add_argument(
+        "--trust-profile",
+        choices=("community", "apple-trusted"),
+        default="community",
+        help="distribution trust contract used by the installed scenario",
+    )
     arguments = parser.parse_args()
 
     if sys.platform != "darwin":
-        print("this harness qualifies the macOS application; nothing else is a target yet")
+        print(
+            "this harness qualifies the macOS application; nothing else is a target yet"
+        )
         return 1
     if candidates_already_running():
         print(
@@ -2752,13 +2937,13 @@ def main() -> int:
     # set did not include it, and the effect was that the only artifact
     # ever built with a transport was this candidate. Qualifying a
     # binary nobody installs proves nothing about the one they do.
-    bundle = build_candidate()
+    bundle = build_candidate(arguments.scenario, arguments.trust_profile)
     # A Unix socket path cannot exceed 104 bytes on macOS, and the
     # platform's own temporary directory is already most of that, so the
     # disposable root is created directly under `/tmp` with a short
     # prefix. The control socket lives inside it.
     workspace = Path(tempfile.mkdtemp(prefix="scrybe-q-", dir="/tmp"))
-    candidate = Candidate(bundle, workspace)
+    candidate = Candidate(bundle, workspace, arguments.trust_profile)
     run = Run()
     try:
         SCENARIOS[arguments.scenario](candidate, run)
@@ -2768,10 +2953,8 @@ def main() -> int:
 
     print()
     if run.failures:
-        # The total as well as the count that failed. A reader of a
-        # failing run otherwise cannot tell one refusal out of forty from
-        # one out of three, and the `installed` scenario is designed to
-        # end here, so its coverage would never be printed at all.
+        # The total as well as the count that failed. A reader of a failing run
+        # otherwise cannot tell one refusal out of forty from one out of three.
         print(
             f"desktop {arguments.scenario} qualification FAILED — "
             f"{len(run.failures)} of {len(run.entries)} checks, across "

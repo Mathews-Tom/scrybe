@@ -63,6 +63,7 @@ pub fn build(app: &tauri::AppHandle) -> tauri::Result<()> {
     TrayIconBuilder::with_id(ID)
         .icon(icon)
         .icon_as_template(true)
+        .title("Scrybe")
         .tooltip("Scrybe")
         .menu(&menu)
         .show_menu_on_left_click(true)

@@ -194,32 +194,15 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-audit
-      # `cargo-audit` reads `~/.cargo/audit.toml`, not the workspace-
-      # root `audit.toml` we ship as documentation. Pass `--ignore`
-      # on the CLI to enforce the same ignores. The workspace
-      # `audit.toml` carries the canonical rationale for each entry;
-      # keep both lists in sync when adding or dropping ignores.
       - name: cargo audit
-        run: cargo audit --ignore RUSTSEC-2024-0421
+        run: cargo audit
       # The desktop host is a Cargo workspace of its own with its own
       # lockfile, so the step above — which reads `./Cargo.lock` — does
       # not see a single one of its crates. Without this step the
       # newest distributable binary in the repository would be the only
       # one exempt from RustSec advisory scanning.
-      #
-      # The ignore is the same identifier as the step above, but not for
-      # the same reason, and `audit.toml` now records both. On this
-      # graph RUSTSEC-2024-0421 is reached at run time through
-      # `tauri -> url 2.5.0 -> idna 0.5.0` rather than through the
-      # `Hook::Git` chain the root-graph entry reasons about, and the
-      # escalation the advisory describes — a host-name comparison used
-      # as a privilege check — is the shape of the desktop navigation
-      # guard. Without the ignore this step fails: it is a
-      # vulnerability-class advisory here, not a warning. What bounds it
-      # is in `audit.toml`; what removes it is the `url 2.5.4` update
-      # both graphs are waiting on.
       - name: cargo audit (desktop host)
-        run: cargo audit --file scrybe-desktop/src-tauri/Cargo.lock --ignore RUSTSEC-2024-0421
+        run: cargo audit --file scrybe-desktop/src-tauri/Cargo.lock
 
   deny:
     name: deny (advisories, licenses, bans, sources)

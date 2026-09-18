@@ -21,38 +21,4 @@
 # during the 2026-09-03 M1 CI gate rather than ignored.
 
 [advisories]
-ignore = [
-    # `idna 0.5.x` accepts certain malformed Punycode labels that
-    # should be rejected; patched in `idna 1.0.0`. Lockfile still
-    # carries `idna 0.5.x` via the `url 2.5.0` precise pin enforced
-    # in the workspace `Cargo.toml`. The toolchain bumped to rustc
-    # 1.95 in `rust-toolchain.toml`, so the MSRV no longer blocks
-    # `idna 1.x`; what remains is a deliberate `cargo update` run
-    # that regenerates the lock cascade. Drop this ignore once that
-    # update lands. Exposure surface is IDN-aware URL parsing; the
-    # only consumer of the affected chain is `Hook::Git` (via
-    # `git2 → url`), which parses local-repo paths and conventional
-    # git remote URLs (HTTPS/SSH without internationalized domain
-    # names), so the affected Punycode validation is not exercised.
-    #
-    # That argument covers the root graph only, and this file is also
-    # the ignore list the desktop host's lockfile is scanned with
-    # (`.github/workflows/ci.yml`, job `audit`). The desktop graph
-    # reaches `idna 0.5.0` at run time through `tauri 2.11.5 ->
-    # url 2.5.0`, not through `git2`, so `Hook::Git` says nothing about
-    # it. The advisory's escalation shape — a host-name comparison used
-    # as a privilege check, where `example.org` and `xn--example-.org`
-    # compare equal after processing — is the shape of
-    # `lifecycle::navigation::permitted`, which decides a navigation by
-    # `url.host_str() == Some("localhost")`. What bounds it there is
-    # the scheme arm rather than the host arm: a release build admits
-    # only `tauri`, whose host is served by Tauri's embedded asset
-    # protocol and never resolved through DNS, so a masked label
-    # reaches the asset handler instead of the network. The
-    # `http://localhost` arm a masked label could otherwise turn into a
-    # resolvable name is behind `cfg!(debug_assertions)` and is not in
-    # anything distributed. The remedy is the same single `cargo update`
-    # to `url 2.5.4` / `idna 1.x`, which regenerates both lockfiles and
-    # drops this entry for both graphs at once.
-    "RUSTSEC-2024-0421",
-]
+ignore = []

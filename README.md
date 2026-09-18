@@ -34,16 +34,18 @@ Linux, Windows, and Android crates are present in the workspace as adapter surfa
 
 ## Install
 
-Install the full macOS application from crates.io:
+Install the native macOS application from the DMG attached to the [latest GitHub release](https://github.com/Mathews-Tom/scrybe/releases/latest). Choose the Apple-silicon (`aarch64`) or Intel (`x86_64`) image, verify it against the signed checksum manifest, open the image, and drag `Scrybe.app` to `/Applications`.
+
+The application uses Scrybe's stable self-signed community certificate. It is not signed with Apple Developer ID and is not notarized, so Gatekeeper rejects the first launch. Verify the release and certificate fingerprint, then use **System Settings → Privacy & Security → Open Anyway**. Do not disable Gatekeeper globally or remove quarantine metadata. Exact verification and installation steps are in [`INSTALL.md`](INSTALL.md#macos-desktop-application--dmg).
+
+Install the command-line application from crates.io:
 
 ```sh
 cargo install scrybe
 scrybe doctor
 ```
 
-This builds Scrybe locally with microphone capture, ScreenCaptureKit system audio, Whisper, Opus, and OpenAI-compatible notes enabled. It requires Rust 1.95 and Xcode Command Line Tools. Use `cargo install scrybe --locked` only when reproducing the exact dependency graph qualified for a release or troubleshooting a registry install; releases qualify both forms.
-
-For a faster prebuilt installation:
+This builds Scrybe locally with microphone capture, ScreenCaptureKit system audio, Whisper, Opus, and OpenAI-compatible notes enabled. It requires Rust 1.95 and Xcode Command Line Tools. The prebuilt CLI installer remains available:
 
 ```sh
 curl --proto '=https' --tlsv1.2 -LsSf \
@@ -51,7 +53,7 @@ curl --proto '=https' --tlsv1.2 -LsSf \
 scrybe doctor
 ```
 
-The GitHub installer downloads the matching macOS tarball, verifies the release checksum manifest, and installs `scrybe` on `PATH`. Both installation paths provide the same production capabilities. On an interactive terminal, `scrybe doctor` reads the configured capture mode, explains the required macOS permission, and offers the applicable live probe. It does not modify the system or create signing identities without an explicit confirmation. Manual tarball installation, release verification, and source builds are documented in [`INSTALL.md`](INSTALL.md).
+The native app, CLI archive verification, source builds, and community trust limitations are documented in [`INSTALL.md`](INSTALL.md).
 
 ## First Local Recording Setup
 
@@ -213,11 +215,10 @@ python3 scripts/check-egress-baseline.py
 - macOS is the only polished binary distribution target today.
 - `--source mic+system` defaults to ScreenCaptureKit on macOS 13+ and requires **Screen & System Audio Recording**. This privacy permission covers screen recording in addition to system audio; deny it if that scope is unacceptable. ScreenCaptureKit runs from the invoking terminal and does not require an application bundle or signing identity.
 - The macOS 14.4+ Core Audio Tap backend remains available as `[record].system_backend = "tap"` for recovery. It requires the narrower Audio Capture permission and a signed `.app` bundle. `scrybe doctor` reports bundle state and offers repair with the project self-signed identity; it never creates or auto-selects a signing identity. A failed or silent Tap switches once to ScreenCaptureKit after a 1.5 s startup window, so a quiet desktop can switch before external audio begins.
-- The application reads sessions; it does not record one yet. Recording remains a terminal command.
 - Reading a session offers no paging control: the first twenty are shown and the count says how many there are. Search is submitted rather than run per keystroke.
 - The native recording shell requires the default `cli-shell` feature and explicit `--shell`; headless recording remains available. The `menu-bar-label` indicator is the Scrybe branding slot, and the status item never includes elapsed time. Configured indicators contain only recording state, elapsed time, and the stop control—never captured or generated meeting content.
-- crates.io installation supports the polished macOS application. Linux and Windows recording remain parked until hardware-qualified release paths exist.
-- Native macOS notarization and Windows Authenticode signing are out of scope for the v1 line. Release artifacts are verified with checksums and cosign provenance instead.
+- Native application releases are self-signed with the stable Scrybe community certificate and are not Apple-notarized. Gatekeeper rejection is expected until the user chooses Open Anyway after verifying the release. Apple Developer Program enrollment remains deferred.
+- Linux and Windows recording remain parked until hardware-qualified release paths exist.
 
 ## Development
 
@@ -238,6 +239,7 @@ The desktop application is qualified against the built bundle rather than agains
 python3 scripts/qualify-desktop-app.py --hermetic --scenario lifecycle
 python3 scripts/qualify-desktop-app.py --hermetic --scenario setup
 python3 scripts/qualify-desktop-app.py --hermetic --scenario library
+python3 scripts/qualify-desktop-app.py --hermetic --scenario model-download-live
 python3 scripts/qualify-desktop-app.py --hermetic --scenario recording
 python3 scripts/qualify-desktop-app.py --hermetic --scenario installed
 ```
@@ -246,7 +248,7 @@ Each drives the shipped shape of the application against a disposable storage ro
 
 `recording` answers a different one. Every surface a recording is stopped from is a platform event, and the dispatch behind each is reachable from a unit test — but that the built application wires them to it is not. A tray item built disabled, a command missing from a capability file, a permission absent from the generated manifest: each leaves the unit tests passing and the application inert. That scenario records a real session through the synthetic source and the stub providers, so it needs no device, no permission grant and no network, and asserts on the session the pipeline actually wrote.
 
-`installed` is the only one that does not pass, and it is meant not to. It copies the bundle out of the build tree and drives the copy, checks that the process it is driving really came out of that copy rather than some other registered one, records a session and then asks the reader for that session — the handoff from recorder to reader that neither `recording` nor `library` covers, because one asserts what was written and the other reads sessions this harness seeded. It then reads the tray's accessible names out of the running application's accessibility tree, and stops at the wall: no Developer ID Application certificate and no notarization credential exist here, so the copy is ad-hoc signed and cannot be qualified as installable by anyone else. That last check fails rather than skipping. A qualification reporting an installed application as qualified, having driven an artifact nobody else could install, would be worse than no qualification — so a green `installed` on a machine with no distribution credential means a check has stopped being able to fail.
+`installed` copies the community-signed bundle out of the build tree and drives that copy. It verifies the running process came from the copy, records a session and reads the same session through the reader, reads both the Scrybe status item's name and its actions from the native accessibility tree, and checks the explicit community trust contract: stable certificate, expected Gatekeeper rejection, and no notarization ticket. The native accessibility observation requires a human-granted TCC permission for the invoking terminal. `model-download-live` is the release-only proof that the checked-in production catalog can complete its pinned Hugging Face transfer and promote the exact expected bytes inside a disposable model root.
 
 Project docs:
 
