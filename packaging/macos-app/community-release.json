@@ -1,0 +1,9 @@
+{
+  "profile": "community",
+  "identity": "Scrybe Community Distribution",
+  "certificate_sha256": "a75f69039cdc924ab3b211f7ec973e541d24895d742819bed8576d4e815f5570",
+  "bundle_identifier": "dev.scrybe.desktop",
+  "apple_trusted": false,
+  "notarized": false,
+  "expected_gatekeeper_verdict": "rejected"
+}
