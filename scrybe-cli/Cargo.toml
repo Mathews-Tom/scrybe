@@ -1,6 +1,6 @@
 [package]
 name = "scrybe"
-version = "1.6.0"
+version.workspace = true
 description = "Local-first meeting recording, transcription, and notes for macOS."
 publish = true
 authors.workspace = true

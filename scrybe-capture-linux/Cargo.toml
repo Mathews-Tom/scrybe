@@ -1,6 +1,6 @@
 [package]
 name = "scrybe-capture-linux"
-version = "1.6.0"
+version.workspace = true
 description = "Linux audio capture adapter for scrybe. Implements scrybe-core's AudioCapture trait via PipeWire (primary, modern distros) with a PulseAudio fallback for RHEL 8 / Ubuntu 20.04 LTS hosts."
 publish = false
 authors.workspace = true

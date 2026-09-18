@@ -44,13 +44,24 @@ cargo owner --list scrybe-meeting-capture-mic
 
 Every owner listing must include `Mathews-Tom`. Never print or paste the registry token.
 
-Confirm all package versions and exact internal requirements:
+Confirm every surface that carries a version still agrees with the one in `[workspace.package]`:
 
 ```sh
-cargo metadata --no-deps --format-version 1
+python3 scripts/check-version-agreement.py
 ```
 
-The four published packages must report `1.6.0`. Every internal dependency must report `=1.6.0`. The Linux, Windows, and Android adapter packages remain private.
+The gate reads the source of truth once and holds thirty-two surfaces to it: every member manifest inherits rather than restates, `cargo metadata` resolves each member to it, the desktop host manifest and `tauri.conf.json` carry it because a separate workspace and a JSON literal cannot inherit, and all eleven intra-workspace `=` pins match it. A disagreement names the file that holds it. Nothing here is transcribed by hand — `--write` propagates, and this check is what makes a failed propagation visible.
+
+One surface the source-only run cannot reach is the artifact. After a bundle exists (see [Package Inspection](#package-inspection)), confirm what it reports about itself:
+
+```sh
+python3 scripts/check-version-agreement.py \
+    --bundle scrybe-desktop/src-tauri/target/debug/bundle/macos/Scrybe.app
+```
+
+`CFBundleShortVersionString` and `CFBundleVersion` must both report the workspace version. Until this increment they reported `0.0.0` — a placeholder unrelated to anything the CLI shipped — so a bundle that still reports `0.0.0` is a bundle built before the propagation landed, not a bundle that disagrees.
+
+The Linux, Windows, and Android adapter packages remain private; they inherit the version like every other member, which costs nothing and removes them as a place drift can hide.
 
 Confirm that the target version is still absent from every published package immediately before publication:
 

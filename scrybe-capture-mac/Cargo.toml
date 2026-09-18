@@ -1,6 +1,6 @@
 [package]
 name = "scrybe-meeting-capture-mac"
-version = "1.6.0"
+version.workspace = true
 description = "macOS microphone and system-audio capture adapters for the Scrybe meeting recorder."
 publish = true
 authors.workspace = true

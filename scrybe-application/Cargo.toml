@@ -1,6 +1,6 @@
 [package]
 name = "scrybe-meeting-application"
-version = "1.6.0"
+version.workspace = true
 description = "Shared application services for the Scrybe meeting recorder: sessions, configuration, diagnostics, and recording."
 publish = true
 authors.workspace = true

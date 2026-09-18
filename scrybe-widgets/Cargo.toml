@@ -1,6 +1,6 @@
 [package]
 name = "scrybe-widgets"
-version = "1.6.0"
+version.workspace = true
 description = "Native macOS recording indicators: the floating panel, the global hotkey, and the status-bar rendering."
 # Unpublished, like `scrybe-capture-linux`, `scrybe-capture-win`, and
 # `scrybe-android`. These are a frontend's presentation surfaces, not a
