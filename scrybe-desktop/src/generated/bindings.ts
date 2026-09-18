@@ -111,7 +111,15 @@ config_exists: boolean, storage_root: string, capture_source: string, transcript
  * local/offline indicator from this; the credential itself never
  * leaves Rust.
  */
-hosted_credential_required: boolean, warnings: Array<SettingsWarning>, };
+hosted_credential_required: boolean, 
+/**
+ * Days a deleted session stays in the trash.
+ *
+ * Here because a delete confirmation has to name the window
+ * *before* the move, and the outcome that reports it afterwards
+ * arrives too late to say what is about to happen.
+ */
+trash_retention_days: number, warnings: Array<SettingsWarning>, };
 
 export type SettingsField = "storage_root" | "storage_audio_bitrate_kbps" | "capture_mic_device" | "capture_hotkey" | "record_source" | "record_system_backend" | "record_llm" | "stt_provider" | "stt_model" | "stt_language" | "llm_provider" | "llm_base_url" | "llm_model" | "consent_default_mode" | "shell_indicators" | "agent_access_enabled";
 

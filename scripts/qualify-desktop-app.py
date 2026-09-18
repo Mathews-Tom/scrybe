@@ -69,7 +69,7 @@ What this cannot establish, stated plainly:
   artifact written somewhere else under `~/Library` would not be seen
   by it.
 
-Five scenarios, one build. All of them compile the shape the application
+Six scenarios, one build. All of them compile the shape the application
 ships — default features, which include the model transport — and
 there is no per-scenario feature selection at all. There used to be:
 `setup` named `model-download` explicitly while the host's default set
@@ -104,6 +104,7 @@ Run locally:
     python3 scripts/qualify-desktop-app.py --hermetic --scenario library
     python3 scripts/qualify-desktop-app.py --hermetic --scenario recording
     python3 scripts/qualify-desktop-app.py --hermetic --scenario installed
+    python3 scripts/qualify-desktop-app.py --hermetic --scenario retention
 
 Exit status 0 means every check held. Exit status 1 means at least one
 did not; each failing check prints what was expected and what was
@@ -124,6 +125,7 @@ distribution credential means a check has stopped being able to fail.
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import hashlib
 import http.server
 import ipaddress
@@ -1698,6 +1700,14 @@ NO_PLAYBACK = "2026-04-28-0900-onevoice-01AAAAA"
 # proven against this exact fixture shape by
 # `test_audio_without_metadata_is_repairable_because_metadata_can_be_reconstructed`.
 REPAIRABLE = "2026-04-27-1100-abandoned-01BBBBB"
+
+# The retention run's fixtures. `SWEPT` is dated far enough back that
+# any window this application ships has passed; `KEPT` is dated at the
+# run itself, so one launch has to reach opposite answers about two
+# folders sitting side by side.
+SWEPT = "2026-01-02-0900-longgone-01CCCCC"
+KEPT = "2026-04-29-1430-justnow-01DDDDD"
+BY_HAND = "2026-03-03-1200-notours-01EEEEE"
 # No `audio.opus` and no `journal/`: `classify()` reaches Unfinished
 # here only because a surviving `transcript.md` is evidence something
 # was recorded — proven against this exact fixture shape by
@@ -2513,12 +2523,156 @@ def tray_menu_item_names() -> list[str]:
     return json.loads(result.stdout.strip() or "[]")
 
 
+
+def seed_retention(candidate: Candidate) -> None:
+    """Writes a trash the sweep has to reach two different answers about.
+
+    Three folders. Two were put there by this application, so the index
+    records when: one long enough ago that the window has passed, one at
+    this instant. The third was put there by a reader, has no index
+    entry, and is a complete session by content — the case where "remove
+    what is old" and "remove what we moved" disagree, and the only one
+    that can tell them apart.
+
+    Days are simulated by writing the index the application writes,
+    rather than by waiting. The alternative is a test that takes a week.
+    """
+    listed = candidate.root / PLAYABLE
+    listed.mkdir(parents=True)
+    (listed / "meta.toml").write_text(session_meta("Acme sync", "01HXYZ"))
+    (listed / "audio.opus").write_bytes(b"")
+
+    trash = candidate.root / "trash"
+    trash.mkdir(parents=True)
+    for folder, title, ident in (
+        (SWEPT, "Long gone", "01CCCCC"),
+        (KEPT, "Just now", "01DDDDD"),
+        (BY_HAND, "Not ours", "01EEEEE"),
+    ):
+        path = trash / folder
+        path.mkdir()
+        (path / "meta.toml").write_text(session_meta(title, ident))
+        (path / "audio.opus").write_bytes(b"")
+    (trash / "a-note-to-self.txt").write_text("keep this\n")
+
+    now = dt.datetime.now(dt.timezone.utc)
+    swept_marker = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+    kept_marker = "01ARZ3NDEKTSV4RRFFQ69G5FAW"
+    (trash / SWEPT / f".scrybe-trash-entry-{swept_marker}").write_text(swept_marker)
+    (trash / KEPT / f".scrybe-trash-entry-{kept_marker}").write_text(kept_marker)
+    (trash / "retention.toml").write_text(
+        f'[trashed."{SWEPT}"]\n'
+        f'trashed_at = "{(now - dt.timedelta(days=400)).isoformat()}"\n'
+        "retention_days = 7\n"
+        f'marker = "{swept_marker}"\n'
+        "purging = false\n\n"
+        f'[trashed."{KEPT}"]\n'
+        f'trashed_at = "{now.isoformat()}"\n'
+        "retention_days = 7\n"
+        f'marker = "{kept_marker}"\n'
+        "purging = false\n"
+    )
+
+    archived = candidate.root / "archive" / NO_PLAYBACK
+    archived.mkdir(parents=True)
+    (archived / "meta.toml").write_text(session_meta("Set aside", "01AAAAA"))
+    (archived / "audio.opus").write_bytes(b"")
+
+
+def retention(candidate: Candidate, run: Run) -> None:
+    """The launch sweep, on the real application.
+
+    What this establishes that the unit tests cannot. The service's own
+    tests prove which indexed folders a sweep removes, and the host's
+    prove it preserves each entry's confirmed deadline — both by calling
+    the sweep themselves. Neither can show that launching the application
+    calls it at all, or that it happens before the window a reader would
+    be looking at. A sweep wired to nothing passes every test in both
+    suites.
+    """
+    untouched = [
+        ("the real configuration file", REAL_CONFIG, snapshot(REAL_CONFIG)),
+        ("the default storage root", REAL_STORAGE_ROOT, snapshot(REAL_STORAGE_ROOT)),
+    ]
+    seed_retention(candidate)
+
+    candidate.launch()
+    run.record(
+        "launch: the application reached its control socket",
+        True,
+        candidate.wait_for_control_socket(),
+    )
+    run.record(
+        "launch: the sweep ran, and ran once",
+        1,
+        candidate.events().count("retention-swept"),
+    )
+
+    trash = candidate.root / "trash"
+    run.record(
+        "sweep: the session past its window is gone",
+        False,
+        (trash / SWEPT).exists(),
+    )
+    run.record(
+        "sweep: the session inside its window is still there",
+        True,
+        (trash / KEPT).is_dir(),
+    )
+    run.record(
+        "sweep: a session the application never moved is left alone",
+        True,
+        (trash / BY_HAND).is_dir(),
+    )
+    run.record(
+        "sweep: a reader's own file in the trash is left alone",
+        True,
+        (trash / "a-note-to-self.txt").is_file(),
+    )
+    run.record(
+        "sweep: the index forgets what it removed and keeps what it did not",
+        [False, True],
+        [
+            SWEPT in (trash / "retention.toml").read_text(),
+            KEPT in (trash / "retention.toml").read_text(),
+        ],
+    )
+    run.record(
+        "sweep: the archive is untouched",
+        True,
+        (candidate.root / "archive" / NO_PLAYBACK).is_dir(),
+    )
+    run.record(
+        "listing: the session outside the retention directories survived",
+        True,
+        (candidate.root / PLAYABLE).is_dir(),
+    )
+
+    # A second launch must reach the same answers: the index no longer
+    # names the folder it removed, so nothing is removed twice and the
+    # one inside its window is not aged by having been looked at.
+    candidate.control("quit")
+    candidate.wait_for_exit()
+    candidate.launch()
+    candidate.wait_for_control_socket()
+    run.record(
+        "relaunch: the session inside its window survived a second sweep",
+        True,
+        (trash / KEPT).is_dir(),
+    )
+
+    candidate.control("quit")
+    candidate.wait_for_exit()
+    hermeticity(candidate, run, untouched)
+
+
 SCENARIOS: dict[str, Callable[[Candidate, Run], None]] = {
     "lifecycle": lifecycle,
     "setup": setup,
     "library": library,
     "recording": recording,
     "installed": installed,
+    "retention": retention,
 }
 
 
@@ -2541,6 +2695,11 @@ SCENARIO_COVERAGE: dict[str, str] = {
         "preflight, starting and stopping a recording from the tray, "
         "the artifacts it leaves, the convergence of two stop sources on one "
         "finalization, refusal of a second recording, the deferred quit, and egress"
+    ),
+    "retention": (
+        "the sweep at launch, a window read per session, a folder the "
+        "application never moved, a reader's own file in the trash, the "
+        "index after a removal, the archive, and a second launch"
     ),
     "library": (
         "the webview reaching the playback scheme at all, the bytes served for a "

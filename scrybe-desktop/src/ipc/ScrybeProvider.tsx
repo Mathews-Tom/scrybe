@@ -13,6 +13,7 @@ import type {
   RecordingStatus,
   RecoveryActionView,
   RepairOutcome,
+  RetentionOutcome,
   SessionDetail,
   SessionNotes,
   SessionRepair,
@@ -40,6 +41,8 @@ import {
   stopRecording,
   repairSession,
   revealSession,
+  deleteSession,
+  archiveSession,
   searchSessions,
   settingsSummary,
 } from "./client";
@@ -93,6 +96,10 @@ export interface Scrybe {
   /** Mutates, and only `notes.md`. */
   regenerateNotes: (id: string) => Promise<NotesRegeneration>;
   revealSession: (id: string) => Promise<void>;
+  /** Moves a session to the trash under the days the reader confirmed. */
+  deleteSession: (id: string, retentionDays: number) => Promise<RetentionOutcome>;
+  /** Moves a session to the archive, which the sweep never touches. */
+  archiveSession: (id: string) => Promise<RetentionOutcome>;
   copyNotes: (id: string) => Promise<void>;
   /** Read and copied in Rust, so the document never reaches this side. */
   copyTranscript: (id: string) => Promise<void>;
@@ -165,6 +172,8 @@ const REAL: Scrybe = {
   repairSession,
   regenerateNotes,
   revealSession,
+  deleteSession,
+  archiveSession,
   copyNotes,
   copyTranscript,
   settingsSummary,
