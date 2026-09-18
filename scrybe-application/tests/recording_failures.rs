@@ -93,8 +93,11 @@ fn test_a_preflight_failure_leaves_no_session_and_no_storage_root() {
     std::fs::write(
         &config_path,
         format!(
-            "[storage]\nroot = \"{}\"\n[record]\nsource = \"mic\"\n",
-            root.display()
+            // Serialised as a TOML value rather than interpolated: a
+            // Windows path is full of backslashes, and a backslash in a
+            // basic TOML string starts an escape.
+            "[storage]\nroot = {}\n[record]\nsource = \"mic\"\n",
+            toml::Value::from(root.to_str().unwrap())
         ),
     )
     .unwrap();
