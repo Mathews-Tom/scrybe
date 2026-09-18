@@ -294,6 +294,24 @@ export type NotesRegeneration = { id: string, outcome: NotesOutcome,
  */
 bytes: number, };
 
+export type RetentionDestination = "trash" | "archive";
+
+export type RetentionOutcome = { 
+/**
+ * The session that moved, so a list can drop exactly that row.
+ */
+id: string, 
+/**
+ * Where it went.
+ */
+destination: RetentionDestination, 
+/**
+ * Days a trashed session is kept. Reported for both destinations
+ * so one acknowledgement renders either, and ignored for the
+ * archive, which is never swept.
+ */
+retention_days: number, };
+
 export const RECORDING_TRANSITION_EVENT = "recording-transition";
 export const MODEL_PROGRESS_EVENT = "scrybe://model-progress";
 export const RECORDING_PROGRESS_EVENT = "recording-progress";

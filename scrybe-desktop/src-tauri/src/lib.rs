@@ -147,6 +147,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             commands::repair_session,
             commands::regenerate_notes,
             commands::reveal_session,
+            commands::delete_session,
+            commands::archive_session,
             commands::copy_notes,
             commands::copy_transcript,
             commands::settings_summary,

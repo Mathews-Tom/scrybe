@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main-window",
-  "description": "Everything the Sessions window may call. Scoped to that one window by label: a window this application has not declared inherits nothing from this file. No filesystem, shell, HTTP, process, or path permission appears here, and none is required \u2014 every path the application touches is resolved in Rust beneath the configured storage root.",
+  "description": "Everything the Sessions window may call. Scoped to that one window by label: a window this application has not declared inherits nothing from this file. No filesystem, shell, HTTP, process, or path permission appears here, and none is required — every path the application touches is resolved in Rust beneath the configured storage root.",
   "windows": [
     "main"
   ],
@@ -17,6 +17,8 @@
     "allow-repair-session",
     "allow-regenerate-notes",
     "allow-reveal-session",
+    "allow-delete-session",
+    "allow-archive-session",
     "allow-copy-notes",
     "allow-copy-transcript",
     "allow-settings-summary",

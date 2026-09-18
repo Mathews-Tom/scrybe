@@ -22,6 +22,7 @@
 pub mod detail;
 pub mod error;
 pub mod recording;
+pub mod retention;
 pub mod session;
 pub mod settings;
 pub mod setup;
@@ -41,6 +42,7 @@ pub use recording::{
     RecordingProgressView, RecordingState, RecordingStatus, RecordingTransition, SavingStep,
     PROGRESS_EVENT, TRANSITION_EVENT,
 };
+pub use retention::{RetentionDestination, RetentionOutcome};
 pub use session::{SessionProgress, SessionRow, SessionRows};
 pub use settings::{SettingsSummary, SettingsWarning, WarningSeverity};
 pub use setup::{
@@ -121,6 +123,8 @@ contract![
     SessionRepair,
     NotesOutcome,
     NotesRegeneration,
+    RetentionDestination,
+    RetentionOutcome,
 ];
 
 /// The complete `bindings.ts` file content.
@@ -252,6 +256,8 @@ mod tests {
                 "SessionRepair",
                 "NotesOutcome",
                 "NotesRegeneration",
+                "RetentionDestination",
+                "RetentionOutcome",
             ],
         );
     }

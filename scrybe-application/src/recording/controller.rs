@@ -113,10 +113,21 @@ fn duration_ms(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
+/// Exclusive permission to move a session while no recording can start.
+///
+/// The permit is intentionally opaque. Holding it keeps
+/// [`RecordingController::begin_preparing`] from entering the first
+/// in-flight state; dropping it releases that gate.
+#[derive(Debug)]
+pub struct RetentionPermit<'a> {
+    _guard: MutexGuard<'a, ()>,
+}
+
 /// The process-wide recording state model.
 pub struct RecordingController {
     clock: Arc<dyn MonotonicClock>,
     observers: Mutex<Vec<Arc<RecordingEventObserver>>>,
+    retention_gate: Mutex<()>,
     state: Mutex<ControllerState>,
 }
 
@@ -155,6 +166,7 @@ impl RecordingController {
         Self {
             clock,
             observers: Mutex::new(Vec::new()),
+            retention_gate: Mutex::new(()),
             state: Mutex::new(ControllerState::idle()),
         }
     }
@@ -199,6 +211,33 @@ impl RecordingController {
         self.lock().snapshot(now)
     }
 
+    /// Reserves the interval in which a session may be moved.
+    ///
+    /// Checking a snapshot and moving later leaves a race in which a
+    /// recording can begin between those two operations. This permit
+    /// closes that gap: the state is checked after taking the same gate
+    /// [`Self::begin_preparing`] must take, and the caller keeps the gate
+    /// until its filesystem move finishes.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::RecordingStateConflict`] while preparing, recording,
+    /// or saving.
+    pub fn retention_permit(&self) -> Result<RetentionPermit<'_>> {
+        let guard = self
+            .retention_gate
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let state = self.lock().state;
+        if !state.permits_retention() {
+            return Err(ApplicationError::new(
+                ErrorCode::RecordingStateConflict,
+                "a recording is in progress, so no session can be moved right now",
+            ));
+        }
+        Ok(RetentionPermit { _guard: guard })
+    }
+
     /// Begins resolving configuration, permissions, devices, providers,
     /// model readiness, storage, and capture construction.
     ///
@@ -210,16 +249,25 @@ impl RecordingController {
     /// [`ErrorCode::RecordingStateConflict`] unless the controller is
     /// idle.
     pub fn begin_preparing(&self) -> Result<RecordingSnapshot> {
-        self.transition(self.clock.now(), |state| {
-            if !state.state.accepts_start() {
-                return Err(conflict("start", state.state));
-            }
-            *state = ControllerState {
-                sequence: state.sequence,
-                ..ControllerState::idle()
-            };
-            Ok(RecordingState::Preparing)
-        })
+        let gate = self
+            .retention_gate
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let now = self.clock.now();
+        let mut state = self.lock();
+        if !state.state.accepts_start() {
+            return Err(conflict("start", state.state));
+        }
+        *state = ControllerState {
+            sequence: state.sequence,
+            ..ControllerState::idle()
+        };
+        let event = advance(&mut state, RecordingState::Preparing, now);
+        let snapshot = state.snapshot(now);
+        drop(state);
+        drop(gate);
+        self.notify(&event);
+        Ok(snapshot)
     }
 
     /// Capture has begun. Starts the one monotonic clock origin.
@@ -1028,5 +1076,53 @@ mod tests {
             controller.request_stop(StopSource::Tray),
             StopAcceptance::AlreadyStopping
         );
+    }
+
+    #[test]
+    fn test_retention_permit_refuses_every_in_flight_state() {
+        for target in [
+            RecordingState::Preparing,
+            RecordingState::Recording,
+            RecordingState::Saving,
+        ] {
+            let (controller, _clock, _recorded) = controller();
+            controller.begin_preparing().unwrap();
+            if target != RecordingState::Preparing {
+                controller.mark_recording().unwrap();
+            }
+            if target == RecordingState::Saving {
+                controller.request_stop(StopSource::Window);
+            }
+
+            let error = controller.retention_permit().unwrap_err();
+            assert_eq!(error.code(), ErrorCode::RecordingStateConflict);
+        }
+    }
+
+    #[test]
+    fn test_a_retention_permit_blocks_a_concurrent_start_until_the_move_finishes() {
+        let (controller, _clock, _recorded) = controller();
+        let controller = Arc::new(controller);
+        let permit = controller.retention_permit().unwrap();
+        let starter = Arc::clone(&controller);
+        let (sent, received) = std::sync::mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            sent.send(starter.begin_preparing().map(|snapshot| snapshot.state))
+                .unwrap();
+        });
+
+        assert!(
+            received.recv_timeout(Duration::from_millis(30)).is_err(),
+            "start must wait while the filesystem move owns the permit"
+        );
+        drop(permit);
+        assert_eq!(
+            received
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap()
+                .unwrap(),
+            RecordingState::Preparing
+        );
+        thread.join().unwrap();
     }
 }
