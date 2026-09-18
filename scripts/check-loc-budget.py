@@ -326,8 +326,11 @@ LOC_CEILINGS: dict[str, int] = {
     #   =8271 measured
     #
     # The ceiling is 8350, leaving 79 lines of margin. `scrybe-cli` went
-    # the other way over the same change, from 7074 to 6738 against an
-    # unchanged 7300, because what moved here was deleted there.
+    # the other way over the same change, from 7074 to 6684 against an
+    # unchanged 7300, because what moved here was deleted there. It
+    # reads 6241 now rather than 6684: the widgets left for their own
+    # crate afterwards, which this sum does not cover and did not pay
+    # for.
     "scrybe-application": 8350,
     "scrybe-capture-mac": 2700,
     "scrybe-capture-linux": 2500,
