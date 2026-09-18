@@ -6,18 +6,16 @@
 #   `build`, artifact staging, SBOM generation, checksum creation, and cosign
 #   signing, but does NOT create a GitHub Release.
 #
-# Outputs (per `[workspace.metadata.dist]` in `Cargo.toml`):
-# - `scrybe-aarch64-apple-darwin.tar.xz`
-# - `scrybe-x86_64-apple-darwin.tar.xz`
-# - `scrybe-installer.sh` (cargo-dist shell installer; quick-install path
-#   documented in `INSTALL.md`)
-# - `dist-manifest.json` (cargo-dist artifact-list manifest read by the
-#   installer to resolve and verify per-target tarballs)
-# - `SHA256SUMS.txt` (SHA256 manifest covering tarballs and installer)
+# Outputs:
+# - cargo-dist CLI archives and installer for both macOS architectures
+# - community-signed Scrybe DMGs for Apple silicon and Intel Macs
+# - independently signed Tauri updater archives plus `latest.json`
+# - SHA-256 manifests, CycloneDX SBOMs, and keyless Sigstore provenance
 #
-# Each tarball contains the `scrybe` binary, `INSTALL.md`, `LICENSE`, and
-# `README.md`. macOS artifacts are unsigned per `.docs/development-plan.md`
-# §13.1; users strip the quarantine attribute as documented in INSTALL.md.
+# The native application uses the stable self-signed identity declared in
+# `packaging/macos-app/community-release.json`. It is deliberately not
+# Apple-notarized, so the release gate requires Gatekeeper rejection rather
+# than presenting the artifact as Apple-trusted.
 
 name: release
 
@@ -135,9 +133,123 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  desktop:
+    name: desktop (${{ matrix.target }})
+    needs: plan
+    runs-on: macos-26
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            asset_arch: aarch64
+          - target: x86_64-apple-darwin
+            asset_arch: x86_64
+    env:
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      TARGET: ${{ matrix.target }}
+      ASSET_ARCH: ${{ matrix.asset_arch }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95.0
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: scrybe-desktop/src-tauri -> target
+          shared-key: desktop-release-${{ matrix.target }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.7.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.12"
+          cache: pnpm
+          cache-dependency-path: scrybe-desktop/pnpm-lock.yaml
+      - name: install frontend dependencies
+        run: pnpm --dir scrybe-desktop install --frozen-lockfile
+      - name: import community signing identity
+        env:
+          KEYCHAIN_PASSWORD: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          expected_identity="$(python3 -c 'import json; print(json.load(open("packaging/macos-app/community-release.json"))["identity"])')"
+          [ -n "$APPLE_CERTIFICATE" ] || { echo "::error::APPLE_CERTIFICATE is not configured"; exit 1; }
+          [ -n "$APPLE_CERTIFICATE_PASSWORD" ] || { echo "::error::APPLE_CERTIFICATE_PASSWORD is not configured"; exit 1; }
+          [ "$APPLE_SIGNING_IDENTITY" = "$expected_identity" ] || {
+            echo "::error::APPLE_SIGNING_IDENTITY does not match the community release policy"
+            exit 1
+          }
+          certificate_path="$RUNNER_TEMP/community-signing.p12"
+          keychain_path="$RUNNER_TEMP/community-signing.keychain-db"
+          printf '%s' "$APPLE_CERTIFICATE" | base64 -D > "$certificate_path"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$keychain_path"
+          security import "$certificate_path" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -A \
+            -t cert \
+            -f pkcs12 \
+            -k "$keychain_path"
+          security list-keychains -d user -s "$keychain_path" "$HOME/Library/Keychains/login.keychain-db"
+          security set-key-partition-list \
+            -S apple-tool:,apple: \
+            -s \
+            -k "$KEYCHAIN_PASSWORD" \
+            "$keychain_path"
+          security find-identity -v -p codesigning "$keychain_path"
+      - name: build signed application artifacts
+        run: |
+          set -euo pipefail
+          [ -n "$TAURI_SIGNING_PRIVATE_KEY" ] || { echo "::error::TAURI_SIGNING_PRIVATE_KEY is not configured"; exit 1; }
+          [ -n "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" ] || { echo "::error::TAURI_SIGNING_PRIVATE_KEY_PASSWORD is not configured"; exit 1; }
+          # Tauri's APPLE_CERTIFICATE importer only recognizes Apple-issued
+          # certificate names. Use the self-signed identity imported above.
+          env -u APPLE_CERTIFICATE -u APPLE_CERTIFICATE_PASSWORD \
+            pnpm --dir scrybe-desktop exec tauri build --target "$TARGET"
+      - name: verify and stage application artifacts
+        run: |
+          set -euo pipefail
+          version="$(python3 -c 'import json; print(json.load(open("scrybe-desktop/src-tauri/tauri.conf.json"))["version"])')"
+          bundle_root="scrybe-desktop/src-tauri/target/$TARGET/release/bundle"
+          bundle="$bundle_root/macos/Scrybe.app"
+          archive="$bundle_root/macos/Scrybe.app.tar.gz"
+          signature="$archive.sig"
+          dmgs=("$bundle_root"/dmg/*.dmg)
+          [ -d "$bundle" ] || { echo "::error::missing app bundle at $bundle"; exit 1; }
+          [ -f "$archive" ] || { echo "::error::missing updater archive at $archive"; exit 1; }
+          [ -s "$signature" ] || { echo "::error::missing updater signature at $signature"; exit 1; }
+          [ "${#dmgs[@]}" -eq 1 ] && [ -f "${dmgs[0]}" ] || {
+            echo "::error::expected exactly one DMG under $bundle_root/dmg"
+            exit 1
+          }
+          python3 scripts/check-community-artifact.py \
+            --bundle "$bundle" \
+            --dmg "${dmgs[0]}"
+          stage="$RUNNER_TEMP/desktop-staging"
+          mkdir -p "$stage"
+          cp "$archive" "$stage/Scrybe_${version}_${ASSET_ARCH}.app.tar.gz"
+          cp "$signature" "$stage/Scrybe_${version}_${ASSET_ARCH}.app.tar.gz.sig"
+          cp "${dmgs[0]}" "$stage/Scrybe_${version}_${ASSET_ARCH}.dmg"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.target }}
+          path: ${{ runner.temp }}/desktop-staging/*
+          if-no-files-found: error
+          retention-days: 7
+      - name: delete temporary signing keychain
+        if: always()
+        run: security delete-keychain "$RUNNER_TEMP/community-signing.keychain-db" || true
+
   release:
     name: release
-    needs: [plan, build]
+    needs: [plan, build, desktop]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -150,6 +262,11 @@ jobs:
         with:
           name: dist-manifest
           path: dist-staging
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist-staging
+          pattern: desktop-*
+          merge-multiple: true
       - name: list staged artifacts
         run: ls -la dist-staging/
       # cargo-dist splits artifacts into "local" (per-target tarballs, built by
@@ -175,69 +292,96 @@ jobs:
         run: |
           ls -la target/distrib/
           cp -v target/distrib/* dist-staging/
-      # CycloneDX SBOM covering the binary's dependency graph. Emitted
-      # at release time (not in the build matrix) because it is a
-      # cross-target manifest derived from `Cargo.lock`, not from any
-      # individual tarball. Shipped as `scrybe-sbom.cdx.json` so
-      # downstream consumers running `cargo audit` / `osv-scanner`
-      # against the SBOM can reproduce the binary's vulnerability
-      # posture without checking out source.
-      #
-      # `cargo cyclonedx` defaults to one SBOM per workspace member
-      # written into each crate's directory. The release artifact is
-      # the `scrybe` application, so scope to its manifest and move the
-      # single expected output into staging.
-      # Running at the workspace root would emit one SBOM per crate.
-      - name: generate CycloneDX SBOM
+      - name: generate updater manifest
+        env:
+          IS_RELEASE: ${{ needs.plan.outputs.is-release }}
+          TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          set -euo pipefail
+          version="$(python3 -c 'import json; print(json.load(open("scrybe-desktop/src-tauri/tauri.conf.json"))["version"])')"
+          if [ "$IS_RELEASE" = "true" ] && [ "$TAG" != "v$version" ]; then
+            echo "::error::release tag $TAG does not match application version v$version"
+            exit 1
+          fi
+          for arch in aarch64 x86_64; do
+            [ -f "dist-staging/Scrybe_${version}_${arch}.dmg" ] || {
+              echo "::error::missing ${arch} DMG"
+              exit 1
+            }
+            [ -f "dist-staging/Scrybe_${version}_${arch}.app.tar.gz" ] || {
+              echo "::error::missing ${arch} updater archive"
+              exit 1
+            }
+            [ -s "dist-staging/Scrybe_${version}_${arch}.app.tar.gz.sig" ] || {
+              echo "::error::missing ${arch} updater signature"
+              exit 1
+            }
+          done
+          published_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          python3 scripts/generate-updater-manifest.py \
+            --version "$version" \
+            --notes "Scrybe $version" \
+            --published-at "$published_at" \
+            --output dist-staging/latest.json \
+            --platform darwin-aarch64 \
+              "https://github.com/${GITHUB_REPOSITORY}/releases/download/v${version}/Scrybe_${version}_aarch64.app.tar.gz" \
+              "dist-staging/Scrybe_${version}_aarch64.app.tar.gz.sig" \
+            --platform darwin-x86_64 \
+              "https://github.com/${GITHUB_REPOSITORY}/releases/download/v${version}/Scrybe_${version}_x86_64.app.tar.gz" \
+              "dist-staging/Scrybe_${version}_x86_64.app.tar.gz.sig"
+      # Generate separate CycloneDX documents for the CLI and native desktop
+      # host: their lockfiles and dependency graphs are intentionally distinct.
+      - name: generate CycloneDX SBOMs
         run: |
           set -euo pipefail
           cargo cyclonedx --manifest-path scrybe-cli/Cargo.toml --format json --override-filename scrybe-sbom
-          sbom_path="$(find . -type f \( \
+          cli_sbom="$(find scrybe-cli -type f \( \
             -name scrybe-sbom \
             -o -name scrybe-sbom.json \
             -o -name scrybe-sbom.cdx.json \
             -o -name bom.json \
           \) -print -quit)"
-          if [ -z "$sbom_path" ]; then
-            echo "::error::cargo cyclonedx did not emit a recognized JSON SBOM"
-            find . -type f \( -name '*sbom*' -o -name 'bom.*' -o -name '*.cdx.json' \) -print
-            exit 1
-          fi
-          mv "$sbom_path" dist-staging/scrybe-sbom.cdx.json
-          ls -la dist-staging/scrybe-sbom.cdx.json
+          [ -n "$cli_sbom" ] || { echo "::error::missing CLI SBOM"; exit 1; }
+          mv "$cli_sbom" dist-staging/scrybe-sbom.cdx.json
+
+          cargo cyclonedx --manifest-path scrybe-desktop/src-tauri/Cargo.toml --format json --override-filename scrybe-desktop-sbom
+          desktop_sbom="$(find scrybe-desktop/src-tauri -type f \( \
+            -name scrybe-desktop-sbom \
+            -o -name scrybe-desktop-sbom.json \
+            -o -name scrybe-desktop-sbom.cdx.json \
+            -o -name bom.json \
+          \) -print -quit)"
+          [ -n "$desktop_sbom" ] || { echo "::error::missing desktop SBOM"; exit 1; }
+          mv "$desktop_sbom" dist-staging/scrybe-desktop-sbom.cdx.json
+          ls -la dist-staging/*.cdx.json
       - name: write SHA256 manifest
         working-directory: dist-staging
         run: |
+          set -euo pipefail
           shopt -s nullglob
           : > SHA256SUMS.txt
-          for f in *.tar.* *.zip *.sh *.cdx.json dist-manifest.json; do
+          for f in *.dmg *.tar.* *.zip *.sh *.json; do
             [ -e "$f" ] || continue
             shasum -a 256 "$f" >> SHA256SUMS.txt
           done
           cat SHA256SUMS.txt
-      # Cosign keyless signing covers SHA256SUMS.txt (the canonical
-      # checksum manifest — verifying it transitively covers every
-      # asset whose hash appears in the file) and the SBOM (consumed
-      # standalone by supply-chain tools). Each `sign-blob` invocation
-      # emits both the signature (`<asset>.sig`) and the Fulcio
-      # certificate (`<asset>.pem`) so a verifier can reconstruct the
-      # OIDC chain without contacting Sigstore. `--yes` accepts the
-      # transparency-log prompt non-interactively; `cosign-experimental`
-      # is no longer required as of cosign 2.x.
-      - name: cosign sign release manifest + SBOM
+      # Cosign keyless signing covers the checksum manifest and both standalone
+      # SBOMs. Publish the signature, Fulcio certificate, and Sigstore bundle.
+      - name: cosign sign release manifest + SBOMs
         working-directory: dist-staging
         env:
           COSIGN_YES: "true"
         run: |
           set -euo pipefail
-          for asset in SHA256SUMS.txt scrybe-sbom.cdx.json; do
+          for asset in SHA256SUMS.txt scrybe-sbom.cdx.json scrybe-desktop-sbom.cdx.json; do
             [ -e "$asset" ] || { echo "::error::missing $asset"; exit 1; }
             cosign sign-blob \
               --output-signature "${asset}.sig" \
               --output-certificate "${asset}.pem" \
+              --bundle "${asset}.bundle" \
               "$asset"
           done
-          ls -la *.sig *.pem
+          ls -la *.sig *.pem *.bundle
       - name: gh release create
         if: needs.plan.outputs.is-release == 'true'
         env:
