@@ -6,10 +6,12 @@ import { renderWith } from "../../testing/render";
 import {
   commandFailure,
   detail,
+  idle,
   notes,
   page,
   regenerated,
   repaired,
+  retained,
   servicesReturning,
   session,
   transcriptWindow,
@@ -384,7 +386,11 @@ describe("SessionDetail", () => {
   it("test_the_detail_surface_is_walked_in_the_order_it_is_read", async () => {
     // Every control is a tab stop, once, in the order it appears on
     // screen: leave, then the actions, then the two documents. Nothing
-    // is reachable only with a pointer and nothing is skipped.
+    // is reachable only with a pointer and nothing is skipped. The two
+    // retention actions sit last among the actions, after every read
+    // and every recovery, because a reader tabbing through them should
+    // reach what is irreversible only once they have passed everything
+    // that is not.
     const user = userEvent.setup();
     await renderWith(
       <SessionDetail id={ID} onBack={noop} />,
@@ -395,7 +401,7 @@ describe("SessionDetail", () => {
     );
     const reached: string[] = [];
 
-    for (let stop = 0; stop < 8; stop += 1) {
+    for (let stop = 0; stop < 10; stop += 1) {
       await user.tab();
       reached.push(document.activeElement?.textContent ?? "");
     }
@@ -407,6 +413,8 @@ describe("SessionDetail", () => {
       "Reveal in Finder",
       "Copy notes",
       "Copy transcript",
+      "Archive",
+      "Delete",
       "Notes",
       "Transcript",
     ]);
@@ -534,5 +542,157 @@ describe("SessionDetail", () => {
     );
 
     expect(screen.getByRole("alert").textContent).toBe("no session matches 01HXYZ");
+  });
+});
+
+describe("retention", () => {
+  it("test_deleting_states_where_the_data_goes_before_anything_moves", async () => {
+    // The confirmation has to say what happens, not ask whether the
+    // reader is sure. A reader who only learns the destination from the
+    // acknowledgement learned it too late.
+    const user = userEvent.setup();
+    const asked: string[] = [];
+    await renderWith(
+      <SessionDetail id={ID} onBack={noop} />,
+      servicesReturning({
+        getSession: () => Promise.resolve(detail()),
+        deleteSession: (id: string) => {
+          asked.push(id);
+          return Promise.resolve(retained(id, "trash"));
+        },
+      }),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+
+    expect(asked, "pressing Delete must not move anything on its own").toEqual([]);
+    const dialog = screen.getByRole("alertdialog");
+    expect(dialog.textContent).toContain("trash folder inside your storage root");
+    expect(dialog.textContent).toContain("7 days");
+    expect(dialog.textContent).toContain("Nothing in the application restores it");
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: "Delete this session" }),
+    );
+  });
+
+  it("test_keeping_it_moves_nothing", async () => {
+    const user = userEvent.setup();
+    const asked: string[] = [];
+    await renderWith(
+      <SessionDetail id={ID} onBack={noop} />,
+      servicesReturning({
+        getSession: () => Promise.resolve(detail()),
+        deleteSession: (id: string) => {
+          asked.push(id);
+          return Promise.resolve(retained(id, "trash"));
+        },
+      }),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+    await user.click(screen.getByRole("button", { name: "Keep it" }));
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Delete" }));
+
+    expect(asked).toEqual([]);
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+  });
+
+  it("test_confirming_moves_the_session_and_leaves_the_view", async () => {
+    const user = userEvent.setup();
+    const asked: [string, number][] = [];
+    let left = 0;
+    await renderWith(
+      <SessionDetail
+        id={ID}
+        onBack={() => {
+          left += 1;
+        }}
+      />,
+      servicesReturning({
+        getSession: () => Promise.resolve(detail()),
+        deleteSession: (id: string, days: number) => {
+          asked.push([id, days]);
+          return Promise.resolve(retained(id, "trash"));
+        },
+      }),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+    await user.click(screen.getByRole("button", { name: "Delete this session" }));
+
+    expect(asked).toEqual([[ID, 7]]);
+    expect(left, "the session is no longer listed, so the view must leave it").toBe(1);
+  });
+
+  it("test_archiving_says_it_is_kept_indefinitely_rather_than_naming_a_window", async () => {
+    const user = userEvent.setup();
+    await renderWith(
+      <SessionDetail id={ID} onBack={noop} />,
+      servicesReturning({ getSession: () => Promise.resolve(detail()) }),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Archive" }));
+
+    const dialog = screen.getByRole("alertdialog");
+    expect(dialog.textContent).toContain("kept");
+    expect(dialog.textContent).toContain("indefinitely");
+    expect(
+      dialog.textContent,
+      "the archive is never swept, so naming a window would be false",
+    ).not.toContain("7 days");
+  });
+
+  it("test_a_delete_is_refused_until_the_configured_window_is_known", async () => {
+    // Naming the default while the real value is still unread would be
+    // a false statement about a reader's recording, and nothing
+    // re-checks the number after the confirmation.
+    await renderWith(
+      <SessionDetail id={ID} onBack={noop} />,
+      servicesReturning({
+        getSession: () => Promise.resolve(detail()),
+        settingsSummary: () => new Promise(() => undefined),
+      }),
+    );
+
+    expect(screen.getByRole("button", { name: "Delete" })).toHaveProperty("disabled", true);
+    expect(screen.getByText("Reading how long the trash is kept.")).toBeTruthy();
+  });
+
+  it("test_archiving_does_not_wait_on_a_window_it_never_names", async () => {
+    // The archive is kept indefinitely, so an unread retention window
+    // is no reason to withhold it. Sharing one confirmation with the
+    // delete made this easy to get wrong.
+    const user = userEvent.setup();
+    const asked: string[] = [];
+    await renderWith(
+      <SessionDetail id={ID} onBack={noop} />,
+      servicesReturning({
+        getSession: () => Promise.resolve(detail()),
+        settingsSummary: () => new Promise(() => undefined),
+        archiveSession: (id: string) => {
+          asked.push(id);
+          return Promise.resolve(retained(id, "archive"));
+        },
+      }),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Archive" }));
+    expect(screen.getByRole("alertdialog").textContent).toContain("indefinitely");
+    await user.click(screen.getByRole("button", { name: "Archive this session" }));
+
+    expect(asked).toEqual([ID]);
+  });
+
+  it("test_retention_actions_are_not_offered_while_a_recording_is_in_flight", async () => {
+    await renderWith(
+      <SessionDetail id={ID} onBack={noop} />,
+      servicesReturning({
+        getSession: () => Promise.resolve(detail()),
+        recordingStatus: () => Promise.resolve(idle({ state: "recording" })),
+      }),
+    );
+
+    expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Archive" })).toBeNull();
   });
 });

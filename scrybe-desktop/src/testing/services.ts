@@ -8,6 +8,7 @@ import type {
   SessionRepair,
   SessionRow,
   SessionRows,
+  RetentionOutcome,
   SettingsSummary,
   TranscriptWindow,
 } from "../generated/bindings";
@@ -41,6 +42,8 @@ export function servicesReturning(overrides: Partial<Scrybe> = {}): Scrybe {
     repairSession: () => Promise.resolve(repaired()),
     regenerateNotes: () => Promise.resolve(regenerated()),
     revealSession: () => Promise.resolve(),
+    deleteSession: (id: string) => Promise.resolve(retained(id, "trash")),
+    archiveSession: (id: string) => Promise.resolve(retained(id, "archive")),
     copyNotes: () => Promise.resolve(),
     copyTranscript: () => Promise.resolve(),
     settingsSummary: () => Promise.resolve(settings()),
@@ -167,6 +170,10 @@ export function regenerated(
   };
 }
 
+export function retained(id: string, destination: "trash" | "archive"): RetentionOutcome {
+  return { id, destination, retention_days: 7 };
+}
+
 export function settings(overrides: Partial<SettingsSummary> = {}): SettingsSummary {
   return {
     config_path: "/configured/config.toml",
@@ -178,6 +185,7 @@ export function settings(overrides: Partial<SettingsSummary> = {}): SettingsSumm
     notes_provider: "stub",
     notes_model: "none",
     hosted_credential_required: false,
+    trash_retention_days: 7,
     warnings: [],
     ...overrides,
   };

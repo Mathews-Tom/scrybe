@@ -2,6 +2,7 @@ import { useState } from "react";
 
 import { useScrybe } from "../../ipc/ScrybeProvider";
 import { useStorageRootRevision } from "../library";
+import { useRecording } from "../recording/useRecording";
 import { useQuery } from "../useQuery";
 import { PlaybackPanel } from "./PlaybackPanel";
 import { SessionActions, type Outcome } from "./SessionActions";
@@ -10,6 +11,7 @@ import { TranscriptPanel } from "./TranscriptPanel";
 
 /** Which document the reader is looking at. */
 type Document = "notes" | "transcript";
+
 
 /**
  * One session, read-only.
@@ -33,11 +35,15 @@ type Document = "notes" | "transcript";
  */
 export function SessionDetail({ id, onBack }: { id: string; onBack: () => void }) {
   const scrybe = useScrybe();
+  const recording = useRecording();
   const storage = useStorageRootRevision();
   const [acted, setActed] = useState(0);
   const [outcome, setOutcome] = useState<Outcome | null>(null);
   const revision = `${storage.toString()}:${acted.toString()}:${id}`;
   const session = useQuery(() => scrybe.getSession(id), revision);
+  // Read for one number: the retention window a delete confirmation has
+  // to name before the move rather than after it.
+  const settings = useQuery(() => scrybe.settingsSummary(), storage.toString());
   const [shown, setShown] = useState<Document>("notes");
 
   // Adjusting state during rendering rather than in an effect: `storage`
@@ -91,6 +97,15 @@ export function SessionDetail({ id, onBack }: { id: string; onBack: () => void }
       <SessionFacts detail={detail} />
       <SessionActions
         session={detail}
+        retentionDays={settings.status === "ready" ? settings.value.trash_retention_days : null}
+        retentionAvailable={recording.startEnabled}
+        onRetained={(result) => {
+          // The session is no longer listed, so there is nothing here
+          // left to describe. Going back re-reads the list, which is
+          // where the reader now needs to be.
+          setOutcome(result);
+          onBack();
+        }}
         onFinished={(result) => {
           setOutcome(result);
           // The session's state, its artifacts, and therefore what it

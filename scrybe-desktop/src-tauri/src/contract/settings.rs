@@ -63,6 +63,12 @@ pub struct SettingsSummary {
     /// local/offline indicator from this; the credential itself never
     /// leaves Rust.
     pub hosted_credential_required: bool,
+    /// Days a deleted session stays in the trash.
+    ///
+    /// Here because a delete confirmation has to name the window
+    /// *before* the move, and the outcome that reports it afterwards
+    /// arrives too late to say what is about to happen.
+    pub trash_retention_days: u32,
     pub warnings: Vec<SettingsWarning>,
 }
 
@@ -80,6 +86,7 @@ impl From<ConfigSnapshot> for SettingsSummary {
             notes_model: form.llm_model,
             hosted_credential_required: form.stt_requires_hosted_credential
                 || form.llm_requires_hosted_credential,
+            trash_retention_days: form.storage_trash_retention_days,
             warnings: snapshot
                 .diagnostics
                 .into_iter()

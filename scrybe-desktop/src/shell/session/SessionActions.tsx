@@ -1,8 +1,9 @@
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 
 import type { SessionDetail } from "../../generated/bindings";
 import { useScrybe } from "../../ipc/ScrybeProvider";
 import { describe } from "../useQuery";
+import { ConfirmRetention, useRetention } from "./retention";
 
 /** What an action did, in the words the reader is shown. */
 export interface Outcome {
@@ -29,14 +30,32 @@ interface Action {
  * session would need; one that is present and does nothing but fail is
  * worse.
  *
- * Every action is a read or a recovery. None of them deletes anything,
- * and the only document any of them replaces is `notes.md`.
+ * Two of them move the session out of the listing, and both state
+ * where it goes before they do it. Everything else is a read or a
+ * recovery, and the only document any of them replaces is `notes.md`.
  */
 export function SessionActions({
   session,
+  retentionDays,
+  retentionAvailable,
   onFinished,
+  onRetained,
 }: {
   session: SessionDetail;
+  /**
+   * Days a deleted session stays in the trash, as configured, or `null`
+   * while that read is still in flight.
+   *
+   * Passed in rather than hardcoded so the confirmation cannot go on
+   * saying seven after a reader changes it. `null` blocks the delete
+   * rather than falling back to the default: nothing re-checks the
+   * number after the confirmation, so a confirmation naming a window
+   * this installation does not use would be a false statement about
+   * what is about to happen to a reader's recording.
+   */
+  retentionDays: number | null;
+  /** False while recording or saving, when moving any session is unsafe. */
+  retentionAvailable: boolean;
   /**
    * Reported upward rather than rendered here, because a successful
    * action re-reads the session and this strip is rebuilt from the
@@ -44,10 +63,28 @@ export function SessionActions({
    * exactly when the reader went looking for it.
    */
   onFinished: (outcome: Outcome) => void;
+  /**
+   * The session is no longer listed, so this strip and the view around
+   * it are about to describe something that is not there. Re-reading
+   * would only produce a refusal; the caller leaves instead.
+   */
+  onRetained: (outcome: Outcome) => void;
 }) {
   const scrybe = useScrybe();
   const reason = useId();
   const [running, setRunning] = useState<string | null>(null);
+  const retention = useRetention((result) => {
+    if (result.kind === "note") {
+      onRetained(result);
+    } else {
+      onFinished(result);
+    }
+  });
+  useEffect(() => {
+    if (!retentionAvailable && retention.pending !== null) {
+      retention.cancel();
+    }
+  }, [retentionAvailable, retention.pending, retention]);
 
   function run(action: Action) {
     setRunning(action.key);
@@ -106,12 +143,18 @@ export function SessionActions({
   ];
 
   return (
-    <ul className="session-actions">
+    <>
+      <ul className="session-actions">
         {actions.map((action) => (
           <li key={action.key}>
             <button
               type="button"
-              disabled={action.blocked !== null || running !== null}
+              disabled={
+                action.blocked !== null ||
+                running !== null ||
+                retention.running !== null ||
+                retention.pending !== null
+              }
               aria-describedby={action.blocked === null ? undefined : `${reason}-${action.key}`}
               onClick={() => {
                 run(action);
@@ -125,8 +168,66 @@ export function SessionActions({
               </span>
             )}
           </li>
-      ))}
-    </ul>
+        ))}
+      </ul>
+      {retentionAvailable ? (
+        <>
+          <ul className="session-actions">
+            <li>
+              <button
+                type="button"
+                disabled={retention.running !== null || retention.pending !== null}
+                onClick={() => {
+                  retention.ask(session.id, "archive");
+                }}
+              >
+                Archive
+              </button>
+            </li>
+            <li>
+              <button
+                type="button"
+                disabled={
+                  retentionDays === null ||
+                  retention.running !== null ||
+                  retention.pending !== null
+                }
+                aria-describedby={retentionDays === null ? `${reason}-delete` : undefined}
+                onClick={() => {
+                  retention.ask(session.id, "delete");
+                }}
+              >
+                Delete
+              </button>
+              {retentionDays === null ? (
+                <span id={`${reason}-delete`} className="session-actions__why">
+                  Reading how long the trash is kept.
+                </span>
+              ) : null}
+            </li>
+          </ul>
+          {retention.pending === null ? null : (
+            <ConfirmRetention
+              what={retention.pending.what}
+              // Only a delete names the window, and the delete control is
+              // disabled until it is known, so a pending delete always has
+              // one. The archive is kept indefinitely and names no number.
+              retentionDays={retentionDays ?? 0}
+              onProceed={() => {
+                if (retention.pending !== null) {
+                  retention.proceed(
+                    retention.pending.id,
+                    retention.pending.what,
+                    retentionDays ?? 0,
+                  );
+                }
+              }}
+              onCancel={retention.cancel}
+            />
+          )}
+        </>
+      ) : null}
+    </>
   );
 }
 
