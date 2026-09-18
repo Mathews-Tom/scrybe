@@ -1,8 +1,73 @@
 # Installing scrybe
 
-scrybe ships unsigned binaries through v1.x. macOS Gatekeeper is addressed at install time rather than at build time because Apple Developer ID enrollment remains deliberately out of scope.
+The native macOS application is signed with Scrybe's stable community certificate, not an Apple Developer ID certificate, and is not notarized. Gatekeeper therefore rejects the first launch until the user explicitly chooses **Open Anyway**. Scrybe does not currently participate in the paid Apple Developer Program. CLI archives remain protected by release checksums and Sigstore provenance rather than Apple platform trust.
 
 This document covers the qualified macOS product path. Linux and Windows recording remain parked until their hardware qualification paths resume.
+
+---
+
+## macOS desktop application — DMG
+
+Download the DMG for the Mac's architecture from the [latest GitHub release](https://github.com/Mathews-Tom/scrybe/releases/latest):
+
+| DMG | Mac |
+|---|---|
+| `Scrybe_<version>_aarch64.dmg` | Apple silicon |
+| `Scrybe_<version>_x86_64.dmg` | Intel |
+
+Download `SHA256SUMS.txt`, `SHA256SUMS.txt.sig`, and `SHA256SUMS.txt.pem` from the same release. Verify the workflow identity first, then the downloaded DMG:
+
+```sh
+cosign verify-blob \
+  --certificate SHA256SUMS.txt.pem \
+  --signature SHA256SUMS.txt.sig \
+  --certificate-identity-regexp "^https://github.com/Mathews-Tom/scrybe/.github/workflows/release.yml@refs/tags/v[0-9].*$" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  SHA256SUMS.txt
+shasum -a 256 -c SHA256SUMS.txt --ignore-missing
+```
+
+Abort unless Cosign prints `Verified OK` and the DMG line ends in `OK`. Open the DMG and drag `Scrybe.app` to the Applications shortcut. The supported installation location is `/Applications/Scrybe.app`.
+
+The first launch is expected to display “Apple cannot check it for malicious software” or “the developer cannot be verified.” This is not a notarization claim: the application is deliberately self-signed and unnotarized. Follow [Apple's Open Anyway procedure](https://support.apple.com/en-us/102445):
+
+1. Try to open Scrybe once and dismiss the warning.
+2. Open **System Settings → Privacy & Security**.
+3. Scroll to Security and click **Open Anyway** for Scrybe.
+4. Confirm the warning by clicking **Open**.
+
+Do not disable Gatekeeper globally and do not strip the quarantine attribute. Open Anyway records a narrow exception for this application.
+
+Verify the embedded community certificate after installation:
+
+```sh
+TMP_CERTS="$(mktemp -d)"
+(cd "$TMP_CERTS" && codesign -d --extract-certificates /Applications/Scrybe.app)
+shasum -a 256 "$TMP_CERTS/codesign0"
+rm -rf "$TMP_CERTS"
+```
+
+The certificate SHA-256 must be:
+
+```text
+a75f69039cdc924ab3b211f7ec973e541d24895d742819bed8576d4e815f5570
+```
+
+`codesign --verify --deep --strict /Applications/Scrybe.app` must succeed. `spctl --assess --type execute /Applications/Scrybe.app` remains rejected because the certificate is not Apple-trusted and the app has no notarization ticket.
+
+Application updates have a separate authenticity boundary. The app verifies each updater archive with the embedded Minisign public key before installation; the archive also contains an app signed with the same community certificate. Changing either key fails closed. The updater never treats the self-signed certificate as Apple notarization.
+
+### Duplicate application entries
+
+Launchers index every application bundle they can find. The canonical native installation is `/Applications/Scrybe.app`. Older development installs at `~/Applications/scrybe.app` and `~/Applications/Scrybe Desktop.app`, plus bundles under repository `target/` directories, can appear as additional Raycast or Spotlight entries.
+
+Inspect indexed copies with:
+
+```sh
+mdfind 'kMDItemContentType == "com.apple.application-bundle"' | grep -i scrybe
+```
+
+Quit every Scrybe process before cleanup. Move only confirmed legacy copies to Trash in Finder; do not delete `/Applications/Scrybe.app`. Release tooling never removes an existing application automatically.
 
 ---
 

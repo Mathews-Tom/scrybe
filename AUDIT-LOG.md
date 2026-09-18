@@ -84,3 +84,9 @@ Together they catch all three failure modes; neither alone does. Out of scope fo
 **Remediation accepted.** This entry. The original commit stands on `main`.
 
 **Future-proofing.** When narrating session history in commit-message bodies, prefer impersonal phrasing ("the executor", "the build", "the workflow") over named references to the runtime. The narrative information is preserved; the substring sweep stays clean.
+
+---
+
+## 2026-09-18 — remove the temporary `url` advisory exception
+
+The workspace now requires `url >=2.5.4, <2.6`; both lockfiles resolve `url 2.5.7` and `idna 1.1.0` under Rust 1.95. The temporary `RUSTSEC-2024-0421` exceptions were removed from `audit.toml`, `deny.toml`, and both CI audit commands. The historical v0.1.0 triage entry remains unchanged because the rollback and its rationale were accurate for that release.

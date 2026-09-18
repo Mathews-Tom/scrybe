@@ -212,49 +212,62 @@ Expected v2.0.0 asset names include:
 - `scrybe-sbom.cdx.json`
 - `SHA256SUMS.txt`
 
-## Installed Qualification
+## Native Application Qualification
 
-Run the desktop scenarios against the built bundle before authorizing anything. They need a real macOS login session, so they run locally rather than in CI:
+Run every desktop scenario from a real macOS login session:
 
 ```sh
 python3 scripts/qualify-desktop-app.py --hermetic --scenario lifecycle
 python3 scripts/qualify-desktop-app.py --hermetic --scenario setup
+python3 scripts/qualify-desktop-app.py --hermetic --scenario model-download-live
 python3 scripts/qualify-desktop-app.py --hermetic --scenario library
 python3 scripts/qualify-desktop-app.py --hermetic --scenario recording
-python3 scripts/qualify-desktop-app.py --hermetic --scenario installed
+python3 scripts/qualify-desktop-app.py --hermetic --scenario installed --trust-profile community
+python3 scripts/qualify-desktop-app.py --hermetic --scenario retention
 ```
 
-The first four must report `ok`. `installed` must not: it drives a copy of the bundle from outside the build tree, records a session and reads it back through the reader, reads the tray's accessible names out of the running application, and then stops at the credential wall and fails. Read its failure rather than skipping past it — the one check that fails should be `shippable: the installed copy carries a Developer ID identity Gatekeeper admits`, and nothing else. A second failure is a regression, and a green run means a check has stopped being able to fail.
+Every scenario must report `ok`. `model-download-live` is release-only: it downloads the checked-in production artifact from its immutable Hugging Face URL, verifies all 487,614,201 bytes and the catalog SHA-256, atomically promotes it inside a disposable model root, and deletes that root afterward. Do not run it in routine CI.
 
-Two things this qualification still does not establish, stated so neither is mistaken for covered:
+The installed scenario needs a human-granted Accessibility permission for the invoking terminal. It reads the status item's `Scrybe` name and all tray actions from the native accessibility tree. It then applies the community trust contract, which must prove all of these facts:
 
-- **The in-app model download has never run against Hugging Face in the shape that ships.** `setup` drives the real transport with the shipped feature selection against a fixture on loopback, so the confirmation gate, the free-space rejection, the digest failure, the cancellation, and the atomic promotion are all driven for real. What is untested is the real host: third-party TLS, half a gigabyte of transfer, and a digest whose failure would mean the upstream artifact changed rather than that Scrybe did. That belongs in a scheduled lane that re-measures the catalog's URL and digest — a supply-chain question about an upstream artifact, not a qualification of this application — and no such lane exists yet.
-- **The tray's status item exposes no accessible name.** Its menu items do — `Record now`, `Stop  save`, `Open Scrybe`, `Quit Scrybe`, which `installed` asserts — but the status item itself reports `null` with the generic platform description `status menu`, so a screen reader announces "status menu" rather than Scrybe. Found by reading the accessibility tree; not fixed here.
+- the app is signed with `Scrybe Community Distribution`;
+- the embedded certificate SHA-256 is `a75f69039cdc924ab3b211f7ec973e541d24895d742819bed8576d4e815f5570`;
+- the bundle identifier is `dev.scrybe.desktop`;
+- `codesign` reports an internally valid signature;
+- Gatekeeper reports `rejected`;
+- no Apple notarization ticket is stapled.
 
-## Signed Artifacts
-
-No step in this runbook can produce a signed, notarized macOS artifact today, and this section exists so that is a stated stop rather than something discovered late. The assertions that would check one are written and reviewable; they cannot pass, and they say why.
+Run the artifact gate over both release surfaces:
 
 ```sh
-python3 scripts/check-signed-artifact.py --bundle ./scrybe.app
+python3 scripts/check-community-artifact.py \
+  --bundle scrybe-desktop/src-tauri/target/release/bundle/macos/Scrybe.app \
+  --dmg scrybe-desktop/src-tauri/target/release/bundle/dmg/Scrybe_${VERSION}_${ARCH}.dmg
 ```
 
-Three assertions, in order:
+Gatekeeper rejection is an expected limitation, not a skipped check and not an Apple-trust claim. The application is self-signed and unnotarized because the project has no paid Apple Developer Program membership. Users must verify the signed checksum manifest and follow Apple's documented Open Anyway flow in `INSTALL.md`.
 
-- **Signature** reads the `Authority` and `TeamIdentifier` lines out of `codesign -dvvv` and requires a Developer ID Application identity whose two statements of its own team agree.
-- **Gatekeeper** parses the verdict word out of `spctl -a -vv --type execute` and requires `accepted` from a notarized source.
-- **Notarization** reads the status Apple returns for a submission from `xcrun notarytool info`, requires exactly `Accepted`, and requires a ticket Apple issued to be stapled to the bundle.
+## Updater Trust
 
-`codesign --verify` appears in none of them. An ad-hoc-signed bundle built from this repository returned exit 0 from `codesign --verify --deep --strict` while `spctl` reported `rejected`: it answers whether a signature is internally consistent, never who signed. `spctl`'s exit status is not used either — the same `rejected` verdict was measured at exit 3 in one environment and exit 0 in another, so an assertion written against it would have passed in one of them.
+Updater authenticity is independent of macOS platform trust. Tauri signs the compressed application archive with the offline updater key; the application contains only its public key. The release must publish the archive, its `.sig`, and `latest.json`. Verify the signature independently before uploading.
 
-Exit statuses are distinct on purpose. `1` means the artifact failed an assertion. `2` means an assertion could not be measured. `3` means a required credential is absent, so nothing was attempted. A pipeline must not collapse `3` into `1` or into success: "nobody has configured signing" and "this signed artifact is bad" call for different responses, and treating either as a pass is how an unsigned bundle acquires a claim it was checked.
+`scripts/check-updater-continuity.py` compares the prior and candidate applications. It must report the same bundle identifier, designated requirement, embedded certificate fingerprint, and entitlements; a sentinel under the user-data root must retain its pre-update SHA-256. The candidate version must advance. Re-signing with any other certificate must make this check fail.
 
-What is blocked on the maintainer, and on nothing in this repository:
+The updater UI remains user-initiated and must refuse installation while a recording is preparing, active, or saving. It may install only from idle.
 
-- A **Developer ID Application** certificate, which requires an Apple Developer Program membership. Without it `packaging/macos-app/build-app.sh --sign` refuses before it signs anything, naming the absent certificate.
-- A **notarization credential** — a `notarytool` keychain profile, an App Store Connect API key, or an Apple ID with an app-specific password — and a submission identifier from the upload. Without one, the notarization assertion names every variable it wanted and asserts nothing.
+## Future Apple-Trusted Profile
 
-Until both exist, the macOS artifacts this workflow publishes are unsigned, as `.github/workflows/release.yml` and `INSTALL.md` already state, and users strip the quarantine attribute by hand. `packaging/macos-app/build-app.sh` requires an explicit signing mode with no default, so a bundle can no longer become unsigned by nobody choosing.
+The stronger gate remains available without weakening the community profile:
+
+```sh
+python3 scripts/qualify-desktop-app.py \
+  --hermetic \
+  --scenario installed \
+  --trust-profile apple-trusted
+python3 scripts/check-signed-artifact.py --bundle ./Scrybe.app
+```
+
+That profile requires a Developer ID Application identity, an Apple-accepted notarization submission, a stapled ticket, and a Gatekeeper `accepted` verdict. It remains deferred until paid Apple enrollment is explicitly approved. Never describe the community certificate, Sigstore provenance, or updater signature as a substitute for Apple notarization.
 
 ## Recovery
 

@@ -65,24 +65,6 @@ ignore = [
     # which drops the unsound `VariantStrIter` impl. Re-evaluate when
     # Linux delivery resumes or `tray-icon` ships that bump.
     { id = "RUSTSEC-2024-0429", reason = "glib 0.18 VariantStrIter unsoundness is Linux-only via tray-icon→muda→gtk-rs 0.18; Linux delivery is parked and macOS uses AppKit." },
-    # `idna 0.5.x` accepts certain malformed Punycode labels that
-    # should be rejected; patched in `idna 1.0.0`. Lockfile still
-    # carries `idna 0.5.x` via the `url 2.5.0` precise pin in the
-    # workspace `Cargo.toml`. Workspace toolchain is rustc 1.95
-    # which no longer blocks `idna 1.x`; the remaining work is a
-    # deliberate `cargo update` run that regenerates the cascade.
-    # Exposure surface is IDN-aware URL parsing not reachable from
-    # `Hook::Git`. Drop this ignore once the lockfile is regenerated.
-    #
-    # This file is also applied to the desktop host's graph, where the
-    # `Hook::Git` argument does not hold: that graph reaches
-    # `idna 0.5.0` at run time through `tauri -> url 2.5.0`, and the
-    # application does compare host names as a privilege check, in
-    # `lifecycle::navigation::permitted`. See `audit.toml` for what
-    # bounds it there — a release build admits only the `tauri` scheme,
-    # whose host is never resolved through DNS. Same remedy, same
-    # `cargo update`.
-    { id = "RUSTSEC-2024-0421", reason = "idna 0.5 Punycode validation; root graph reaches it only through Hook::Git's URL surface, desktop graph through tauri -> url 2.5.0 where the navigation guard's host comparison is bounded by its tauri-scheme-only arm; pinned via url 2.5.0 pending lockfile regeneration after the rustc 1.95 toolchain bump." },
 ]
 
 # OSI/FSF-approved permissive licenses compatible with Apache-2.0 plus

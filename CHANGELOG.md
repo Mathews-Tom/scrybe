@@ -4,6 +4,20 @@ All notable changes to scrybe are documented here. The format follows [Keep a Ch
 
 ## [Unreleased]
 
+### Added
+
+- Native macOS DMG packaging with a stable Scrybe community signing identity, explicit self-signed and unnotarized trust checks, signed updater archives, and a user-initiated in-app update flow that defers installation while recording.
+- Release-only desktop qualification for the production Hugging Face model artifact, including exact size and SHA-256 verification, atomic promotion, and disposable-root confinement.
+
+### Changed
+
+- The installed-app qualification now supports explicit `community` and `apple-trusted` profiles. The community profile treats Gatekeeper rejection and the absence of an Apple notarization ticket as required facts rather than Apple-trust success.
+- The macOS status item exposes the product name `Scrybe` to the native accessibility tree.
+
+### Security
+
+- Updated `url` to 2.5.7 and `idna` to 1.1.0 in both Rust dependency graphs, removing the `RUSTSEC-2024-0421` exception from Cargo Audit, Cargo Deny, and CI.
+
 ## [2.0.0] — 2026-09-18
 
 ### Added

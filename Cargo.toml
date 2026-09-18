@@ -80,14 +80,10 @@ toml = "0.8"
 toml_edit = "0.20"
 tracing = "0.1"
 ulid = { version = "1", features = ["serde"] }
-# `=2.5.0` precise pin: `url 2.5.x` past .0 pulls `idna 1.x` →
-# `idna_adapter 1.x` → `icu_normalizer 2.2.0`. The workspace bumped
-# rustc to 1.95 (rust-toolchain.toml) but the Cargo.lock cascade — git2
-# 0.19 → 0.20, url 2.5.0 → 2.5.x, idna 0.5 → 1.x — needs a deliberate
-# `cargo update` run that regenerates lockfile transitives. Until that
-# follow-up lands, hold the precise pin so the toolchain bump alone
-# doesn't pull in unaudited transitive crates.
-url = { version = "=2.5.0", default-features = false }
+# Keep the patched `url` series explicit: 2.5.4 fixed RUSTSEC-2024-0421.
+# Default features remain disabled so local-only Git URL parsing does not
+# acquire unrelated optional behavior.
+url = { version = ">=2.5.4, <2.6", default-features = false }
 # Mock HTTP for provider/webhook tests. Dev-only; keeps the
 # default-feature graph free of test scaffolding (the `egress-audit`
 # CI lane verifies production builds carry no network crates).
