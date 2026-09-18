@@ -1,10 +1,12 @@
 import { act, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { SessionRows } from "../../generated/bindings";
 import { renderWith } from "../../testing/render";
 import {
+  clearedPreflight,
+  preparing,
   commandFailure,
   page,
   servicesReturning,
@@ -66,26 +68,40 @@ describe("SessionsView", () => {
     expect(rows[1]?.textContent).toContain("Needs repair");
   });
 
-  it("test_sessions_beyond_one_page_says_how_many_there_are_rather_than_showing_a_page", async () => {
+  it("test_sessions_beyond_one_page_name_the_window_shown_and_offer_the_next_one", async () => {
     // The view asks for twenty and Rust answers with the total, so
-    // twenty-one sessions used to render exactly like twenty. With no
-    // paging control to go looking with, the count is the only thing
-    // that separates a complete list from a truncated one.
+    // twenty-one sessions render exactly like twenty. The count says
+    // which window this is, and the paging control is how a reader
+    // reaches the rest — before it existed, the count was all they got.
+    const user = userEvent.setup();
     const rows = Array.from({ length: 20 }, (_unused, index) =>
       session({ id: `session-${index.toString()}`, title: `Session ${index.toString()}` }),
     );
+    const asked: number[] = [];
     await renderWith(
       <SessionsView />,
       servicesReturning({
-        listSessions: () => Promise.resolve(page(rows, { total: 21, has_more: true })),
+        listSessions: (offset) => {
+          asked.push(offset);
+          return Promise.resolve(page(rows, { offset, total: 21, has_more: offset === 0 }));
+        },
       }),
     );
 
     expect(screen.getAllByRole("listitem")).toHaveLength(20);
-    expect(screen.getByText("Showing the first 20 of 21.")).toBeDefined();
+    expect(screen.getByText("Showing 1–20 of 21.")).toBeDefined();
     expect(screen.getByRole("list").getAttribute("aria-describedby")).toBe(
-      screen.getByText("Showing the first 20 of 21.").id,
+      screen.getByText("Showing 1–20 of 21.").id,
     );
+    // On the first window there is nowhere earlier to go.
+    expect(screen.getByRole("button", { name: "Previous" })).toHaveProperty(
+      "disabled",
+      true,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Next" }));
+
+    expect(asked).toContain(20);
   });
 
   it("test_sessions_that_fit_in_one_page_say_nothing_about_a_count", async () => {
@@ -210,6 +226,13 @@ describe("SessionsView", () => {
     // Each row is one control, not a region with a control inside it. A
     // separate `Open` button beside every row would double the number of
     // stops between the top of the list and the bottom of it.
+    //
+    // The toolbar's title field and its record action precede the list
+    // in the document, so they take the first two stops. They are
+    // stepped past deliberately rather than ignored: a reader meets the
+    // action before the list, which is the order this view is specified
+    // to present.
+    const TOOLBAR_STOPS = 2;
     const user = userEvent.setup();
     const rows = Array.from({ length: 20 }, (_unused, index) =>
       session({ id: `session-${index.toString()}`, title: `Session ${index.toString()}` }),
@@ -222,7 +245,7 @@ describe("SessionsView", () => {
     );
     const reached: Element[] = [];
 
-    for (let stop = 0; stop < 21; stop += 1) {
+    for (let stop = 0; stop < TOOLBAR_STOPS + 21; stop += 1) {
       await user.tab();
       if (document.activeElement !== null) {
         reached.push(document.activeElement);
@@ -230,13 +253,59 @@ describe("SessionsView", () => {
     }
 
     expect(
-      reached.slice(0, 20).map((stop) => stop.textContent.split("Complete")[0]),
+      reached
+        .slice(TOOLBAR_STOPS, TOOLBAR_STOPS + 20)
+        .map((stop) => stop.textContent.split("Complete")[0]),
     ).toEqual(rows.map((row) => row.title));
-    // The twenty-first tab leaves the list rather than finding a
-    // twenty-first stop in it: the page held twenty, and the count
-    // beside it is what says there are more.
-    expect(reached[20]).toBe(document.body);
-    expect(screen.getByText("Showing the first 20 of 200.")).toBeDefined();
+    // The stop after the twentieth row is the paging control rather
+    // than a twenty-first row: the window held twenty. `Next` and not
+    // `Previous`, because this is the first window and a disabled
+    // button takes no stop at all.
+    expect((reached[TOOLBAR_STOPS + 20] as HTMLElement).textContent).toBe("Next");
+    expect(screen.getByText("Showing 1–20 of 200.")).toBeDefined();
+  });
+
+  it("test_the_sessions_view_offers_a_record_action_and_starts_a_recording_from_it", async () => {
+    // What would have to break for this to fail: the record action
+    // leaving this view, or no longer reaching the host. The approved
+    // design puts the action in the view a reader arrives in, not only
+    // behind its own destination.
+    const user = userEvent.setup();
+    const startRecording = vi.fn(() => Promise.resolve(preparing()));
+    await renderWith(
+      <SessionsView />,
+      servicesReturning({
+        listSessions: () => Promise.resolve(page([session()])),
+        startRecording,
+      }),
+    );
+
+    const record = screen.getByRole("button", { name: "Record now" });
+    expect(record).toHaveProperty("disabled", false);
+    await user.type(screen.getByLabelText("Title"), "budget review");
+    await user.click(record);
+
+    expect(startRecording).toHaveBeenCalledWith("budget review");
+  });
+
+  it("test_an_installation_that_cannot_record_offers_the_action_disabled_rather_than_absent", async () => {
+    // What would have to break for this to fail: the action ignoring
+    // readiness. Hiding it instead would leave a reader with nothing to
+    // explain why recording is unavailable; the Setup destination is
+    // what carries that, and it is only findable if the action stays.
+    await renderWith(
+      <SessionsView />,
+      servicesReturning({
+        listSessions: () => Promise.resolve(page([session()])),
+        recordingPreflight: () =>
+          Promise.resolve(clearedPreflight({ can_record: false })),
+      }),
+    );
+
+    expect(screen.getByRole("button", { name: "Record now" })).toHaveProperty(
+      "disabled",
+      true,
+    );
   });
 
   it("test_returning_to_the_window_re_reads_the_storage_root", async () => {
@@ -330,6 +399,27 @@ describe("SearchView", () => {
     expect(cancelled).toEqual([issued[0]]);
   });
 
+  it("test_a_search_runs_as_the_reader_types_without_asking_for_it", async () => {
+    // What would have to break for this to fail: the view going back to
+    // waiting on a submit. A reader who types a word and stops should
+    // be looking at its results, not at a button they have to find.
+    const user = userEvent.setup();
+    await renderWith(
+      <SearchView />,
+      servicesReturning({
+        searchSessions: () =>
+          Promise.resolve(page([session({ title: "budget review" })])),
+      }),
+    );
+
+    await user.type(
+      screen.getByRole("searchbox", { name: "Search transcripts and notes" }),
+      "budget",
+    );
+
+    // No click, no Enter.
+    expect(await screen.findByText("budget review")).toBeDefined();
+  });
   it("test_a_slow_answer_cannot_replace_the_answer_to_a_newer_search", async () => {
     // The whole point of naming a query: a search abandoned mid-flight
     // may still finish, and the row it would render is the answer to a
