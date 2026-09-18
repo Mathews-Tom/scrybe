@@ -155,18 +155,68 @@ pub fn request_quit(app: &tauri::AppHandle) {
             let label = state_label(in_flight);
             crate::note!(app, "quit-deferred", label);
             eprintln!("scrybe-desktop: finishing the recording before quitting ({label})");
-            // A stop from the termination source. Idempotent: if the
-            // reader already pressed `Stop & save`, the controller
-            // reports `AlreadyStopping` and this changes nothing.
-            let _ = crate::recording::request_stop(app, StopSource::Termination);
-            // The exit itself is not taken here. `exit_when_settled`,
-            // attached to the transition observer, exits the moment the
-            // recording reaches a terminal state — so the process
-            // leaves when the session is durable rather than when a
-            // timer says it probably is.
-            app.state::<PendingQuit>().arm();
+            let desktop = app.state::<Desktop>();
+            let pending = app.state::<PendingQuit>();
+            let settled = defer_quit(
+                desktop.application().recording(),
+                &pending,
+                || {
+                    // A stop from the termination source. Idempotent:
+                    // if the reader already pressed `Stop & save`, the
+                    // controller reports `AlreadyStopping` and this
+                    // changes nothing.
+                    let _ = crate::recording::request_stop(app, StopSource::Termination);
+                },
+                || {},
+            );
+            if let Some(state) = settled {
+                crate::note!(app, "quit-accepted", state_label(state));
+                app.exit(0);
+            }
         }
     }
+}
+
+/// Arms `pending`, requests a stop, then rechecks the controller
+/// directly rather than trusting the transition observer alone.
+///
+/// Before this existed, arming happened only after the stop request
+/// returned. A recording that reached a terminal state in the gap
+/// between the caller's read (which decided to defer) and the flag
+/// going up found nothing armed when its own transition fired, so the
+/// observer's call to [`exit_when_settled`] was a no-op — and arming
+/// afterward had nothing left to wake, because no further transition
+/// fires for a recording that already settled. The process hung until
+/// force-quit, and the flag stayed primed to fire early against
+/// whichever later recording settled next.
+///
+/// `between_read_and_arm` runs first, before the flag goes up.
+/// Production passes one that does nothing; `tests::request_quit`
+/// below passes one that blocks until a concurrent terminal transition
+/// has already landed — including the (then-unarmed, so no-op)
+/// observer call that transition triggers — which is what makes the
+/// gap this closes reproducible on every run instead of won by luck.
+/// The function is Tauri-free by design, so that test drives it
+/// directly against a real [`RecordingController`] and [`PendingQuit`]
+/// with no mock application involved.
+///
+/// Returns the state this call itself must report, if any. `Some`
+/// only when the recording had already reached a terminal state by
+/// the time this returned *and* this call — not the observer — is the
+/// one that consumed `pending`'s flag; the observer already having
+/// taken it, or the recording still being in flight, both mean nothing
+/// left for this call to report.
+fn defer_quit(
+    controller: &scrybe_application::recording::RecordingController,
+    pending: &PendingQuit,
+    request_stop: impl FnOnce(),
+    between_read_and_arm: impl FnOnce(),
+) -> Option<RecordingState> {
+    between_read_and_arm();
+    pending.arm();
+    request_stop();
+    let state = controller.snapshot().state;
+    (state.is_terminal() && pending.take()).then_some(state)
 }
 
 /// Whether a quit is waiting for a recording to finish.
@@ -224,6 +274,11 @@ const fn state_label(state: RecordingState) -> &'static str {
 mod tests {
     use super::*;
 
+    use std::sync::mpsc;
+    use std::sync::Arc;
+
+    use scrybe_application::{ScrybeApplication, StorageRoot};
+
     #[test]
     fn test_quit_while_idle_exits_immediately() {
         assert_eq!(quit_decision(RecordingState::Idle), Quit::Now);
@@ -268,5 +323,73 @@ mod tests {
         // refusing would strand the process.
         assert_eq!(quit_decision(RecordingState::Completed), Quit::Now);
         assert_eq!(quit_decision(RecordingState::Failed), Quit::Now);
+    }
+
+    /// The exact race B-4 named: a recording that reaches a terminal
+    /// state in the gap between the read that decided to defer and
+    /// the flag going up must still be reported, not lost. Channel
+    /// synchronized rather than sleep-based: the hook blocks
+    /// `defer_quit` until a concurrent thread has driven the
+    /// controller to `Failed` and run the check the transition
+    /// observer would itself have run at that point, proving that
+    /// check found nothing armed, exactly as it would in production,
+    /// before letting `defer_quit` proceed to arm and recheck. Run
+    /// many times because a race proven on one interleaving proves
+    /// nothing about the next.
+    #[test]
+    fn test_a_recording_settling_between_the_read_and_the_arm_still_exits() {
+        const ATTEMPTS: usize = 50;
+        for attempt in 0..ATTEMPTS {
+            let directory = tempfile::tempdir().unwrap();
+            let application = ScrybeApplication::new(
+                StorageRoot::new(directory.path()),
+                directory.path().join("config.toml"),
+            );
+            let controller = Arc::clone(application.recording());
+            controller.begin_preparing().unwrap();
+            controller.mark_recording().unwrap();
+
+            let pending = Arc::new(PendingQuit::default());
+
+            let (go_tx, go_rx) = mpsc::channel::<()>();
+            let (landed_tx, landed_rx) = mpsc::channel::<()>();
+
+            let settler_controller = Arc::clone(&controller);
+            let settler_pending = Arc::clone(&pending);
+            let settler = std::thread::spawn(move || {
+                go_rx.recv().unwrap();
+                settler_controller
+                    .fail("induced for the race test")
+                    .unwrap();
+                // Stands in for the transition observer's own call to
+                // `exit_when_settled`, which at this exact point in a
+                // real application is what runs. It must find nothing
+                // armed yet, since `defer_quit` has not reached `arm`
+                // yet; that is the no-op the bug relied on.
+                let state = settler_controller.snapshot().state;
+                let took_too_early = state.is_terminal() && settler_pending.take();
+                let observer_message =
+                    format!("attempt {attempt}: the observer must not have anything to take yet");
+                assert!(!took_too_early, "{observer_message}");
+                landed_tx.send(()).unwrap();
+            });
+
+            let settled = defer_quit(
+                &controller,
+                &pending,
+                || {},
+                || {
+                    go_tx.send(()).unwrap();
+                    landed_rx.recv().unwrap();
+                },
+            );
+
+            settler.join().unwrap();
+
+            let lost_message = format!(
+                "attempt {attempt}: a recording that settled in the gap between the read and the arm must still be reported by this call, not lost"
+            );
+            assert_eq!(settled, Some(RecordingState::Failed), "{lost_message}");
+        }
     }
 }
