@@ -34,15 +34,16 @@
 // below takes `State` that way whether or not it consumes it.
 #![allow(clippy::needless_pass_by_value)]
 
+use chrono::Utc;
 use scrybe_application::paging::PageRequest;
 use scrybe_application::recording::RecordingOverrides;
-use scrybe_application::sessions::{ConfiguredNotesGenerator, SearchRequest};
+use scrybe_application::sessions::{ConfiguredNotesGenerator, Destination, SearchRequest};
 use scrybe_application::{ApplicationError, ErrorCode, SessionRef};
 use tauri::{Manager, State};
 
 use crate::contract::{
-    CommandFailure, NotesRegeneration, PreflightView, RecordingStatus, SessionDetail, SessionNotes,
-    SessionRepair, SessionRows, SettingsSummary, TranscriptWindow,
+    CommandFailure, NotesRegeneration, PreflightView, RecordingStatus, RetentionOutcome,
+    SessionDetail, SessionNotes, SessionRepair, SessionRows, SettingsSummary, TranscriptWindow,
 };
 use crate::state::Desktop;
 
@@ -61,6 +62,8 @@ pub const COMMANDS: &[&str] = &[
     "repair_session",
     "regenerate_notes",
     "reveal_session",
+    "delete_session",
+    "archive_session",
     "copy_notes",
     "copy_transcript",
     "settings_summary",
@@ -432,4 +435,78 @@ pub fn recording_preflight(desktop: State<'_, Desktop>) -> Result<PreflightView,
     )
     .map(|(_, report)| report.into())
     .map_err(Into::into)
+}
+
+/// Moves a session to the trash, where the launch sweep will remove it
+/// once the configured window has passed.
+///
+/// The reader has already confirmed. This is the point at which the
+/// recording state is checked, because a confirmation dialog cannot
+/// know what happened while it was open: a reader who opened it, went
+/// to a meeting and pressed record would otherwise have a session
+/// moved out from under a running capture.
+///
+/// # Errors
+///
+/// A refusal when no session answers to the identity, when a recording
+/// is in flight, when the destination already holds a folder of that
+/// name, or when the move or the retention index cannot be written.
+#[tauri::command(async)]
+pub fn delete_session(
+    desktop: State<'_, Desktop>,
+    id: SessionRef,
+    retention_days: u32,
+) -> Result<RetentionOutcome, CommandFailure> {
+    let configured = desktop
+        .application()
+        .config()
+        .snapshot()?
+        .form
+        .storage_trash_retention_days;
+    if retention_days != configured {
+        return Err(ApplicationError::new(
+            ErrorCode::ConfigInvalid,
+            "trash retention changed; review the delete confirmation and try again",
+        )
+        .into());
+    }
+    retain(&desktop, id, Destination::Trash, configured)
+}
+
+/// Moves a session to the archive, which the sweep never touches.
+///
+/// # Errors
+///
+/// As `delete_session`.
+#[tauri::command(async)]
+pub fn archive_session(
+    desktop: State<'_, Desktop>,
+    id: SessionRef,
+) -> Result<RetentionOutcome, CommandFailure> {
+    retain(&desktop, id, Destination::Archive, 0)
+}
+
+/// The one route both retention commands take.
+///
+/// The recording permit spans resolution and the move, so no recording
+/// can start after the state check and race the directory operation.
+fn retain(
+    desktop: &State<'_, Desktop>,
+    id: SessionRef,
+    destination: Destination,
+    retention_days: u32,
+) -> Result<RetentionOutcome, CommandFailure> {
+    let _permit = desktop.application().recording().retention_permit()?;
+    let detail = desktop.application().sessions().get_session(&id)?;
+    desktop.application().retention().retain(
+        &detail.id,
+        destination,
+        Utc::now(),
+        retention_days,
+    )?;
+    Ok(RetentionOutcome {
+        id: detail.id,
+        destination: destination.into(),
+        retention_days,
+    })
 }

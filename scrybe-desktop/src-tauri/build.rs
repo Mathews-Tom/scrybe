@@ -30,6 +30,8 @@ const COMMANDS: &[&str] = &[
     "repair_session",
     "regenerate_notes",
     "reveal_session",
+    "delete_session",
+    "archive_session",
     "copy_notes",
     "copy_transcript",
     "settings_summary",

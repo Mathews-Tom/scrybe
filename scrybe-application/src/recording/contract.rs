@@ -62,6 +62,18 @@ impl RecordingState {
     pub const fn is_terminal(self) -> bool {
         matches!(self, Self::Completed | Self::Failed)
     }
+
+    /// Whether a session may be moved out of the listing right now.
+    ///
+    /// `Preparing` has no session folder yet and `Recording` and
+    /// `Saving` are both writing one — `Saving` especially, because
+    /// finalization is the window between a reader's stop and a durable
+    /// session, and a move during it corrupts what is being written.
+    /// Refusing only while `Recording` would leave exactly that hole.
+    #[must_use]
+    pub const fn permits_retention(self) -> bool {
+        matches!(self, Self::Idle | Self::Completed | Self::Failed)
+    }
 }
 
 /// Which boundary a recording attempt failed at.

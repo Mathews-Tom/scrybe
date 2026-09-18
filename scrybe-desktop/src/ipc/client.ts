@@ -10,6 +10,7 @@ import {
   type RecordingProgressView,
   type RecordingStatus,
   type RecordingTransition,
+  type RetentionOutcome,
   type SessionDetail,
   type SessionNotes,
   type SessionRepair,
@@ -36,6 +37,8 @@ export const COMMANDS = [
   "repair_session",
   "regenerate_notes",
   "reveal_session",
+  "delete_session",
+  "archive_session",
   "copy_notes",
   "copy_transcript",
   "settings_summary",
@@ -124,6 +127,26 @@ export function regenerateNotes(id: string): Promise<NotesRegeneration> {
  */
 export async function revealSession(id: string): Promise<void> {
   await invoke<null>("reveal_session", { id });
+}
+
+/**
+ * Moves a session to the trash, where the sweep at the next launch
+ * removes it once the retention window has passed.
+ *
+ * The reader has already confirmed. The host checks the recording state
+ * at this point rather than trusting the caller, because a confirmation
+ * dialog cannot know what happened while it was open.
+ */
+export async function deleteSession(
+  id: string,
+  retentionDays: number,
+): Promise<RetentionOutcome> {
+  return invoke<RetentionOutcome>("delete_session", { id, retentionDays });
+}
+
+/** Moves a session to the archive, which the sweep never touches. */
+export async function archiveSession(id: string): Promise<RetentionOutcome> {
+  return invoke<RetentionOutcome>("archive_session", { id });
 }
 
 /** Puts a session's durable notes on the system clipboard. */
