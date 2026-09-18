@@ -20,7 +20,7 @@ members = [
 # literal — are propagated from here by
 # `scripts/check-version-agreement.py --write` and held to this value by
 # the same script's default check.
-version = "1.6.0"
+version = "2.0.0"
 authors = ["Mathews Tom"]
 edition = "2021"
 homepage = "https://github.com/Mathews-Tom/scrybe"

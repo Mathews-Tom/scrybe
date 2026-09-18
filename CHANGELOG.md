@@ -4,6 +4,8 @@ All notable changes to scrybe are documented here. The format follows [Keep a Ch
 
 ## [Unreleased]
 
+## [2.0.0] — 2026-09-18
+
 ### Added
 
 - A desktop application. `scrybe-desktop` holds a React interface hosted by Tauri, built as a macOS application with a floor of macOS 13. Launching it opens one Sessions window and creates one persistent tray item; closing the window hides it while the process and tray stay available, the tray reopens and focuses the window and rebuilds it if it was destroyed, a second launch activates the running application instead of starting another one, and quitting exits immediately when nothing is recording. The sidebar navigates Sessions, Search, and Settings, every control has an accessible name and is reachable by keyboard, and the appearance follows the system's light and dark setting and its Reduce Motion preference. A status indicator reports in words whether a hosted provider is configured, so a local-only installation says so rather than leaving it to be inferred. The application reads the same configuration file and storage root the command-line tool does, including the `SCRYBE_CONFIG` override.
