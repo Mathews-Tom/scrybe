@@ -486,19 +486,30 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-dist@0.25.1
+      # The checked-in artifact a human reads before authorizing a
+      # publication has to describe the manifests as they are now, or it
+      # is worse than no artifact. This is the step that says so.
+      - name: publish order artifact is current
+        run: python3 scripts/publish-order.py --check
       # Package together because the current internal dependency versions do
       # not exist in crates.io until each release publishes them first.
+      #
+      # The set and its order are derived from each manifest's own `publish`
+      # field, not restated here. A list typed into this file is what omitted
+      # `scrybe-widgets` until `cargo package -p scrybe` failed on it, and a
+      # list cannot notice that a publishable package has come to depend on a
+      # private one — `scripts/publish-order.py` fails on exactly that.
       - name: package crates.io graph
-        run: >-
-          cargo package
-          -p scrybe-meeting-core
-          -p scrybe-meeting-application
-          -p scrybe-meeting-capture-mac
-          -p scrybe-meeting-capture-mic
-          -p scrybe-widgets
-          -p scrybe
-          --locked
-          --no-verify
+        run: |
+          set -euo pipefail
+          # Read into an array rather than splitting a string, and without
+          # `mapfile`: macOS ships bash 3.2, and a command a maintainer
+          # cannot run locally is a command nobody checks before pushing.
+          PACKAGES=()
+          while IFS= read -r token; do PACKAGES+=("$token"); done \
+            < <(python3 scripts/publish-order.py --cargo-args)
+          echo "derived publish set: ${PACKAGES[*]}"
+          cargo package "${PACKAGES[@]}" --locked --no-verify
       # cargo-dist 0.25 ships its binary as `dist`, not `cargo-dist`, so
       # `cargo dist plan` fails with "no such command: dist".
       - name: dist plan
