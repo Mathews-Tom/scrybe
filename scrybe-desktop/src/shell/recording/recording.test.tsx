@@ -238,12 +238,10 @@ describe("RecordingView", () => {
   /** Renders the view over a set of services and waits for its first read. */
   async function view(overrides: Parameters<typeof servicesReturning>[0] = {}) {
     const scrybe = servicesReturning(overrides);
-    await renderWith(
-      <RecordingWatcher>
-        <RecordingView />
-      </RecordingWatcher>,
-      scrybe,
-    );
+    // `renderWith` mounts the watcher, exactly as `AppShell` does. A
+    // second one here would nest, and the view would read a snapshot
+    // fed by a different listener than the one this test drives.
+    await renderWith(<RecordingView />, scrybe);
     return scrybe;
   }
 

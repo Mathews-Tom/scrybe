@@ -1,4 +1,4 @@
-import { useRef, useState, type SubmitEvent } from "react";
+import { useEffect, useRef, useState, type SubmitEvent } from "react";
 
 import type { SessionRows } from "../../generated/bindings";
 import { useScrybe } from "../../ipc/ScrybeProvider";
@@ -9,6 +9,16 @@ import { useQuery } from "../useQuery";
 
 const PAGE = 20;
 
+/**
+ * How long a reader stops typing before the search runs.
+ *
+ * Long enough that a word is not searched letter by letter, short
+ * enough to feel like the list is following. Every keystroke past this
+ * still supersedes whatever is in flight by name, so the cost of
+ * guessing low is a cancelled query rather than a wrong answer.
+ */
+const SETTLE_MS = 200;
+
 const NOTHING_ASKED: SessionRows = { rows: [], offset: 0, total: 0, has_more: false };
 
 export function SearchView() {
@@ -16,7 +26,24 @@ export function SearchView() {
   const revision = useStorageRootRevision();
   const [query, setQuery] = useState("");
   const [submitted, setSubmitted] = useState("");
+  // What the query settled to. A reader who is still typing has not
+  // asked anything yet; one who has paused has, and pressing the button
+  // or Enter asks immediately rather than waiting out the delay.
+  useEffect(() => {
+    if (query === submitted) {
+      return undefined;
+    }
+    const timer = setTimeout(() => {
+      setSubmitted(query);
+    }, SETTLE_MS);
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [query, submitted]);
   const [opened, setOpened] = useState<string | null>(null);
+  // Reset with the query: page three of a previous search is not a
+  // window into this one.
+  const [offset, setOffset] = useState(0);
   // The identifier the search still in flight carries, so the next
   // search can abandon it by name.
   const live = useRef<string | null>(null);
@@ -40,13 +67,13 @@ export function SearchView() {
           console.error("scrybe: a superseded search could not be cancelled", error);
         });
       }
-      return scrybe.searchSessions(requestId, submitted, 0, PAGE);
+      return scrybe.searchSessions(requestId, submitted, offset, PAGE);
     },
     // What identifies the request: the query asked, and a storage root
     // that may have changed under the last answer. The revision is
     // digits, so the first colon separates the two unambiguously
     // however the query is spelled.
-    `${revision.toString()}:${submitted}`,
+    `${revision.toString()}:${offset.toString()}:${submitted}`,
   );
 
   function search(event: SubmitEvent<HTMLFormElement>) {
@@ -92,6 +119,7 @@ export function SearchView() {
         <SessionList
           query={results}
           empty={`Nothing matches “${submitted}”.`}
+          pager={{ onPage: setOffset }}
           onOpen={setOpened}
         />
       )}

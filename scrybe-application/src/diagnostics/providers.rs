@@ -240,10 +240,16 @@ fn diagnose_model_partials(models: &ModelManager, findings: &mut Vec<DiagnosticF
 }
 
 fn diagnose_notes_endpoint(config: &Config, findings: &mut Vec<DiagnosticFinding>) {
-    let Some(address) = loopback_address(&config.llm.base_url) else {
+    let Some(addresses) = loopback_addresses(&config.llm.base_url) else {
         return;
     };
-    if TcpStream::connect_timeout(&address, PROBE_TIMEOUT).is_ok() {
+    // Any one answering means the provider is up. A provider bound to
+    // one family refuses the other, and that refusal is not an answer
+    // about the provider.
+    if addresses
+        .iter()
+        .any(|address| TcpStream::connect_timeout(address, PROBE_TIMEOUT).is_ok())
+    {
         findings.push(super::service::finding(
             DiagnosticCode::NotesProviderReachable,
             Severity::Info,
@@ -286,7 +292,7 @@ fn diagnose_notes_endpoint(config: &Config, findings: &mut Vec<DiagnosticFinding
 /// on a machine this code does not control. Checking only the spelling
 /// and then dialling whatever came back would turn the guarantee in
 /// this module's header into a statement about how a string is written.
-fn loopback_address(value: &str) -> Option<SocketAddr> {
+fn loopback_addresses(value: &str) -> Option<Vec<SocketAddr>> {
     let (host, port) = spelled_loopback(value)?;
     resolved_loopback((host.as_str(), port).to_socket_addrs().ok()?)
 }
@@ -316,17 +322,29 @@ fn spelled_loopback(value: &str) -> Option<(String, u16)> {
     Some((host, url.port_or_known_default()?))
 }
 
-/// The address `resolved` would be dialled at, but only when that
-/// address is itself loopback.
+/// Every address `resolved` would be dialled at, and only if all of
+/// them are loopback.
 ///
-/// The first entry and no other, because the first is the one a
-/// connection would use. Refusing outright when it is not loopback,
-/// rather than searching the rest for one that is, means a resolver
-/// answering with a routable address is a refusal instead of a
-/// connection that happened to land somewhere acceptable.
-fn resolved_loopback(mut resolved: impl Iterator<Item = SocketAddr>) -> Option<SocketAddr> {
-    let address = resolved.next()?;
-    address.ip().is_loopback().then_some(address)
+/// All of them rather than the first, because a real client dials each
+/// in turn and this probe has to answer the same question the client
+/// would. `localhost` resolves to `::1` before `127.0.0.1` on a default
+/// macOS, and a provider bound only to `127.0.0.1` — which is what
+/// Ollama does — refuses the connection on `::1`. Taking the first and
+/// stopping there reported "nothing is answering" about a provider that
+/// was answering, which is the same class of false statement this
+/// module exists to avoid.
+///
+/// Refusing outright when *any* resolved address is not loopback,
+/// rather than filtering those out and dialling the rest, keeps the
+/// guarantee in this module's header intact: a resolver that answers
+/// with a routable address is a refusal, not a connection that happened
+/// to land somewhere acceptable.
+fn resolved_loopback(resolved: impl Iterator<Item = SocketAddr>) -> Option<Vec<SocketAddr>> {
+    let addresses: Vec<SocketAddr> = resolved.collect();
+    if addresses.is_empty() || !addresses.iter().all(|address| address.ip().is_loopback()) {
+        return None;
+    }
+    Some(addresses)
 }
 
 fn describe(reason: &crate::models::ModelFailure) -> String {
@@ -395,8 +413,8 @@ mod tests {
         // correctly. Before the fix this resolved to `None` and the
         // notes probe silently never ran.
         assert_eq!(
-            loopback_address("http://[::1]:11434/v1"),
-            Some(SocketAddr::from((Ipv6Addr::LOCALHOST, 11434)))
+            loopback_addresses("http://[::1]:11434/v1"),
+            Some(vec![SocketAddr::from((Ipv6Addr::LOCALHOST, 11434))])
         );
     }
 
@@ -410,19 +428,31 @@ mod tests {
     }
 
     #[test]
-    fn test_a_resolution_whose_first_answer_is_routable_is_refused_outright() {
-        // Not searched past. A resolver that puts a routable address
-        // first is a resolver this code refuses to trust for the rest.
+    fn test_a_resolution_carrying_any_routable_answer_is_refused_outright() {
+        // Not filtered down to the acceptable ones. A resolver that
+        // answers for `localhost` with a routable address is a resolver
+        // this code refuses to trust for the rest of its answers,
+        // whichever position that address arrives in.
         let outward = SocketAddr::from((Ipv4Addr::new(93, 184, 216, 34), 11434));
         let inward = SocketAddr::from((Ipv4Addr::LOCALHOST, 11434));
         assert_eq!(resolved_loopback([outward, inward].into_iter()), None);
+        assert_eq!(resolved_loopback([inward, outward].into_iter()), None);
     }
 
     #[test]
-    fn test_an_address_that_is_loopback_is_returned_for_dialling() {
-        let v4 = SocketAddr::from((Ipv4Addr::LOCALHOST, 11434));
-        assert_eq!(resolved_loopback(std::iter::once(v4)), Some(v4));
+    fn test_every_loopback_address_is_returned_so_each_family_is_tried() {
+        // The defect this replaced: `localhost` resolves to `::1`
+        // before `127.0.0.1` on a default macOS, and a provider bound
+        // only to `127.0.0.1` — which is what Ollama does — refuses the
+        // connection on `::1`. Keeping only the first reported that a
+        // running provider was not answering.
         let v6 = SocketAddr::from((Ipv6Addr::LOCALHOST, 11434));
-        assert_eq!(resolved_loopback(std::iter::once(v6)), Some(v6));
+        let v4 = SocketAddr::from((Ipv4Addr::LOCALHOST, 11434));
+        assert_eq!(
+            resolved_loopback([v6, v4].into_iter()),
+            Some(vec![v6, v4]),
+            "both families must survive, in the order a client would dial them"
+        );
+        assert_eq!(resolved_loopback(std::iter::empty()), None);
     }
 }

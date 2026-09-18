@@ -34,7 +34,7 @@ path = "src/main.rs"
 # while a user who pressed `Download and verify this model` got told
 # the build carried no transport and handed a `Try again` button that
 # could never work.
-default = ["model-download", "notes-generation", "mic-capture"]
+default = ["model-download", "whisper-local", "notes-generation", "mic-capture"]
 # The managed model transport.
 #
 # Enabling it is the only thing in this tree that turns on
@@ -63,6 +63,16 @@ notes-generation = ["scrybe-application/notes-generation"]
 # about the build rather than a label — and a preflight on such a build
 # refuses a microphone source instead of clearing one it cannot open.
 mic-capture = ["scrybe-application/mic-capture"]
+# The transcription runtime that loads the model this host downloads. On
+# by default, because the shipped application offers `Download and
+# verify this model` and a build without this could fetch 487 MB it has
+# no way to load: the preflight would clear the download, then refuse
+# the recording with "a whisper.cpp model file is configured, but this
+# build carries no model runtime". The transport and the runtime that
+# consumes what it fetched are two separate features, and shipping the
+# first without the second is what made a fully-granted installation
+# unable to record.
+whisper-local = ["scrybe-application/whisper-local"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

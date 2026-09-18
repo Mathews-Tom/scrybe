@@ -1,6 +1,7 @@
 import { useId } from "react";
+import type { ReactNode } from "react";
 
-import type { SessionProgress, SessionRow } from "../generated/bindings";
+import type { SessionProgress, SessionRow, SessionRows } from "../generated/bindings";
 import type { Query } from "./useQuery";
 
 const PROGRESS_LABEL: Record<SessionProgress, string> = {
@@ -97,10 +98,24 @@ function group(rows: SessionRow[]): DateGroup[] {
 export function SessionList({
   query,
   empty,
+  emptyAction,
+  pager,
   onOpen,
 }: {
-  query: Query<{ rows: SessionRow[]; total: number }>;
+  query: Query<SessionRows>;
   empty: string;
+  /**
+   * Offered beside the empty text so the state that describes having
+   * nothing also provides the way out of it. Optional, because a
+   * filtered list's emptiness is not something an action can fix.
+   */
+  emptyAction?: ReactNode;
+  /**
+   * Moves the window this list is showing. Optional: a caller that
+   * reads one page and never offers another should not render controls
+   * that go nowhere.
+   */
+  pager?: { onPage: (offset: number) => void };
   onOpen: (id: string) => void;
 }) {
   const truncation = useId();
@@ -117,9 +132,16 @@ export function SessionList({
   }
   const { rows, total } = query.value;
   if (rows.length === 0) {
-    return <p>{empty}</p>;
+    return (
+      <div className="session-list__empty">
+        <p>{empty}</p>
+        {emptyAction}
+      </div>
+    );
   }
+  const { offset } = query.value;
   const truncated = total > rows.length;
+  const page = pager ?? null;
 
   return (
     <>
@@ -153,9 +175,31 @@ export function SessionList({
       ))}
       {truncated ? (
         <p id={truncation} className="session-list__truncation">
-          {`Showing the first ${rows.length.toString()} of ${total.toString()}.`}
+          {`Showing ${(offset + 1).toString()}–${(offset + rows.length).toString()} of ${total.toString()}.`}
         </p>
       ) : null}
+      {page === null ? null : (
+        <nav className="session-list__pages" aria-label="Pages of sessions">
+          <button
+            type="button"
+            disabled={offset === 0}
+            onClick={() => {
+              page.onPage(Math.max(0, offset - rows.length));
+            }}
+          >
+            Previous
+          </button>
+          <button
+            type="button"
+            disabled={!query.value.has_more}
+            onClick={() => {
+              page.onPage(offset + rows.length);
+            }}
+          >
+            Next
+          </button>
+        </nav>
+      )}
     </>
   );
 }
