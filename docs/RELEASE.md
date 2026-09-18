@@ -212,6 +212,25 @@ Expected v1.6.0 asset names include:
 - `scrybe-sbom.cdx.json`
 - `SHA256SUMS.txt`
 
+## Installed Qualification
+
+Run the desktop scenarios against the built bundle before authorizing anything. They need a real macOS login session, so they run locally rather than in CI:
+
+```sh
+python3 scripts/qualify-desktop-app.py --hermetic --scenario lifecycle
+python3 scripts/qualify-desktop-app.py --hermetic --scenario setup
+python3 scripts/qualify-desktop-app.py --hermetic --scenario library
+python3 scripts/qualify-desktop-app.py --hermetic --scenario recording
+python3 scripts/qualify-desktop-app.py --hermetic --scenario installed
+```
+
+The first four must report `ok`. `installed` must not: it drives a copy of the bundle from outside the build tree, records a session and reads it back through the reader, reads the tray's accessible names out of the running application, and then stops at the credential wall and fails. Read its failure rather than skipping past it — the one check that fails should be `shippable: the installed copy carries a Developer ID identity Gatekeeper admits`, and nothing else. A second failure is a regression, and a green run means a check has stopped being able to fail.
+
+Two things this qualification still does not establish, stated so neither is mistaken for covered:
+
+- **The in-app model download has never run against Hugging Face in the shape that ships.** `setup` drives the real transport with the shipped feature selection against a fixture on loopback, so the confirmation gate, the free-space rejection, the digest failure, the cancellation, and the atomic promotion are all driven for real. What is untested is the real host: third-party TLS, half a gigabyte of transfer, and a digest whose failure would mean the upstream artifact changed rather than that Scrybe did. That belongs in a scheduled lane that re-measures the catalog's URL and digest — a supply-chain question about an upstream artifact, not a qualification of this application — and no such lane exists yet.
+- **The tray's status item exposes no accessible name.** Its menu items do — `Record now`, `Stop  save`, `Open Scrybe`, `Quit Scrybe`, which `installed` asserts — but the status item itself reports `null` with the generic platform description `status menu`, so a screen reader announces "status menu" rather than Scrybe. Found by reading the accessibility tree; not fixed here.
+
 ## Signed Artifacts
 
 No step in this runbook can produce a signed, notarized macOS artifact today, and this section exists so that is a stated stop rather than something discovered late. The assertions that would check one are written and reviewable; they cannot pass, and they say why.
