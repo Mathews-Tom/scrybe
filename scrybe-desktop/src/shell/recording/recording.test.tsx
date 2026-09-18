@@ -10,6 +10,7 @@ import type {
 import { ScrybeProvider } from "../../ipc/ScrybeProvider";
 import { renderWith } from "../../testing/render";
 import { clearedPreflight, servicesReturning } from "../../testing/services";
+import { RecordingWatcher } from "./RecordingWatcher";
 import { RecordingView } from "./RecordingView";
 import { elapsedLabel, useRecording } from "./useRecording";
 
@@ -39,9 +40,19 @@ function refusedBy(code: string, message: string): Promise<never> {
   return Promise.reject({ code, message });
 }
 
+/**
+ * Every test below exercises `useRecording`/`RecordingView` against a
+ * `RecordingWatcher`, exactly as `AppShell` mounts one in the running
+ * application. `RecordingWatcher` is the only reader of a terminal
+ * recording's outcome, so mounting one directly here — rather than the
+ * whole `AppShell` — is what lets these tests exercise `RecordingView`
+ * in isolation while still matching what it renders under.
+ */
 function withServices(scrybe: ReturnType<typeof servicesReturning>) {
   return ({ children }: { children: React.ReactNode }) => (
-    <ScrybeProvider scrybe={scrybe}>{children}</ScrybeProvider>
+    <ScrybeProvider scrybe={scrybe}>
+      <RecordingWatcher>{children}</RecordingWatcher>
+    </ScrybeProvider>
   );
 }
 
@@ -227,7 +238,12 @@ describe("RecordingView", () => {
   /** Renders the view over a set of services and waits for its first read. */
   async function view(overrides: Parameters<typeof servicesReturning>[0] = {}) {
     const scrybe = servicesReturning(overrides);
-    await renderWith(<RecordingView />, scrybe);
+    await renderWith(
+      <RecordingWatcher>
+        <RecordingView />
+      </RecordingWatcher>,
+      scrybe,
+    );
     return scrybe;
   }
 

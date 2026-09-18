@@ -1,8 +1,9 @@
-import { screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { commandFailure, servicesReturning, settings } from "../testing/services";
+import type { RecordingStatus, RecordingTransition } from "../generated/bindings";
+import { commandFailure, idle, servicesReturning, settings } from "../testing/services";
 import { renderWith } from "../testing/render";
 import { AppShell } from "./AppShell";
 import { ROUTES, defaultRoute } from "./routes";
@@ -114,5 +115,55 @@ describe("AppShell", () => {
     const dot = container.querySelector(".app-shell__status-dot");
 
     expect(dot?.getAttribute("aria-hidden")).toBe("true");
+  });
+
+  /**
+   * The regression this guards: `acknowledge_recording` used to be
+   * called only from `RecordingView`, which is mounted by one route
+   * among several. A recording driven from the tray, a hotkey, or the
+   * signal bridge while the reader is on a different route — here,
+   * the shell's own default, `Sessions` — has no `RecordingView`
+   * mounted to acknowledge it, and `RecordingState::accepts_start`
+   * would refuse every surface a second start until one did. This
+   * test never renders `RecordingView` at all.
+   */
+  it("test_shell_acknowledges_a_terminal_recording_even_when_the_record_route_was_never_opened", async () => {
+    let deliver: ((transition: RecordingTransition) => void) | undefined;
+    const acknowledgeRecording = vi
+      .fn<() => Promise<RecordingStatus>>()
+      .mockResolvedValue(idle());
+    const recordingStatus = vi
+      .fn<() => Promise<RecordingStatus>>()
+      .mockResolvedValue(idle({ state: "completed", elapsed_ms: 4_000 }));
+
+    await renderWith(
+      <AppShell />,
+      servicesReturning({
+        recordingStatus,
+        acknowledgeRecording,
+        onRecordingTransition: (onTransition) => {
+          deliver = onTransition;
+          return Promise.resolve(() => undefined);
+        },
+      }),
+    );
+
+    // Confirms the premise: the reader is on Sessions, not Record.
+    expect(screen.getByRole("heading", { level: 1, name: "Sessions" })).toBeDefined();
+
+    act(() => {
+      deliver?.({
+        schema_version: 1,
+        sequence: 1,
+        from: "saving",
+        to: "completed",
+        elapsed_ms: 4_000,
+        failure_summary: null,
+      });
+    });
+
+    await waitFor(() => {
+      expect(acknowledgeRecording).toHaveBeenCalledTimes(1);
+    });
   });
 });
