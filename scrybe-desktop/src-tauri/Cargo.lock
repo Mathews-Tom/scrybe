@@ -3620,7 +3620,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "scrybe-desktop"
-version = "1.6.0"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3642,7 +3642,7 @@ dependencies = [
 
 [[package]]
 name = "scrybe-meeting-application"
-version = "1.6.0"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3664,7 +3664,7 @@ dependencies = [
 
 [[package]]
 name = "scrybe-meeting-capture-mic"
-version = "1.6.0"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "cpal",
@@ -3677,7 +3677,7 @@ dependencies = [
 
 [[package]]
 name = "scrybe-meeting-core"
-version = "1.6.0"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3701,7 +3701,7 @@ dependencies = [
 
 [[package]]
 name = "scrybe-widgets"
-version = "1.6.0"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "crossbeam-channel",

@@ -25,7 +25,7 @@ git pull --ff-only origin main
 git status --short
 ```
 
-Confirm main CI is green and the release commit is the expected v1.6.0 preparation commit:
+Confirm main CI is green and the release commit is the expected v2.0.0 preparation commit:
 
 ```sh
 gh run list --branch main --limit 5 --json status,conclusion,workflowName,headSha
@@ -115,7 +115,7 @@ cargo publish -p scrybe-meeting-core --locked
 Wait until the exact version resolves:
 
 ```sh
-cargo info scrybe-meeting-core@1.6.0 --registry crates-io
+cargo info scrybe-meeting-core@2.0.0 --registry crates-io
 ```
 
 Then dry-run and publish the shared application services, which depend on core. This is a first publication: nothing of this name is on the registry, so there is no prior version and no way back:
@@ -128,7 +128,7 @@ cargo publish -p scrybe-meeting-application --locked
 Wait until the exact version resolves:
 
 ```sh
-cargo info scrybe-meeting-application@1.6.0 --registry crates-io
+cargo info scrybe-meeting-application@2.0.0 --registry crates-io
 ```
 
 Then dry-run and publish the capture packages:
@@ -143,8 +143,8 @@ cargo publish -p scrybe-meeting-capture-mic --locked
 Wait until both exact versions resolve:
 
 ```sh
-cargo info scrybe-meeting-capture-mac@1.6.0 --registry crates-io
-cargo info scrybe-meeting-capture-mic@1.6.0 --registry crates-io
+cargo info scrybe-meeting-capture-mac@2.0.0 --registry crates-io
+cargo info scrybe-meeting-capture-mic@2.0.0 --registry crates-io
 ```
 
 Then dry-run and publish the presentation surfaces. This is a first publication: nothing of this name is on the registry, so there is no prior version and no way back:
@@ -157,7 +157,7 @@ cargo publish -p scrybe-widgets --locked
 Wait until the exact version resolves:
 
 ```sh
-cargo info scrybe-widgets@1.6.0 --registry crates-io
+cargo info scrybe-widgets@2.0.0 --registry crates-io
 ```
 
 Dry-run and publish the application last. It pins every package above with an exact version, so it cannot resolve until all of them are on the registry:
@@ -183,27 +183,27 @@ CARGO_HOME="$LOCKED_CARGO_HOME" rustup run 1.95.0 cargo install scrybe --locked 
 "$LOCKED_INSTALL_ROOT/bin/scrybe" --version
 ```
 
-Both version commands must report `scrybe 1.6.0`. `doctor` and `record --help` must execute without a repository checkout. Run Doctor from a terminal and decline the optional live permission probe during this registry-only acceptance; the release's hardware qualification covers the real probes separately.
+Both version commands must report `scrybe 2.0.0`. `doctor` and `record --help` must execute without a repository checkout. Run Doctor from a terminal and decline the optional live permission probe during this registry-only acceptance; the release's hardware qualification covers the real probes separately.
 
 ## Publish the GitHub Release
 
 Create an annotated tag on the same commit used for crates.io:
 
 ```sh
-git tag -a v1.6.0 -m "v1.6.0"
-git push origin v1.6.0
+git tag -a v2.0.0 -m "v2.0.0"
+git push origin v2.0.0
 ```
 
 The tag triggers `.github/workflows/release.yml`. Wait for its plan, Apple Silicon build, Intel build, and release jobs:
 
 ```sh
 gh run list --workflow release.yml --limit 1
-gh release view v1.6.0
+gh release view v2.0.0
 ```
 
 Download every asset into an empty directory and verify `SHA256SUMS.txt`. Execute the installed published binary, confirm its Mach-O UUID, and run the self-signed bundle smoke from `INSTALL.md`.
 
-Expected v1.6.0 asset names include:
+Expected v2.0.0 asset names include:
 
 - `scrybe-aarch64-apple-darwin.tar.xz`
 - `scrybe-x86_64-apple-darwin.tar.xz`
@@ -261,9 +261,9 @@ Until both exist, the macOS artifacts this workflow publishes are unsigned, as `
 If a crates.io upload succeeds, that package version cannot be replaced. Yank a defective version only to prevent new resolution:
 
 ```sh
-cargo yank --vers 1.6.0 scrybe
+cargo yank --vers 2.0.0 scrybe
 ```
 
 Fix forward with a new patch version when accepted bytes are defective. Never move or recreate an existing release tag after users can install its crates.io package.
 
-If the GitHub workflow fails before publishing a usable release, fix the workflow on main and cut a new patch version. Do not retag v1.6.0 after crates.io publication because the registry package and source tag must remain permanently aligned.
+If the GitHub workflow fails before publishing a usable release, fix the workflow on main and cut a new patch version. Do not retag v2.0.0 after crates.io publication because the registry package and source tag must remain permanently aligned.

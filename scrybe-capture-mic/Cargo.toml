@@ -28,7 +28,7 @@ live-mic = ["dep:cpal"]
 async-trait.workspace = true
 cpal = { version = "0.15", optional = true }
 futures.workspace = true
-scrybe-core = { package = "scrybe-meeting-core", path = "../scrybe-core", version = "=1.6.0" }
+scrybe-core = { package = "scrybe-meeting-core", path = "../scrybe-core", version = "=2.0.0" }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 tracing.workspace = true
