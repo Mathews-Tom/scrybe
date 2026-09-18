@@ -4,15 +4,16 @@ This runbook publishes the Scrybe application to crates.io and GitHub from one r
 
 ## Publish Graph
 
-Publish v1.6.0 packages in this order:
+The set and its order live in [`publish-order.md`](publish-order.md), generated from the workspace by `scripts/publish-order.py`. Read it before authorizing anything; it is the one place in this runbook that is derived rather than transcribed.
 
-1. `scrybe-meeting-core`
-2. `scrybe-meeting-application`
-3. `scrybe-meeting-capture-mac`
-4. `scrybe-meeting-capture-mic`
-5. `scrybe`
+```sh
+python3 scripts/publish-order.py         # the order
+cat docs/publish-order.md                # the artifact, with registry state
+```
 
-`scrybe-meeting-application` depends on core and must follow it. The two capture packages are independent after core is visible. The application must remain last, and it pins `scrybe-meeting-application = "=1.6.0"`, so `cargo publish -p scrybe --locked` cannot resolve until that package is on the registry.
+This section used to hold the order as a typed list, and that list omitted `scrybe-widgets` — which `scrybe` names with an exact version, and which therefore has to be on the registry before `cargo publish -p scrybe --locked` can resolve. The identical omission in `.github/workflows/ci.yml` is what broke `cargo package -p scrybe`. A list nobody derives is a list that goes stale silently, so there is no longer one here.
+
+Two packages in the set **have never been published**: `scrybe-meeting-application` and `scrybe-widgets`. Their first publication happens whenever a release version is assigned. A first publication claims the name permanently, cannot be undone, and has no prior version to diff against or roll back to. This is the most consequential fact on this page.
 
 ## Preflight
 
@@ -35,14 +36,13 @@ Confirm the crates.io credential file exists without printing its contents:
 
 ```sh
 test -f ~/.cargo/credentials.toml
-cargo owner --list scrybe
-cargo owner --list scrybe-meeting-core
-cargo owner --list scrybe-meeting-application
-cargo owner --list scrybe-meeting-capture-mac
-cargo owner --list scrybe-meeting-capture-mic
+python3 scripts/publish-order.py --names | while read -r name; do
+    echo "== $name"
+    cargo owner --list "$name" || echo "   (no such package on the registry)"
+done
 ```
 
-Every owner listing must include `Mathews-Tom`. Never print or paste the registry token.
+Every package already on the registry must list `Mathews-Tom`. The two that have never been published have no owners to list and report that they do not exist — which is the expected answer for them and the signal to re-read [`publish-order.md`](publish-order.md) before continuing. Never print or paste the registry token.
 
 Confirm every surface that carries a version still agrees with the one in `[workspace.package]`:
 
@@ -66,29 +66,25 @@ The Linux, Windows, and Android adapter packages remain private; they inherit th
 Confirm that the target version is still absent from every published package immediately before publication:
 
 ```sh
-cargo info scrybe-meeting-core@1.6.0 --registry crates-io
-cargo info scrybe-meeting-application@1.6.0 --registry crates-io
-cargo info scrybe-meeting-capture-mac@1.6.0 --registry crates-io
-cargo info scrybe-meeting-capture-mic@1.6.0 --registry crates-io
-cargo info scrybe@1.6.0 --registry crates-io
+VERSION="$(python3 -c 'import tomllib,pathlib; print(tomllib.loads(pathlib.Path("Cargo.toml").read_text())["workspace"]["package"]["version"])')"
+python3 scripts/publish-order.py --names | while read -r name; do
+    echo "== $name@$VERSION"
+    cargo info "$name@$VERSION" --registry crates-io || true
+done
 ```
 
-The expected result for each exact version is “could not find”. Stop if any immutable `1.6.0` package already exists.
+The version comes from the same `[workspace.package].version` every manifest inherits, so this block cannot check a version other than the one about to be packaged. The expected result for each exact version is “could not find”. Stop if any immutable package at that version already exists.
 
 ## Package Inspection
 
-Assemble the five packages together so Cargo can resolve their unpublished workspace dependencies:
+Assemble the whole set together so Cargo can resolve the workspace dependencies that are not on the registry yet. Take the set from the derivation rather than naming packages, which is what `.github/workflows/ci.yml`'s `dist-plan` job does:
 
 ```sh
-cargo package \
-  -p scrybe-meeting-core \
-  -p scrybe-meeting-application \
-  -p scrybe-meeting-capture-mac \
-  -p scrybe-meeting-capture-mic \
-  -p scrybe \
-  --locked \
-  --allow-dirty \
-  --no-verify
+PACKAGES=()
+while IFS= read -r token; do PACKAGES+=("$token"); done \
+  < <(python3 scripts/publish-order.py --cargo-args)
+echo "derived publish set: ${PACKAGES[*]}"
+cargo package "${PACKAGES[@]}" --locked --allow-dirty --no-verify
 ```
 
 Inspect every `.crate` archive and its normalized `Cargo.toml`. Confirm source, tests, README, license metadata, exact internal dependency versions, and package names. Reject credentials, local session artifacts, generated evidence, absolute paths, or undeclared files.
@@ -122,7 +118,7 @@ Wait until the exact version resolves:
 cargo info scrybe-meeting-core@1.6.0 --registry crates-io
 ```
 
-Then dry-run and publish the shared application services, which depend on core:
+Then dry-run and publish the shared application services, which depend on core. This is a first publication: nothing of this name is on the registry, so there is no prior version and no way back:
 
 ```sh
 cargo publish -p scrybe-meeting-application --dry-run --locked
@@ -151,7 +147,20 @@ cargo info scrybe-meeting-capture-mac@1.6.0 --registry crates-io
 cargo info scrybe-meeting-capture-mic@1.6.0 --registry crates-io
 ```
 
-Dry-run and publish the application last:
+Then dry-run and publish the presentation surfaces. This is a first publication: nothing of this name is on the registry, so there is no prior version and no way back:
+
+```sh
+cargo publish -p scrybe-widgets --dry-run --locked
+cargo publish -p scrybe-widgets --locked
+```
+
+Wait until the exact version resolves:
+
+```sh
+cargo info scrybe-widgets@1.6.0 --registry crates-io
+```
+
+Dry-run and publish the application last. It pins every package above with an exact version, so it cannot resolve until all of them are on the registry:
 
 ```sh
 cargo publish -p scrybe --dry-run --locked

@@ -1,0 +1,65 @@
+# Registry state for the crates.io packages this workspace publishes.
+#
+# `scripts/publish-order.py` derives *which* packages are publishable and
+# in *what order* from each manifest's own `publish` field and the
+# dependency graph. Neither of those can tell it what is already on the
+# registry, and that is the fact that matters most to whoever authorizes
+# a publication: a package that has never been published has no prior
+# version to compare against, no existing owners to check, and a first
+# publication that cannot be undone.
+#
+# So registry state is an input, recorded here, rather than a string
+# inside the generator. Keeping it here means it can be re-measured and
+# corrected without editing code, and it means the generator can refuse
+# to produce an order for a package whose registry state nobody has
+# recorded — which is exactly the gap that let `scrybe-widgets` reach a
+# release without anyone noticing it had never been published.
+#
+# `latest` is the highest version observed on crates.io at `measured`.
+# `latest = ""` means the package name resolves to nothing: it has never
+# been published, and the next `cargo publish` for it is a first
+# publication.
+#
+# Re-measure with (one per package, reads the registry, publishes
+# nothing):
+#
+#     cargo info <name> --registry crates-io
+#
+# The generator fails if this file does not cover exactly the derived
+# publishable set, so adding a package or marking one publishable forces
+# this record to be brought up to date in the same change.
+
+[packages.scrybe-meeting-core]
+latest = "1.6.0"
+measured = "2026-09-18"
+
+[packages.scrybe-meeting-capture-mac]
+latest = "1.6.0"
+measured = "2026-09-18"
+
+[packages.scrybe-meeting-capture-mic]
+latest = "1.6.0"
+measured = "2026-09-18"
+
+[packages.scrybe]
+latest = "1.6.0"
+measured = "2026-09-18"
+
+# Never published. `scrybe-meeting-application` carries the shared
+# session, configuration, diagnostics, and recording services that both
+# the command-line tool and the desktop application are built on, and it
+# has been a workspace member across several releases without ever
+# reaching the registry.
+[packages.scrybe-meeting-application]
+latest = ""
+measured = "2026-09-18"
+
+# Never published, and the reason the hardcoded package list in
+# `ci.yml` broke: `scrybe` names this crate with an exact version, a
+# published manifest cannot carry a bare path dependency, and that pin
+# only resolves if this crate is in the same packaged set. It was
+# `publish = false` until that failure, and it is publishable now, but
+# publishable is not published.
+[packages.scrybe-widgets]
+latest = ""
+measured = "2026-09-18"
