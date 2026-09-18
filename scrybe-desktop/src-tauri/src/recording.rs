@@ -33,14 +33,21 @@ use tauri::{Emitter, Manager};
 use crate::contract::{CommandFailure, RecordingStatus, PROGRESS_EVENT};
 use crate::state::Desktop;
 
-/// How long the synthetic source runs when it is the only one this
-/// build can open.
+/// How long the synthetic source runs before ending on its own.
 ///
-/// Only reachable on a build with no microphone adapter, where
-/// preflight has already refused every other source. A bounded length
-/// rather than an unbounded stream so the recording ends on its own if
-/// nothing stops it.
+/// Bounded rather than unbounded so a recording nobody stops still
+/// finishes.
 const SYNTHETIC_SECONDS: u64 = 60;
+
+/// How long one synthetic frame represents.
+///
+/// The generator produces its frames in-process with no pacing, which
+/// is right for a test that wants determinism and wrong for a window: a
+/// reader who presses record is shown a recording, and an unpaced
+/// source finishes a minute of audio before they can reach the stop
+/// control. Real capture arrives at real wall-clock pace, so this
+/// source is paced to match. 1,600 samples at 16 kHz is 100 ms.
+const SYNTHETIC_FRAME: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// The stop of the recording currently in flight, if there is one.
 ///
@@ -104,8 +111,12 @@ fn open(
     registry: &CaptureRegistry,
 ) -> Result<CaptureFrames, ApplicationError> {
     match plan.source {
-        CaptureSource::Synthetic => Ok(Box::pin(scrybe_application::recording::synthetic_frames(
-            SYNTHETIC_SECONDS,
+        CaptureSource::Synthetic => Ok(Box::pin(futures::stream::StreamExt::then(
+            scrybe_application::recording::synthetic_frames(SYNTHETIC_SECONDS),
+            |frame| async move {
+                tokio::time::sleep(SYNTHETIC_FRAME).await;
+                frame
+            },
         ))),
         #[cfg(feature = "mic-capture")]
         CaptureSource::Mic => scrybe_application::recording::microphone_frames(registry),

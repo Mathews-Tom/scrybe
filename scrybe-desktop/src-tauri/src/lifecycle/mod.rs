@@ -208,7 +208,8 @@ pub fn exit_when_settled(app: &tauri::AppHandle, state: RecordingState) {
 
 /// The wire spelling of a state, for the lifecycle record and the
 /// stderr message.
-const fn state_label(state: RecordingState) -> &'static str {
+#[must_use]
+pub const fn state_label(state: RecordingState) -> &'static str {
     match state {
         RecordingState::Idle => "idle",
         RecordingState::Preparing => "preparing",

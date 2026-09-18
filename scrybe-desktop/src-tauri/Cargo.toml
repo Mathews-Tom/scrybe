@@ -97,11 +97,13 @@ serde_json = "1"
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-single-instance = "2"
 ts-rs = "12"
-# `signal` only — the terminating signals this host treats as a quit
-# request rather than letting them end a recording mid-write. `tokio` is
+# `signal` for the terminating signals this host treats as a quit
+# request rather than letting them end a recording mid-write, and
+# `time` to pace the synthetic capture source to the wall clock a real
+# device arrives on. `tokio` is
 # already in this graph through `scrybe-application`; this feature set
 # is a subset of what that dependency turns on plus `signal`.
-tokio = { version = "1.42", default-features = false, features = ["macros", "rt", "signal"] }
+tokio = { version = "1.42", default-features = false, features = ["macros", "rt", "signal", "time"] }
 
 [lints.rust]
 unsafe_code = "forbid"

@@ -330,6 +330,8 @@ APPLICATION_ORIGIN = "tauri://localhost"
 # so a run drives the same dispatch the platform drives.
 TRAY_OPEN = "open"
 TRAY_QUIT = "quit"
+TRAY_RECORD = "record"
+TRAY_STOP = "stop"
 
 # Control verbs that are not tray items: the two window verbs, and the
 # navigation probe that drives the exfiltration path the policy cannot
@@ -1689,6 +1691,195 @@ def playback_probe_verb() -> str:
     return PLAYBACK_PROBE_STRINGS[0]
 
 
+def recording_transitions(candidate: Candidate) -> list[str]:
+    """Every recording transition the application recorded, in order.
+
+    The detail is `<from>-><to>` with the accepting surface appended
+    when there was one, all of them enumerated constants. Read rather
+    than inferred from artifacts, because the order two stop sources
+    were resolved in is not something a session folder can show.
+    """
+    return [
+        record["detail"]
+        for record in candidate.records()
+        if record.get("event") == "recording-transition" and record.get("detail")
+    ]
+
+
+def session_folders(root: Path) -> list[str]:
+    """Every session folder directly under `root`."""
+    if not root.is_dir():
+        return []
+    return sorted(entry.name for entry in root.iterdir() if entry.is_dir())
+
+
+def recording(candidate: Candidate, run: Run) -> None:
+    """One recording, driven end to end on the built application.
+
+    What this establishes that the unit tests cannot. Every stop source
+    is a platform event — a menu item, an accelerator, a signal — and
+    the dispatch behind each is reachable in Rust, but *that the built
+    application wires them to the dispatch at all* is not. A tray item
+    built disabled, a command absent from the capability file, a
+    permission the generated manifest does not carry: each of those
+    leaves every unit test passing and the application inert. Only
+    driving the shipped bundle's own control surface shows the
+    difference.
+
+    The recording it drives is real. The candidate's configuration
+    selects the synthetic source, which is the one this host can open
+    with no device and no permission grant, and the stub providers,
+    which reach no network. So the session folder it leaves is a real
+    session folder written by the real pipeline, and every artifact
+    asserted below was produced rather than seeded.
+    """
+    untouched = [
+        ("the real configuration file", REAL_CONFIG, snapshot(REAL_CONFIG)),
+        ("the default storage root", REAL_STORAGE_ROOT, snapshot(REAL_STORAGE_ROOT)),
+    ]
+    _recording_checks(candidate, run)
+    hermeticity(candidate, run, untouched)
+
+
+def _recording_checks(candidate: Candidate, run: Run) -> None:
+    """Everything that needs the application running."""
+    candidate.launch()
+    sockets = SocketSampler(candidate)
+    sockets.start()
+    opened = candidate.wait_for_control_socket()
+    run.assert_that(
+        "launch: the control channel opens",
+        opened,
+        f"no control socket appeared at {candidate.root / CONTROL_SOCKET}",
+    )
+    if not opened:
+        run.record("no network: every destination the application reached", [], sockets.stop())
+        return
+
+    run.record(
+        "launch: nothing has been recorded yet",
+        [],
+        session_folders(candidate.root),
+    )
+
+    # (a) The tray starts a recording. This is the dispatch a menu click
+    # reaches, so a `Record now` left disabled or wired to nothing fails
+    # here and nowhere else.
+    candidate.control(TRAY_RECORD)
+    started = candidate.wait_for_event("recording-transition", count=2, timeout=30.0)
+    run.assert_that(
+        "record: the tray started a recording",
+        started,
+        f"transitions observed: {recording_transitions(candidate)}",
+    )
+    if not started:
+        run.record("no network: every destination the application reached", [], sockets.stop())
+        return
+    run.record(
+        "record: the recording prepared and then began capturing",
+        ["idle->preparing", "preparing->recording"],
+        recording_transitions(candidate)[:2],
+    )
+
+    # (b) A second recording while one is running is refused. The
+    # controller decides this, but a host that dispatched a start
+    # without asking it would produce a second transition here.
+    candidate.control(TRAY_RECORD)
+    run.record(
+        "record: a second recording while one is running adds no transition",
+        ["idle->preparing", "preparing->recording"],
+        recording_transitions(candidate),
+    )
+
+    # (c) Two stop sources, back to back, with no wait between them.
+    # Exactly one may be accepted and exactly one finalization may
+    # begin. This is the convergence claim, driven on the application
+    # rather than on the controller.
+    candidate.control(TRAY_STOP)
+    candidate.control(TRAY_STOP)
+    saved = candidate.wait_for_event("recording-transition", count=4, timeout=120.0)
+    transitions = recording_transitions(candidate)
+    run.assert_that(
+        "stop: the recording finalized",
+        saved,
+        f"transitions observed: {transitions}",
+    )
+    run.record(
+        "stop: exactly one stop was accepted, from the tray",
+        1,
+        len([entry for entry in transitions if entry.startswith("recording->saving,")]),
+    )
+    run.record(
+        "stop: the accepted stop is attributed to the surface that asked",
+        ["recording->saving,tray"],
+        [entry for entry in transitions if entry.startswith("recording->saving")],
+    )
+    # The accepted surface stays on the snapshot until the recording
+    # settles, so this transition carries it too — which is the point:
+    # a reader told "stopped from the tray" is still told that while it
+    # saves, rather than losing the attribution at the boundary.
+    run.record(
+        "stop: exactly one finalization completed, still attributed to the tray",
+        ["saving->completed,tray"],
+        [entry for entry in transitions if entry.startswith("saving->completed")],
+    )
+    # And `acknowledge` clears it, because the attempt is over: an idle
+    # controller carrying the surface that stopped the last recording
+    # would describe a recording that is no longer running.
+    run.record(
+        "stop: the recording settled back to idle, carrying nothing from the attempt",
+        ["completed->idle"],
+        [entry for entry in transitions if entry.startswith("completed->idle")],
+    )
+
+    # (d) What the recording left. Every one of these was written by the
+    # pipeline during this run; the disposable root held nothing before
+    # (a).
+    folders = session_folders(candidate.root)
+    run.record("stop: exactly one session was written", 1, len(folders))
+    if len(folders) == 1:
+        folder = candidate.root / folders[0]
+        run.record(
+            "stop: the session holds everything a reader opens",
+            [],
+            sorted(
+                name
+                for name in ("transcript.md", "notes.md", "meta.toml", "audio.opus")
+                if not (folder / name).is_file()
+            ),
+        )
+        run.record(
+            "stop: nothing unfinished was left behind",
+            [],
+            sorted(
+                entry.name
+                for entry in folder.iterdir()
+                if entry.name.endswith(".partial") or entry.name == "journal"
+            ),
+        )
+
+    # (e) A quit with nothing in flight leaves immediately.
+    candidate.control(TRAY_QUIT)
+    exited = candidate.wait_for_exit()
+    run.assert_that(
+        "quit: the process exits once nothing is in flight",
+        exited,
+        "the application was still running after quit",
+    )
+    run.record(
+        "quit: the exit was the one the application asked for",
+        True,
+        "quit-accepted" in candidate.events(),
+    )
+    run.record(
+        "quit: nothing was deferred, because nothing was recording",
+        0,
+        candidate.events().count("quit-deferred"),
+    )
+
+    run.record("no network: every destination the application reached", [], sockets.stop())
+
+
 def library(candidate: Candidate, run: Run) -> None:
     """Reading, playing, and refusing, driven on the real application.
 
@@ -1830,6 +2021,7 @@ SCENARIOS: dict[str, Callable[[Candidate, Run], None]] = {
     "lifecycle": lifecycle,
     "setup": setup,
     "library": library,
+    "recording": recording,
 }
 
 
@@ -1847,6 +2039,11 @@ SCENARIO_COVERAGE: dict[str, str] = {
         "free-space rejection, digest failure, cancellation, atomic promotion, "
         "existing-model preservation, disposable model and configuration roots, "
         "the shipped content security policy, and every socket the process opened"
+    ),
+    "recording": (
+        "preflight, starting and stopping a recording from the tray, "
+        "the artifacts it leaves, the convergence of two stop sources on one "
+        "finalization, refusal of a second recording, the deferred quit, and egress"
     ),
     "library": (
         "the webview reaching the playback scheme at all, the bytes served for a "

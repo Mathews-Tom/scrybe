@@ -191,6 +191,25 @@ fn forward_recording_transitions(app: &tauri::AppHandle) {
             // call here against anything the controller holds would
             // present as a hang with no diagnosis.
             tray::reflect(&handle, event.to);
+            // One observation per transition, so a qualification run
+            // reads the transitions the application actually made
+            // rather than inferring them from artifacts. The detail is
+            // the two state labels and the surface that asked, all of
+            // which are enumerated constants — no path, no provider, no
+            // device, and nothing a meeting said.
+            crate::note!(
+                &handle,
+                "recording-transition",
+                &format!(
+                    "{}->{}{}",
+                    lifecycle::state_label(event.from),
+                    lifecycle::state_label(event.to),
+                    event
+                        .stop_source
+                        .map(|source| format!(",{}", source.label()))
+                        .unwrap_or_default()
+                )
+            );
             lifecycle::exit_when_settled(&handle, event.to);
         }));
 }
