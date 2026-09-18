@@ -128,7 +128,11 @@ export function useRecording(onSettled?: (settled: boolean) => void): Recording 
     let cancelled = false;
     let unlisten: (() => void) | undefined;
     void scrybe.onRecordingProgress((next) => {
-      setProgress(next);
+      // Guarded by `index` rather than set unconditionally: nothing
+      // orders delivery against the IPC event bridge, and a later step
+      // arriving after an earlier one must not un-render progress the
+      // reader has already seen move forward.
+      setProgress((previous) => (previous !== null && next.index < previous.index ? previous : next));
     }).then(
       (stop) => {
         if (cancelled) {
@@ -158,11 +162,24 @@ export function useRecording(onSettled?: (settled: boolean) => void): Recording 
       if (transition.failure_summary !== null) {
         setError(transition.failure_summary);
       }
-      // A recording that has ended, either way. A caller that wants to
-      // re-check something once per recording hooks it here rather than
-      // watching the rendered state, which settles for many renders.
       if (transition.to === "completed" || transition.to === "failed") {
+        // A recording that has ended, either way. A caller that wants
+        // to re-check something once per recording hooks it here
+        // rather than watching the rendered state, which settles for
+        // many renders.
         settled.current?.(true);
+        // The host leaves a terminal recording observable until this
+        // is acknowledged, specifically so this read lands on it
+        // rather than on whatever it settles to next. Acknowledging
+        // before this resolves would race the read back to the same
+        // lost confirmation the host no longer produces on its own.
+        void scrybe
+          .recordingStatus()
+          .then(setStatus, () => undefined)
+          .then(() => {
+            void scrybe.acknowledgeRecording();
+          });
+        return;
       }
       refresh();
     }).then(

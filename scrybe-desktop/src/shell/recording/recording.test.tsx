@@ -355,6 +355,26 @@ describe("RecordingView", () => {
     expect(screen.getByText("00:05")).toBeDefined();
   });
 
+  /**
+   * Elapsed time refreshes twice a second for the whole recording. A
+   * live region spanning both the state label and the elapsed span
+   * re-announced it that often for a screen reader user — the state
+   * label is what is worth interrupting for, and the elapsed clock is
+   * not.
+   */
+  it("keeps the live region on the state label and off the elapsed clock", async () => {
+    await view({
+      recordingStatus: () =>
+        Promise.resolve(status({ state: "recording", elapsed_ms: 5_000 })),
+    });
+
+    const label = await screen.findByText("Recording");
+    expect(label.getAttribute("aria-live")).toBe("polite");
+
+    const elapsed = screen.getByText("00:05");
+    expect(elapsed.getAttribute("aria-live")).not.toBe("polite");
+  });
+
   it("asks the host to stop when Stop & save is pressed", async () => {
     const stopRecording = vi
       .fn<() => Promise<RecordingStatus>>()
@@ -405,10 +425,87 @@ describe("RecordingView", () => {
     ).toBeDefined();
   });
 
-  it("reports a completed recording as saved", async () => {
+  /**
+   * Nothing orders delivery of the progress event against the IPC
+   * event bridge. A step that arrived after a later one must not
+   * un-render progress the reader has already seen move forward — the
+   * view would flicker backwards on every recording whose events
+   * happened to reorder.
+   */
+  it("does not let an earlier saving step replace a later one that already rendered", async () => {
+    let deliverProgress:
+      | ((progress: RecordingProgressView) => void)
+      | undefined;
     await view({
       recordingStatus: () =>
-        Promise.resolve(status({ state: "completed", elapsed_ms: 42_000 })),
+        Promise.resolve(
+          status({ state: "saving", elapsed_ms: 30_000, stop_requested: true }),
+        ),
+      onRecordingProgress: (onProgress) => {
+        deliverProgress = onProgress;
+        return Promise.resolve(() => undefined);
+      },
+    });
+
+    act(() => {
+      deliverProgress?.({
+        schema_version: 1,
+        step: "generating_notes",
+        index: 3,
+        total: 4,
+      });
+    });
+    expect(
+      await screen.findByText(/Generating the notes — step 3 of 4/),
+    ).toBeDefined();
+
+    act(() => {
+      deliverProgress?.({
+        schema_version: 1,
+        step: "encoding_audio",
+        index: 2,
+        total: 4,
+      });
+    });
+
+    expect(screen.getByText(/Generating the notes — step 3 of 4/)).toBeDefined();
+    expect(screen.queryByText(/Encoding the audio/)).toBeNull();
+  });
+
+  /**
+   * The old version of this test resolved `recordingStatus` to
+   * `completed` unconditionally, on every call, so it passed whether
+   * or not that state was ever actually reachable — which is exactly
+   * how the host self-acknowledging before this refresh could run
+   * shipped undetected. Here the first read (the view's mount) sees a
+   * still-live recording; only the read the `completed` transition
+   * itself triggers sees the terminal state, which is what the fixed
+   * host, unlike the old one, still shows by the time that refresh
+   * lands.
+   */
+  it("reports a completed recording as saved once the transition's own refresh sees it", async () => {
+    let deliver: ((transition: RecordingTransition) => void) | undefined;
+    const recordingStatus = vi
+      .fn<() => Promise<RecordingStatus>>()
+      .mockResolvedValueOnce(status({ state: "saving", elapsed_ms: 42_000 }))
+      .mockResolvedValue(status({ state: "completed", elapsed_ms: 42_000 }));
+    await view({
+      recordingStatus,
+      onRecordingTransition: (onTransition) => {
+        deliver = onTransition;
+        return Promise.resolve(() => undefined);
+      },
+    });
+
+    act(() => {
+      deliver?.({
+        schema_version: 1,
+        sequence: 5,
+        from: "saving",
+        to: "completed",
+        elapsed_ms: 42_000,
+        failure_summary: null,
+      });
     });
 
     expect(await screen.findByText("Saved")).toBeDefined();

@@ -121,10 +121,15 @@ export function RecordingView() {
         </>
       ) : null}
 
-      <p className="recording__state" aria-live="polite">
-        <span className="recording__state-label">{STATE_LABELS[state]}</span>
+      <p className="recording__state">
+        <span className="recording__state-label" aria-live="polite">
+          {STATE_LABELS[state]}
+        </span>
         {recording.elapsed === "" ? null : (
-          <span className="recording__elapsed"> {recording.elapsed}</span>
+          <span className="recording__elapsed" aria-live="off">
+            {" "}
+            {recording.elapsed}
+          </span>
         )}
       </p>
 

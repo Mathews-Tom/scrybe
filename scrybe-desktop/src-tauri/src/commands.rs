@@ -68,6 +68,7 @@ pub const COMMANDS: &[&str] = &[
     "recording_preflight",
     "start_recording",
     "stop_recording",
+    "acknowledge_recording",
 ];
 
 /// Every command the host registers, reads and setup together.

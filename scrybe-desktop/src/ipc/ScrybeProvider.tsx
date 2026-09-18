@@ -23,6 +23,7 @@ import type {
   TranscriptWindow,
 } from "../generated/bindings";
 import {
+  acknowledgeRecording,
   cancelQuery,
   copyNotes,
   copyTranscript,
@@ -124,6 +125,11 @@ export interface Scrybe {
   startRecording: (title: string | null) => Promise<RecordingStatus>;
   /** Asks the recording in flight to stop and save. */
   stopRecording: () => Promise<RecordingStatus>;
+  /**
+   * Acknowledges a terminal recording once this surface has rendered
+   * its outcome, returning the host to idle.
+   */
+  acknowledgeRecording: () => Promise<RecordingStatus>;
   settingsForm: () => Promise<SettingsForm>;
   applySettings: (changes: SettingsChange[]) => Promise<SettingsForm>;
   /** Reads. A view may call this on mount; it mutates nothing. */
@@ -168,6 +174,7 @@ const REAL: Scrybe = {
   onRecordingProgress,
   startRecording,
   stopRecording,
+  acknowledgeRecording,
   settingsForm,
   applySettings,
   diagnosticsReport,

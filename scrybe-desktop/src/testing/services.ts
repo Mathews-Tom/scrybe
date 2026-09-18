@@ -50,6 +50,7 @@ export function servicesReturning(overrides: Partial<Scrybe> = {}): Scrybe {
     onRecordingProgress: () => Promise.resolve(() => undefined),
     startRecording: () => Promise.resolve(preparing()),
     stopRecording: () => Promise.resolve(saving()),
+    acknowledgeRecording: () => Promise.resolve(idle()),
     settingsForm: () => Promise.resolve(settingsFormFixture()),
     applySettings: () => Promise.resolve(settingsFormFixture()),
     diagnosticsReport: () => Promise.resolve(diagnostics()),
