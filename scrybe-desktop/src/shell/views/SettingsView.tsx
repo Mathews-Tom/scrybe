@@ -7,6 +7,7 @@ import { ReadinessList } from "../../setup/ReadinessList";
 import { SettingsFormPanel } from "../../setup/SettingsForm";
 import { useReadiness } from "../../setup/useReadiness";
 import { useQuery } from "../useQuery";
+import { UpdatePanel } from "./UpdatePanel";
 
 /** The catalog entry this application offers for local transcription. */
 const MANAGED_MODEL = "whisper-small-en";
@@ -95,6 +96,8 @@ export function SettingsView() {
           <ModelOfferPanel offer={offer.value} onInstalled={changed} />
         )}
       </section>
+
+      <UpdatePanel />
 
       <DiagnosticsPanel onRepaired={changed} />
     </>
