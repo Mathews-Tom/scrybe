@@ -101,9 +101,14 @@ impl LiveRecording {
 ///
 /// Every field is a statement about this binary, written under the same
 /// conditions as the capture construction below, so preflight cannot
-/// clear a source [`open`] then refuses. The transcription runtime is
-/// absent because this crate depends on none: a configured model is
-/// refused rather than silently replaced by the stub.
+/// clear a source [`open`] then refuses.
+///
+/// Each is read from a feature rather than asserted. `transcription_model`
+/// was once a hardcoded `false`, which was true while this crate
+/// depended on no runtime — and became a lie the moment it did, because
+/// a preflight that refuses a model the build can load is as wrong as
+/// one that clears a model it cannot. A reader with the model installed
+/// and every permission granted was told the build carried no runtime.
 #[must_use]
 pub const fn support() -> CaptureSupport {
     CaptureSupport {
@@ -112,7 +117,7 @@ pub const fn support() -> CaptureSupport {
         } else {
             CaptureCapability::SyntheticOnly
         },
-        transcription_model: false,
+        transcription_model: cfg!(feature = "whisper-local"),
         notes_provider: cfg!(feature = "notes-generation"),
     }
 }
