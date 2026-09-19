@@ -4,6 +4,8 @@ All notable changes to scrybe are documented here. The format follows [Keep a Ch
 
 ## [Unreleased]
 
+## [2.2.0] — 2026-09-19
+
 ### Fixed
 
 - The macOS desktop application now links its native microphone and system-audio capture adapters, advertises the resulting `mic+system` capability to recording preflight, and includes the required microphone and audio-capture usage descriptions. The v2.1.0 bundle omitted the system-audio adapter while defaulting to `mic+system`, which disabled every recording control before a session could start.
@@ -217,7 +219,8 @@ This release completes the macOS capture-liveness train. A dead or wrong input d
 
 - 8 crates. Publish posture unchanged: `scrybe` is the crates.io placeholder; distribution uses cargo-dist release artifacts.
 
-[Unreleased]: https://github.com/Mathews-Tom/scrybe/compare/v2.1.0...HEAD
+[Unreleased]: https://github.com/Mathews-Tom/scrybe/compare/v2.2.0...HEAD
+[2.2.0]: https://github.com/Mathews-Tom/scrybe/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/Mathews-Tom/scrybe/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/Mathews-Tom/scrybe/releases/tag/v2.0.0
 [1.6.0]: https://github.com/Mathews-Tom/scrybe/releases/tag/v1.6.0

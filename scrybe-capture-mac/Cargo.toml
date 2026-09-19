@@ -70,7 +70,7 @@ voice-processing-io-probe = ["dep:objc2-audio-toolbox"]
 [dependencies]
 async-trait.workspace = true
 futures.workspace = true
-scrybe-core = { package = "scrybe-meeting-core", path = "../scrybe-core", version = "=2.1.0" }
+scrybe-core = { package = "scrybe-meeting-core", path = "../scrybe-core", version = "=2.2.0" }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 tracing.workspace = true
