@@ -3434,7 +3434,7 @@ dependencies = [
 
 [[package]]
 name = "scrybe"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3469,7 +3469,7 @@ dependencies = [
 
 [[package]]
 name = "scrybe-android"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "async-trait",
  "futures",
@@ -3482,7 +3482,7 @@ dependencies = [
 
 [[package]]
 name = "scrybe-capture-linux"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "async-trait",
  "futures",
@@ -3496,7 +3496,7 @@ dependencies = [
 
 [[package]]
 name = "scrybe-capture-win"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "async-trait",
  "futures",
@@ -3509,7 +3509,7 @@ dependencies = [
 
 [[package]]
 name = "scrybe-meeting-application"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3535,7 +3535,7 @@ dependencies = [
 
 [[package]]
 name = "scrybe-meeting-capture-mac"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "async-trait",
  "block2",
@@ -3558,7 +3558,7 @@ dependencies = [
 
 [[package]]
 name = "scrybe-meeting-capture-mic"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "async-trait",
  "cpal",
@@ -3572,7 +3572,7 @@ dependencies = [
 
 [[package]]
 name = "scrybe-meeting-core"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3609,7 +3609,7 @@ dependencies = [
 
 [[package]]
 name = "scrybe-widgets"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
