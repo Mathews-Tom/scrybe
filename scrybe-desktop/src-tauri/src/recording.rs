@@ -28,14 +28,22 @@
 // take one that way whether or not they consume it.
 #![allow(clippy::needless_pass_by_value)]
 
+#[cfg(all(target_os = "macos", feature = "system-capture-mac"))]
+use futures::stream;
 use std::sync::{Arc, Mutex, PoisonError};
 
+#[cfg(all(target_os = "macos", feature = "system-capture-mac"))]
+use scrybe_application::recording::SystemBackend;
 use scrybe_application::recording::{
     CaptureCapability, CaptureFrames, CaptureRegistry, CaptureSource, CaptureSupport,
     RecordingOverrides, RecordingPlan, RecordingProgress, RecordingRun, SettledConsent, Stop,
     StopAcceptance, StopSource,
 };
 use scrybe_application::{ApplicationError, ErrorCode};
+#[cfg(all(target_os = "macos", feature = "system-capture-mac"))]
+use scrybe_capture_mac::{input_devices, InputDevice, MacCapture, NativeMicCapture, SckCapture};
+#[cfg(all(target_os = "macos", feature = "system-capture-mac"))]
+use scrybe_core::capture::AudioCapture;
 use tauri::{Emitter, Manager};
 
 use crate::contract::{CommandFailure, RecordingStatus, PROGRESS_EVENT};
@@ -112,7 +120,9 @@ impl LiveRecording {
 #[must_use]
 pub const fn support() -> CaptureSupport {
     CaptureSupport {
-        capture: if cfg!(feature = "mic-capture") {
+        capture: if cfg!(all(target_os = "macos", feature = "system-capture-mac")) {
+            CaptureCapability::MicrophoneAndSystemAudio
+        } else if cfg!(feature = "mic-capture") {
             CaptureCapability::Microphone
         } else {
             CaptureCapability::SyntheticOnly
@@ -120,6 +130,107 @@ pub const fn support() -> CaptureSupport {
         transcription_model: cfg!(feature = "whisper-local"),
         notes_provider: cfg!(feature = "notes-generation"),
     }
+}
+
+#[cfg(all(target_os = "macos", feature = "system-capture-mac"))]
+fn input_device(plan: &RecordingPlan) -> Result<InputDevice, ApplicationError> {
+    let devices = input_devices().map_err(|source| {
+        ApplicationError::new(
+            ErrorCode::CaptureUnavailable,
+            "macOS Core Audio input devices could not be enumerated",
+        )
+        .with_source(source)
+    })?;
+    if let Some(uid) = plan.input_device.as_deref() {
+        return devices
+            .into_iter()
+            .find(|device| device.uid == uid)
+            .ok_or_else(|| {
+                ApplicationError::new(
+                    ErrorCode::CaptureUnavailable,
+                    format!("configured Core Audio input device `{uid}` was not found"),
+                )
+            });
+    }
+    devices
+        .into_iter()
+        .find(|device| device.is_default)
+        .ok_or_else(|| {
+            ApplicationError::new(
+                ErrorCode::CaptureUnavailable,
+                "macOS has no default Core Audio input device",
+            )
+        })
+}
+
+#[cfg(all(target_os = "macos", feature = "system-capture-mac"))]
+fn start_capture<T>(
+    registry: &CaptureRegistry,
+    capture: T,
+    unavailable: String,
+) -> Result<CaptureFrames, ApplicationError>
+where
+    T: AudioCapture,
+{
+    let capture = registry.register(capture);
+    let mut capture = capture.lock().map_err(|_| {
+        ApplicationError::new(
+            ErrorCode::CaptureUnavailable,
+            "the capture registry's adapter lock was poisoned",
+        )
+    })?;
+    if let Err(source) = capture.start() {
+        let error =
+            ApplicationError::new(ErrorCode::CaptureUnavailable, unavailable).with_source(source);
+        drop(capture);
+        let _ = registry.stop_all();
+        return Err(error);
+    }
+    Ok(Box::pin(capture.frames()))
+}
+
+#[cfg(all(target_os = "macos", feature = "system-capture-mac"))]
+fn macos_microphone_frames(
+    plan: &RecordingPlan,
+    registry: &CaptureRegistry,
+) -> Result<CaptureFrames, ApplicationError> {
+    let device = input_device(plan)?;
+    let unavailable = format!(
+        "the selected input device {} ({}) could not be opened; grant Microphone permission in System Settings if prompted",
+        device.name, device.uid
+    );
+    start_capture(
+        registry,
+        NativeMicCapture::new(device.uid, plan.aec),
+        unavailable,
+    )
+}
+
+#[cfg(all(target_os = "macos", feature = "system-capture-mac"))]
+fn macos_system_frames(
+    plan: &RecordingPlan,
+    registry: &CaptureRegistry,
+) -> Result<CaptureFrames, ApplicationError> {
+    let frames = match plan.system_backend {
+        SystemBackend::Sck => start_capture(
+            registry,
+            SckCapture::new(),
+            "ScreenCaptureKit system audio could not be opened; grant Screen & System Audio Recording permission in System Settings if prompted".to_string(),
+        )?,
+        SystemBackend::Tap => start_capture(
+            registry,
+            MacCapture::new(),
+            "Core Audio Tap system audio could not be opened; grant System Audio Recording Only permission in System Settings if prompted".to_string(),
+        )?,
+    };
+    let microphone = match macos_microphone_frames(plan, registry) {
+        Ok(frames) => frames,
+        Err(error) => {
+            let _ = registry.stop_all();
+            return Err(error);
+        }
+    };
+    Ok(Box::pin(stream::select(microphone, frames)))
 }
 
 /// Opens the source `plan` names.
@@ -141,12 +252,20 @@ fn open(
                 frame
             },
         ))),
-        #[cfg(feature = "mic-capture")]
+        #[cfg(all(target_os = "macos", feature = "system-capture-mac"))]
+        CaptureSource::Mic => macos_microphone_frames(plan, registry),
+        #[cfg(all(target_os = "macos", feature = "system-capture-mac"))]
+        CaptureSource::MicSystem => macos_system_frames(plan, registry),
+        #[cfg(all(
+            feature = "mic-capture",
+            not(all(target_os = "macos", feature = "system-capture-mac"))
+        ))]
         CaptureSource::Mic => scrybe_application::recording::microphone_frames(registry),
         // Unreachable through `start`: preflight refuses a source this
         // build cannot open before anything gets here. Stated rather
         // than unwrapped, so a future build that widens `support`
         // without widening this gets a refusal instead of a panic.
+        #[cfg(not(all(target_os = "macos", feature = "system-capture-mac")))]
         other => {
             let _ = registry;
             Err(ApplicationError::new(
@@ -443,6 +562,30 @@ mod tests {
 
     fn recording_application(directory: &std::path::Path) -> ScrybeApplication {
         ScrybeApplication::new(StorageRoot::new(directory), directory.join("config.toml"))
+    }
+    /// The shipped macOS configuration defaults to `mic+system`. The
+    /// application must advertise the same source it can construct, or
+    /// every recording control remains disabled before macOS can ask
+    /// for either permission.
+    #[cfg(all(target_os = "macos", feature = "system-capture-mac"))]
+    #[test]
+    fn test_shipped_macos_build_accepts_mic_and_system_audio_preflight() {
+        let directory = tempfile::tempdir().unwrap();
+        let plan = RecordingPlan {
+            root: directory.path().join("sessions"),
+            title: None,
+            source: CaptureSource::MicSystem,
+            system_backend: SystemBackend::Sck,
+            input_device: None,
+            transcription: scrybe_application::recording::TranscriptionModel::Stub,
+            notes: scrybe_application::recording::NotesBackend::Stub,
+            consent: scrybe_core::types::ConsentMode::Quick,
+            aec: false,
+        };
+
+        let report = scrybe_application::recording::preflight(&plan, support(), None);
+
+        assert!(report.can_record(), "{:?}", report.blocking());
     }
 
     /// Before capture opens, a failure is a preflight failure — nothing

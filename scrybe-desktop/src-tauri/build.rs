@@ -53,6 +53,8 @@ const COMMANDS: &[&str] = &[
 ];
 
 fn main() {
+    #[cfg(target_os = "macos")]
+    println!("cargo:rustc-link-arg=-Wl,-rpath,/usr/lib/swift");
     let attributes = tauri_build::Attributes::new()
         .app_manifest(tauri_build::AppManifest::new().commands(COMMANDS));
     if let Err(error) = tauri_build::try_build(attributes) {

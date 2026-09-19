@@ -566,27 +566,24 @@ LOC_CEILINGS: dict[str, int] = {
     # surface this work does not wire, and the work that wires it should
     # argue for it.
     #
-    # Raised to 3800 for session retention. Continuing the sum:
+    # Raised to 3950 for the macOS desktop recording repair. Continuing
+    # the sum:
     #
-    #   3677  measured, before the retention commands
-    #   + 25  `contract/retention.rs`: the destination and the outcome.
-    #         The outcome carries the retention window so a confirmation
-    #         and its acknowledgement name the same number without the
-    #         frontend holding a copy of a configuration value — a
-    #         surface with seven hardcoded would go on saying seven
-    #         after a reader changed it
-    #   + 49  the two commands and the one route they share in
-    #         `commands.rs`, which resolves the identity first, then
-    #         checks the recording state, then moves. The state check is
-    #         here rather than in the service because a confirmation
-    #         dialog cannot know what happened while it was open, and
-    #         the contract's declared transport set, command list, and
-    #         access-control manifest each gain two entries
-    #   =3751 measured
+    #   3751  measured, after session retention
+    #   +148  desktop-owned native capture construction: enumerate the
+    #         configured Core Audio input, open and register its
+    #         microphone adapter, select the configured ScreenCaptureKit
+    #         or Core Audio Tap system-audio adapter, and merge their
+    #         source-labelled frames. The same feature gates capability
+    #         advertising, so preflight cannot clear the shipped default
+    #         only for start to refuse it. The bundle also supplies the
+    #         two TCC usage strings required to request those permissions.
+    #   =3899 measured
     #
-    # The ceiling is 3800, leaving 49 lines of margin. The launch sweep
-    # itself was paid for in the preceding increment.
-    "scrybe-desktop/src-tauri": 3800,
+    # The ceiling is 3950, leaving 51 lines of margin. This does not add
+    # recording policy, a provider, or a second capture abstraction: all
+    # those remain in the application or adapter crates.
+    "scrybe-desktop/src-tauri": 3950,
 }
 
 
