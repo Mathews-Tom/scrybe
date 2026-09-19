@@ -4,6 +4,8 @@ All notable changes to scrybe are documented here. The format follows [Keep a Ch
 
 ## [Unreleased]
 
+## [2.3.0] — 2026-09-19
+
 ### Changed
 
 - The desktop Settings navigation now identifies an authenticated update after an explicit check, so a downloaded or install-ready release remains discoverable outside the Settings view. Update availability stays in memory only; Scrybe performs no check on launch, navigation, focus, or timer, and installation remains blocked during active recording.
