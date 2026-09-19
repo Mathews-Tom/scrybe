@@ -82,6 +82,27 @@ body {
   cursor: pointer;
 }
 
+.app-shell__nav-label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.5rem;
+}
+
+.app-shell__update-badge {
+  padding: 0.0625rem 0.375rem;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  color: var(--accent);
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.app-shell__nav-item[aria-current="page"] .app-shell__update-badge {
+  color: inherit;
+}
+
 .app-shell__nav-item:hover {
   background: color-mix(in srgb, var(--accent) 12%, transparent);
 }

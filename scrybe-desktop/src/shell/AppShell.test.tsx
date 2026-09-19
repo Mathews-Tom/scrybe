@@ -1,6 +1,6 @@
 import { act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { RecordingStatus, RecordingTransition } from "../generated/bindings";
 import { commandFailure, idle, servicesReturning, settings } from "../testing/services";
@@ -8,7 +8,20 @@ import { renderWith } from "../testing/render";
 import { AppShell } from "./AppShell";
 import { ROUTES, defaultRoute } from "./routes";
 
+const updater = vi.hoisted(() => ({
+  check: vi.fn(),
+  relaunch: vi.fn(),
+}));
+
+vi.mock("@tauri-apps/plugin-updater", () => ({ check: updater.check }));
+vi.mock("@tauri-apps/plugin-process", () => ({ relaunch: updater.relaunch }));
+
 describe("AppShell", () => {
+  beforeEach(() => {
+    updater.check.mockReset();
+    updater.relaunch.mockReset();
+  });
+
   it("test_shell_opens_on_the_first_registered_route", async () => {
     const first = defaultRoute();
 
@@ -29,6 +42,56 @@ describe("AppShell", () => {
       .map((control) => control.textContent);
 
     expect(names).toEqual(ROUTES.map((route) => route.label));
+  });
+
+  it("test_shell_marks_settings_after_an_explicit_authenticated_update_check", async () => {
+    const user = userEvent.setup();
+    updater.check.mockResolvedValue({
+      version: "2.3.0",
+      download: vi.fn(),
+      install: vi.fn(),
+    });
+
+    await renderWith(<AppShell />);
+
+    expect(updater.check).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Settings" })).toBeDefined();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(await screen.findByRole("button", { name: "Check for updates" }));
+
+    expect(
+      await screen.findByRole("button", { name: "Settings — Update available" }),
+    ).toBeDefined();
+    expect(
+      screen
+        .getAllByRole("navigation", { name: "Primary" })
+        .flatMap((nav) => [...nav.querySelectorAll("button")]),
+    ).toHaveLength(ROUTES.length);
+  });
+
+  it("test_shell_clears_the_settings_annotation_when_a_recheck_is_current_or_fails", async () => {
+    const user = userEvent.setup();
+    updater.check
+      .mockResolvedValueOnce({
+        version: "2.3.0",
+        download: vi.fn(),
+        install: vi.fn(),
+      })
+      .mockResolvedValueOnce(null)
+      .mockRejectedValueOnce(new Error("release feed unavailable"));
+
+    await renderWith(<AppShell />);
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(await screen.findByRole("button", { name: "Check for updates" }));
+    await screen.findByRole("button", { name: "Settings — Update available" });
+
+    await user.click(screen.getByRole("button", { name: "Check for updates" }));
+    await screen.findByText("This installation is current.");
+    expect(screen.getByRole("button", { name: "Settings" })).toBeDefined();
+
+    await user.click(screen.getByRole("button", { name: "Check for updates" }));
+    await screen.findByText("The update check failed: release feed unavailable");
+    expect(screen.getByRole("button", { name: "Settings" })).toBeDefined();
   });
 
   it("test_shell_activating_any_route_replaces_the_main_region", async () => {
