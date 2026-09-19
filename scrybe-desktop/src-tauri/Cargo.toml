@@ -8,7 +8,7 @@ members = ["."]
 
 [package]
 name = "scrybe-desktop"
-version = "2.1.0"
+version = "2.2.0"
 description = "Tauri host for the Scrybe desktop application"
 edition = "2021"
 rust-version = "1.95"
