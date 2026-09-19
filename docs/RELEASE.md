@@ -120,7 +120,33 @@ Wait until the exact version resolves:
 cargo info scrybe-meeting-core@2.3.0 --registry crates-io
 ```
 
-Then dry-run and publish the shared application services, which depend on core:
+Then dry-run and publish the macOS capture package, which depends on core:
+
+```sh
+cargo publish -p scrybe-meeting-capture-mac --dry-run --locked
+cargo publish -p scrybe-meeting-capture-mac --locked
+```
+
+Wait until the exact version resolves:
+
+```sh
+cargo info scrybe-meeting-capture-mac@2.3.0 --registry crates-io
+```
+
+Then dry-run and publish the microphone capture package, which also depends on core:
+
+```sh
+cargo publish -p scrybe-meeting-capture-mic --dry-run --locked
+cargo publish -p scrybe-meeting-capture-mic --locked
+```
+
+Wait until the exact version resolves:
+
+```sh
+cargo info scrybe-meeting-capture-mic@2.3.0 --registry crates-io
+```
+
+Then dry-run and publish the shared application services, which depend on the microphone capture package and core:
 
 ```sh
 cargo publish -p scrybe-meeting-application --dry-run --locked
@@ -131,22 +157,6 @@ Wait until the exact version resolves:
 
 ```sh
 cargo info scrybe-meeting-application@2.3.0 --registry crates-io
-```
-
-Then dry-run and publish the capture packages:
-
-```sh
-cargo publish -p scrybe-meeting-capture-mac --dry-run --locked
-cargo publish -p scrybe-meeting-capture-mic --dry-run --locked
-cargo publish -p scrybe-meeting-capture-mac --locked
-cargo publish -p scrybe-meeting-capture-mic --locked
-```
-
-Wait until both exact versions resolve:
-
-```sh
-cargo info scrybe-meeting-capture-mac@2.3.0 --registry crates-io
-cargo info scrybe-meeting-capture-mic@2.3.0 --registry crates-io
 ```
 
 Then dry-run and publish the presentation surfaces:
