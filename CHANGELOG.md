@@ -4,6 +4,10 @@ All notable changes to scrybe are documented here. The format follows [Keep a Ch
 
 ## [Unreleased]
 
+### Fixed
+
+- The macOS desktop application now links its native microphone and system-audio capture adapters, advertises the resulting `mic+system` capability to recording preflight, and includes the required microphone and audio-capture usage descriptions. The v2.1.0 bundle omitted the system-audio adapter while defaulting to `mic+system`, which disabled every recording control before a session could start.
+
 ## [2.1.0] — 2026-09-18
 
 ### Added

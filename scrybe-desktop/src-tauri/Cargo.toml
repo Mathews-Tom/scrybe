@@ -34,7 +34,7 @@ path = "src/main.rs"
 # while a user who pressed `Download and verify this model` got told
 # the build carried no transport and handed a `Try again` button that
 # could never work.
-default = ["model-download", "whisper-local", "notes-generation", "mic-capture"]
+default = ["model-download", "whisper-local", "notes-generation", "mic-capture", "system-capture-mac"]
 # The managed model transport.
 #
 # Enabling it is the only thing in this tree that turns on
@@ -63,6 +63,11 @@ notes-generation = ["scrybe-application/notes-generation"]
 # about the build rather than a label — and a preflight on such a build
 # refuses a microphone source instead of clearing one it cannot open.
 mic-capture = ["scrybe-application/mic-capture"]
+# Both macOS capture adapters and the native input-device path. The
+# shipped desktop configuration defaults to `mic+system`; omitting this
+# feature makes that default impossible to open and leaves every record
+# control disabled at preflight.
+system-capture-mac = ["mic-capture", "dep:scrybe-capture-mac"]
 # The transcription runtime that loads the model this host downloads. On
 # by default, because the shipped application offers `Download and
 # verify this model` and a build without this could fetch 487 MB it has
@@ -116,6 +121,9 @@ ts-rs = "12"
 # already in this graph through `scrybe-application`; this feature set
 # is a subset of what that dependency turns on plus `signal`.
 tokio = { version = "1.42", default-features = false, features = ["macros", "rt", "signal", "time"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+scrybe-capture-mac = { package = "scrybe-meeting-capture-mac", path = "../../scrybe-capture-mac", optional = true, features = ["core-audio-tap", "system-capture-sck"] }
 
 [lints.rust]
 unsafe_code = "forbid"
