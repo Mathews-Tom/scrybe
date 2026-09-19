@@ -3,6 +3,7 @@ import { useCallback, useState } from "react";
 import { useScrybe } from "../ipc/ScrybeProvider";
 import { NavigationProvider } from "./navigation";
 import { RecordingWatcher } from "./recording/RecordingWatcher";
+import { UpdateProvider, useUpdate } from "./updates/UpdateProvider";
 import { ROUTES, SETUP_ROUTE_ID, defaultRoute } from "./routes";
 import { useQuery, type Query } from "./useQuery";
 import type { SettingsSummary } from "../generated/bindings";
@@ -32,11 +33,23 @@ function statusText(settings: Query<SettingsSummary>): string {
 }
 
 /**
+ * Installs update state once so every view observes the same explicit check.
+ */
+export function AppShell() {
+  return (
+    <UpdateProvider>
+      <AppShellContent />
+    </UpdateProvider>
+  );
+}
+
+/**
  * The persistent frame: a primary navigation sidebar, the local/offline
  * status indicator, and the active view.
  */
-export function AppShell() {
+function AppShellContent() {
   const scrybe = useScrybe();
+  const { availability } = useUpdate();
   // `null` until the reader picks a destination, which is what lets the
   // readiness answer below choose the first one without overriding a
   // choice already made.
@@ -73,11 +86,21 @@ export function AppShell() {
                   type="button"
                   className="app-shell__nav-item"
                   aria-current={route.id === active.id ? "page" : undefined}
+                  aria-label={
+                    route.id === "settings" && availability === "available"
+                      ? `${route.label} — Update available`
+                      : undefined
+                  }
                   onClick={() => {
                     navigate(route.id);
                   }}
                 >
-                  {route.label}
+                  <span className="app-shell__nav-label">
+                    {route.label}
+                    {route.id === "settings" && availability === "available" && (
+                      <span className="app-shell__update-badge">Update available</span>
+                    )}
+                  </span>
                 </button>
               </li>
             ))}
