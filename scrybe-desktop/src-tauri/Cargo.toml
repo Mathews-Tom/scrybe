@@ -34,7 +34,7 @@ path = "src/main.rs"
 # while a user who pressed `Download and verify this model` got told
 # the build carried no transport and handed a `Try again` button that
 # could never work.
-default = ["model-download", "whisper-local", "notes-generation", "mic-capture", "system-capture-mac"]
+default = ["model-download", "whisper-local", "notes-generation", "mic-capture", "system-capture-mac", "encoder-opus"]
 # The managed model transport.
 #
 # Enabling it is the only thing in this tree that turns on
@@ -78,6 +78,13 @@ system-capture-mac = ["mic-capture", "dep:scrybe-capture-mac"]
 # first without the second is what made a fully-granted installation
 # unable to record.
 whisper-local = ["scrybe-application/whisper-local"]
+# The encoder that makes a saved `audio.opus` and `playback.opus` real
+# Ogg Opus. On by default, because without it `scrybe-core` falls back to
+# its test-only `NullEncoder` and writes raw f32 PCM under an `.opus`
+# name: a recording ffmpeg cannot decode, at 96 times the configured
+# 32 kbps. Local-only (libopus plus pure-Rust Ogg framing), so the
+# egress baseline is unchanged.
+encoder-opus = ["scrybe-core/encoder-opus"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

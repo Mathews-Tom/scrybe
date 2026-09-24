@@ -4,6 +4,10 @@ All notable changes to scrybe are documented here. The format follows [Keep a Ch
 
 ## [Unreleased]
 
+### Fixed
+
+- The macOS desktop application now saves `audio.opus` and `playback.opus` as real Ogg Opus. The desktop host never enabled `scrybe-core`'s `encoder-opus` feature, so desktop recordings fell back to the test-only encoder and wrote raw 48 kHz stereo f32 PCM under an `.opus` name: not decodable as Opus, and 96 times the configured 32 kbps. Transcripts and notes were unaffected. An affected file re-encodes with `ffmpeg -f f32le -ar 48000 -ac 2 -i audio.opus -c:a libopus -b:a 32k audio-fixed.opus`.
+
 ## [2.3.0] — 2026-09-19
 
 ### Changed
