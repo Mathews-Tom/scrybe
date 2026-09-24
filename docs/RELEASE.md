@@ -25,7 +25,7 @@ git pull --ff-only origin main
 git status --short
 ```
 
-Confirm main CI is green and the release commit is the expected v2.3.0 preparation commit:
+Confirm main CI is green and the release commit is the expected v2.3.1 preparation commit:
 
 ```sh
 gh run list --branch main --limit 5 --json status,conclusion,workflowName,headSha
@@ -117,7 +117,7 @@ cargo publish -p scrybe-meeting-core --locked
 Wait until the exact version resolves:
 
 ```sh
-cargo info scrybe-meeting-core@2.3.0 --registry crates-io
+cargo info scrybe-meeting-core@2.3.1 --registry crates-io
 ```
 
 Then dry-run and publish the macOS capture package, which depends on core:
@@ -130,7 +130,7 @@ cargo publish -p scrybe-meeting-capture-mac --locked
 Wait until the exact version resolves:
 
 ```sh
-cargo info scrybe-meeting-capture-mac@2.3.0 --registry crates-io
+cargo info scrybe-meeting-capture-mac@2.3.1 --registry crates-io
 ```
 
 Then dry-run and publish the microphone capture package, which also depends on core:
@@ -143,7 +143,7 @@ cargo publish -p scrybe-meeting-capture-mic --locked
 Wait until the exact version resolves:
 
 ```sh
-cargo info scrybe-meeting-capture-mic@2.3.0 --registry crates-io
+cargo info scrybe-meeting-capture-mic@2.3.1 --registry crates-io
 ```
 
 Then dry-run and publish the shared application services, which depend on the microphone capture package and core:
@@ -156,7 +156,7 @@ cargo publish -p scrybe-meeting-application --locked
 Wait until the exact version resolves:
 
 ```sh
-cargo info scrybe-meeting-application@2.3.0 --registry crates-io
+cargo info scrybe-meeting-application@2.3.1 --registry crates-io
 ```
 
 Then dry-run and publish the presentation surfaces:
@@ -169,7 +169,7 @@ cargo publish -p scrybe-widgets --locked
 Wait until the exact version resolves:
 
 ```sh
-cargo info scrybe-widgets@2.3.0 --registry crates-io
+cargo info scrybe-widgets@2.3.1 --registry crates-io
 ```
 
 Dry-run and publish the application last. It pins every package above with an exact version, so it cannot resolve until all of them are on the registry:
@@ -195,27 +195,27 @@ CARGO_HOME="$LOCKED_CARGO_HOME" rustup run 1.95.0 cargo install scrybe --locked 
 "$LOCKED_INSTALL_ROOT/bin/scrybe" --version
 ```
 
-Both version commands must report `scrybe 2.3.0`. `doctor` and `record --help` must execute without a repository checkout. Run Doctor from a terminal and decline the optional live permission probe during this registry-only acceptance; the release's hardware qualification covers the real probes separately.
+Both version commands must report `scrybe 2.3.1`. `doctor` and `record --help` must execute without a repository checkout. Run Doctor from a terminal and decline the optional live permission probe during this registry-only acceptance; the release's hardware qualification covers the real probes separately.
 
 ## Publish the GitHub Release
 
 Create an annotated tag on the same commit used for crates.io:
 
 ```sh
-git tag -a v2.3.0 -m "v2.3.0"
-git push origin v2.3.0
+git tag -a v2.3.1 -m "v2.3.1"
+git push origin v2.3.1
 ```
 
 The tag triggers `.github/workflows/release.yml`. Wait for its plan, Apple Silicon build, Intel build, and release jobs:
 
 ```sh
 gh run list --workflow release.yml --limit 1
-gh release view v2.3.0
+gh release view v2.3.1
 ```
 
 Download every asset into an empty directory and verify `SHA256SUMS.txt`. Execute the installed published binary, confirm its Mach-O UUID, and run the self-signed bundle smoke from `INSTALL.md`.
 
-Expected v2.3.0 asset names include:
+Expected v2.3.1 asset names include:
 
 - `scrybe-aarch64-apple-darwin.tar.xz`
 - `scrybe-x86_64-apple-darwin.tar.xz`
@@ -223,12 +223,12 @@ Expected v2.3.0 asset names include:
 - `dist-manifest.json`
 - `scrybe-sbom.cdx.json`
 - `SHA256SUMS.txt`
-- `Scrybe_2.3.0_aarch64.dmg`
-- `Scrybe_2.3.0_x86_64.dmg`
-- `Scrybe_2.3.0_aarch64.app.tar.gz`
-- `Scrybe_2.3.0_aarch64.app.tar.gz.sig`
-- `Scrybe_2.3.0_x86_64.app.tar.gz`
-- `Scrybe_2.3.0_x86_64.app.tar.gz.sig`
+- `Scrybe_2.3.1_aarch64.dmg`
+- `Scrybe_2.3.1_x86_64.dmg`
+- `Scrybe_2.3.1_aarch64.app.tar.gz`
+- `Scrybe_2.3.1_aarch64.app.tar.gz.sig`
+- `Scrybe_2.3.1_x86_64.app.tar.gz`
+- `Scrybe_2.3.1_x86_64.app.tar.gz.sig`
 - `latest.json`
 - `scrybe-desktop-sbom.cdx.json`
 
@@ -294,9 +294,9 @@ That profile requires a Developer ID Application identity, an Apple-accepted not
 If a crates.io upload succeeds, that package version cannot be replaced. Yank a defective version only to prevent new resolution:
 
 ```sh
-cargo yank --vers 2.3.0 scrybe
+cargo yank --vers 2.3.1 scrybe
 ```
 
 Fix forward with a new patch version when accepted bytes are defective. Never move or recreate an existing release tag after users can install its crates.io package.
 
-If the GitHub workflow fails before publishing a usable release, fix the workflow on main and cut a new patch version. Do not retag v2.3.0 after crates.io publication because the registry package and source tag must remain permanently aligned.
+If the GitHub workflow fails before publishing a usable release, fix the workflow on main and cut a new patch version. Do not retag v2.3.1 after crates.io publication because the registry package and source tag must remain permanently aligned.
