@@ -4,6 +4,8 @@ All notable changes to scrybe are documented here. The format follows [Keep a Ch
 
 ## [Unreleased]
 
+## [2.3.1] — 2026-09-25
+
 ### Fixed
 
 - The macOS desktop application now saves `audio.opus` and `playback.opus` as real Ogg Opus. The desktop host never enabled `scrybe-core`'s `encoder-opus` feature, so desktop recordings fell back to the test-only encoder and wrote raw 48 kHz stereo f32 PCM under an `.opus` name: not decodable as Opus, and 96 times the configured 32 kbps. Transcripts and notes were unaffected. An affected file re-encodes with `ffmpeg -f f32le -ar 48000 -ac 2 -i audio.opus -c:a libopus -b:a 32k audio-fixed.opus`.
@@ -229,7 +231,9 @@ This release completes the macOS capture-liveness train. A dead or wrong input d
 
 - 8 crates. Publish posture unchanged: `scrybe` is the crates.io placeholder; distribution uses cargo-dist release artifacts.
 
-[Unreleased]: https://github.com/Mathews-Tom/scrybe/compare/v2.2.0...HEAD
+[Unreleased]: https://github.com/Mathews-Tom/scrybe/compare/v2.3.1...HEAD
+[2.3.1]: https://github.com/Mathews-Tom/scrybe/compare/v2.3.0...v2.3.1
+[2.3.0]: https://github.com/Mathews-Tom/scrybe/compare/v2.2.0...v2.3.0
 [2.2.0]: https://github.com/Mathews-Tom/scrybe/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/Mathews-Tom/scrybe/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/Mathews-Tom/scrybe/releases/tag/v2.0.0
